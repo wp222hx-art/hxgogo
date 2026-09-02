@@ -1,7 +1,9 @@
 // ================= HashPlay 前端 =================
 const $ = (id) => document.getElementById(id)
-const LABEL = { odd: '单', even: '双', big: '大', small: '小', banker: '庄', player: '闲', tie: '和', digit: '数字', letter: '字母' }
-const TYPE_LABEL = { parity: '单双', size: '大小', bp: '庄闲', chartype: '字符', lucky: '幸运' }
+const LABEL = { odd: '单', even: '双', big: '大', small: '小', banker: '庄', player: '闲', tie: '和', digit: '数字', letter: '字母', dragon: '龙', tiger: '虎', leopard: '豹子', straight: '顺子', pair: '对子', mixed: '杂六' }
+const TYPE_LABEL = { parity: '单双', size: '大小', bp: '庄闲', chartype: '字符', lucky: '幸运', sum: '总和', dragon: '龙虎', shape: '形态', pos: '定位胆', pos2: '定位' }
+const POS = ['万', '千', '百', '十', '个']
+const selLabel = (t, s) => { if (t === 'pos') { const [p, d] = s.split('-'); return POS[p] + '=' + d } if (t === 'pos2') { const [p, k] = s.split('-'); return POS[p] + LABEL[k] } return LABEL[s] ?? s }
 const state = { room: 'tron', token: localStorage.getItem('hp_token'), chip: 100, meta: null, cur: null, last: null, lastSettledNo: null, offset: 0, history: [], trendType: 'parity', busy: false }
 
 const api = axios.create({ baseURL: '/api' })
@@ -18,8 +20,13 @@ const tm = (ms) => new Date(ms).toLocaleTimeString('zh-CN', { hour12: false })
 // ---------- 高亮哈希：末位 digit1 / digit2 ----------
 function highlightHash(hash) {
   if (!hash) return ''
-  let out = '', found = 0
   const chars = hash.split('')
+  if (state.room === 'five') {
+    let found = 0
+    for (let i = chars.length - 1; i >= 0 && found < 5; i--) if (chars[i] >= '0' && chars[i] <= '9') { found++; chars[i] = `<span class="hl-d1">${chars[i]}</span>` }
+    return chars.join('')
+  }
+  let found = 0
   for (let i = chars.length - 1; i >= 0; i--) {
     const ch = chars[i]
     if (found < 2 && ch >= '0' && ch <= '9') { found++; chars[i] = `<span class="${found === 1 ? 'hl-d1' : 'hl-d2'}">${ch}</span>` }
@@ -29,6 +36,9 @@ function highlightHash(hash) {
 function badges(o, status) {
   if (status === 'void') return `<span class="badge b-void">作废退款</span>`
   if (!o) return ''
+  if (o.nums) {
+    return `<span class="badge b-lucky text-lg tracking-widest">${o.nums.join(' ')}</span><span class="badge b-${o.sumSize}">和 ${o.sum} ${LABEL[o.sumSize]}</span><span class="badge b-${o.sumParity}">${LABEL[o.sumParity]}</span><span class="badge ${o.dragon === 'dragon' ? 'b-odd' : o.dragon === 'tiger' ? 'b-even' : 'b-tie'}">${LABEL[o.dragon]}</span><span class="badge b-void">${LABEL[o.shape]}</span>`
+  }
   const b = []
   if (o.parity) b.push(`<span class="badge b-${o.parity}">${LABEL[o.parity]}</span>`)
   if (o.size) b.push(`<span class="badge b-${o.size}">${LABEL[o.size]}</span>`)
@@ -85,7 +95,7 @@ function renderMyBets() {
   box.innerHTML = '<span class="text-slate-500">本局已投：</span>' + Object.entries(agg).map(([k, v]) => {
     const [t, s] = k.split(':'); const btn = document.querySelector(`.bet-btn[data-t="${t}"][data-s="${s}"]`)
     if (btn) btn.insertAdjacentHTML('beforeend', `<span class="mine">${fmt(v)}</span>`)
-    return `<span class="bg-slate-800 px-2 py-0.5 rounded">${TYPE_LABEL[t]}·${LABEL[s] ?? s} <b class="text-amber-400">${fmt(v)}</b></span>`
+    return `<span class="bg-slate-800 px-2 py-0.5 rounded">${TYPE_LABEL[t]}·${selLabel(t, s)} <b class="text-amber-400">${fmt(v)}</b></span>`
   }).join('')
 }
 function renderLast(r, animate) {
@@ -141,7 +151,7 @@ async function placeBet(t, s) {
     $('user-balance').textContent = fmt(r.data.balance)
     state.myBets = [...(state.myBets || []), { bet_type: t, selection: s, amount: state.chip }]
     renderMyBets()
-    toast(`已投 ${TYPE_LABEL[t]}·${LABEL[s] ?? s} ${fmt(state.chip)}`)
+    toast(`已投 ${TYPE_LABEL[t]}·${selLabel(t, s)} ${fmt(state.chip)}`)
   } catch (e) { toast(e.response?.data?.error || '下注失败', false) }
   finally { state.busy = false }
 }
@@ -156,11 +166,11 @@ function renderHistory() {
   $('history-list').innerHTML = state.history.map(r => `
     <div class="hist-row" data-no="${r.round_no}">
       <span class="font-mono text-slate-400">#${String(r.round_no).slice(-6)}</span>
-      <span class="hist-hash">${r.status === 'void' ? '<i class="text-slate-500">作废</i>' : '…' + r.result_hash.slice(-14, -2) + '<b>' + r.result_hash.slice(-2) + '</b>'}</span>
-      <span class="flex gap-1">${r.status === 'void' ? '' : ['parity', 'size', 'bp'].map(k => r.outcomes[k] ? `<span class="badge b-${r.outcomes[k]} !px-1.5 !py-0.5 !text-[10px]">${LABEL[r.outcomes[k]]}</span>` : '').join('')}</span>
+      <span class="hist-hash">${r.status === 'void' ? '<i class="text-slate-500">作废</i>' : r.outcomes?.nums ? '<b class="tracking-widest">' + r.outcomes.nums.join(' ') + '</b>' : '…' + r.result_hash.slice(-14, -2) + '<b>' + r.result_hash.slice(-2) + '</b>'}</span>
+      <span class="flex gap-1">${r.status === 'void' ? '' : r.outcomes?.nums ? [['sumSize', r.outcomes.sumSize], ['sumParity', r.outcomes.sumParity], ['dragon', r.outcomes.dragon]].map(([k, v]) => `<span class="badge ${v === 'dragon' ? 'b-odd' : v === 'tiger' ? 'b-even' : 'b-' + v} !px-1.5 !py-0.5 !text-[10px]">${LABEL[v]}</span>`).join('') : ['parity', 'size', 'bp'].map(k => r.outcomes[k] ? `<span class="badge b-${r.outcomes[k]} !px-1.5 !py-0.5 !text-[10px]">${LABEL[r.outcomes[k]]}</span>` : '').join('')}</span>
     </div>`).join('') || '<div class="text-slate-600">暂无记录</div>'
 }
-const TREND_CLS = { odd: 't-red', big: 't-red', banker: 't-red', letter: 't-red', even: 't-blue', small: 't-blue', player: 't-blue', digit: 't-blue', tie: 't-green' }
+const TREND_CLS = { odd: 't-red', big: 't-red', banker: 't-red', letter: 't-red', dragon: 't-red', even: 't-blue', small: 't-blue', player: 't-blue', digit: 't-blue', tiger: 't-blue', tie: 't-green' }
 function renderTrend() {
   const rows = [...state.history].reverse().filter(r => r.status === 'settled')
   // 大路：同色连续纵向排列，换色换列
@@ -177,6 +187,12 @@ function renderTrend() {
 }
 function renderStats(s) {
   const c = s.counts; const n = s.sample || 1
+  if (state.room === 'five') {
+    const bar = (label, a, b, ca, cb) => { const pa = Math.round((a / n) * 100), pb = Math.round((b / n) * 100)
+      return `<div><div class="flex justify-between text-slate-400 mb-0.5"><span>${label}</span><span>${a} : ${b}</span></div><div class="flex h-2 rounded overflow-hidden bg-slate-800"><div class="${ca}" style="width:${pa}%"></div><div class="${cb}" style="width:${pb}%"></div></div></div>` }
+    $('stats-bar').innerHTML = `<div class="text-slate-500 mb-1">近 ${s.sample} 局分布</div>` + bar('和 大/小', c.sumSize?.big || 0, c.sumSize?.small || 0, 'bg-red-600', 'bg-blue-600') + bar('和 单/双', c.sumParity?.odd || 0, c.sumParity?.even || 0, 'bg-red-600', 'bg-blue-600') + bar('龙/虎', c.dragon?.dragon || 0, c.dragon?.tiger || 0, 'bg-red-600', 'bg-blue-600') + `<div class="text-slate-500">和局 ${c.dragon?.tie || 0} · 豹子 ${c.shape?.leopard || 0} · 顺子 ${c.shape?.straight || 0} · 对子 ${c.shape?.pair || 0}</div><a href="/analysis?source=local:five" class="block mt-2 text-cyan-400 hover:underline"><i class="fas fa-chart-line mr-1"></i>进入 20 机制量化分析 →</a>`
+    return
+  }
   const bar = (label, a, b, ca, cb) => { const pa = Math.round((a / n) * 100), pb = Math.round((b / n) * 100)
     return `<div><div class="flex justify-between text-slate-400 mb-0.5"><span>${label}</span><span>${a} : ${b}</span></div><div class="flex h-2 rounded overflow-hidden bg-slate-800"><div class="${ca}" style="width:${pa}%"></div><div class="${cb}" style="width:${pb}%"></div></div></div>` }
   $('stats-bar').innerHTML = `<div class="text-slate-500 mb-1">近 ${s.sample} 局分布（历史不预测未来）</div>` +
@@ -233,12 +249,22 @@ function switchRoom(room) {
   document.querySelectorAll('.room-tab').forEach(b => b.classList.toggle('active', b.dataset.room === room))
   $('room-name').textContent = state.meta.rooms[room].name; $('room-desc').textContent = state.meta.rooms[room].desc
   $('last-hash').textContent = '等待开奖…'; $('last-badges').innerHTML = ''; $('last-block').innerHTML = ''
+  const five = room === 'five'
+  $('bet-grid').classList.toggle('hidden', five); $('bet-grid-five').classList.toggle('hidden', !five)
+  document.querySelectorAll('#trend-type .five-only').forEach(o => o.hidden = !five)
+  document.querySelectorAll('#trend-type option:not(.five-only)').forEach(o => o.hidden = five)
+  state.trendType = five ? 'sumSize' : 'parity'; $('trend-type').value = state.trendType
   poll(); loadHistory()
 }
 
 // ---------- 事件绑定 ----------
 function bind() {
   $('lucky-row').innerHTML = [...Array(10).keys()].map(i => `<button class="bet-btn lucky" data-t="lucky" data-s="${i}">${i}</button>`).join('')
+  $('pos2-grid').innerHTML = POS.map((p, i) => `<div class="flex flex-col gap-1"><div class="text-center text-xs text-slate-400">${p}位</div>${['big', 'small', 'odd', 'even'].map(k => `<button class="bet-btn !py-1.5 !text-xs ${k === 'big' || k === 'odd' ? 'red' : 'blue'}" data-t="pos2" data-s="${i}-${k}">${LABEL[k]}</button>`).join('')}</div>`).join('')
+  state.posSel = 0
+  const renderPos = () => { $('pos-tabs').innerHTML = POS.map((p, i) => `<button class="chip ${i === state.posSel ? 'active' : ''}" data-p="${i}">${p}位</button>`).join(''); document.querySelectorAll('#pos-tabs .chip').forEach(b => b.onclick = () => { state.posSel = +b.dataset.p; renderPos() })
+    $('pos-grid').innerHTML = [...Array(10).keys()].map(d => `<button class="bet-btn lucky" data-t="pos" data-s="${state.posSel}-${d}">${d}</button>`).join(''); document.querySelectorAll('#pos-grid .bet-btn').forEach(b => b.onclick = () => placeBet(b.dataset.t, b.dataset.s)); renderMyBets() }
+  renderPos()
   document.querySelectorAll('.chip').forEach(b => b.onclick = () => { state.chip = +b.dataset.v; document.querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b)) })
   document.querySelectorAll('.bet-btn').forEach(b => b.onclick = () => placeBet(b.dataset.t, b.dataset.s))
   document.querySelectorAll('.room-tab').forEach(b => b.onclick = () => switchRoom(b.dataset.room))

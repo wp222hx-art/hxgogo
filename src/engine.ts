@@ -26,6 +26,7 @@ export const LIMITS = { minBet: 10, maxBet: 5000, maxPerRound: 20000, initBalanc
 export const ROOMS = {
   tron: { name: 'TRON 区块厅', roundMs: 30_000, closeBeforeMs: 6_000, desc: '以波场公链真实区块哈希开奖，可在 Tronscan 独立核验' },
   seed: { name: '种子承诺厅', roundMs: 20_000, closeBeforeMs: 4_000, desc: '服务端种子承诺 + 全场注单哈希 HMAC 开奖，开局先公示承诺值' },
+  five: { name: '五位数厅', roundMs: 60_000, closeBeforeMs: 8_000, desc: '哈希分分彩规则：取 TRON 区块哈希末 5 个数字 → 万千百十个，定位胆 / 两面 / 总和 / 龙虎 / 前三形态' },
 } as const
 export type Room = keyof typeof ROOMS
 

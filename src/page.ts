@@ -21,7 +21,9 @@ export const page = () => `<!DOCTYPE html>
     <nav id="room-tabs" class="flex gap-1 bg-slate-900 rounded-lg p-1">
       <button data-room="tron" class="room-tab active"><i class="fas fa-link mr-1"></i>TRON 区块厅</button>
       <button data-room="seed" class="room-tab"><i class="fas fa-key mr-1"></i>种子承诺厅</button>
+      <button data-room="five" class="room-tab"><i class="fas fa-hashtag mr-1"></i>五位数厅</button>
     </nav>
+    <a href="/analysis" class="hidden md:inline-flex items-center text-xs bg-cyan-600 hover:bg-cyan-500 text-white px-3 py-1.5 rounded-lg"><i class="fas fa-chart-line mr-1"></i>量化分析</a>
     <div id="user-box" class="flex items-center gap-3 text-sm">
       <div class="text-right leading-tight">
         <div id="user-nick" class="text-slate-400 text-xs">连接中…</div>
@@ -78,6 +80,21 @@ export const page = () => `<!DOCTYPE html>
           <button class="chip" data-v="5000">5K</button>
         </div>
       </div>
+      <div id="bet-grid-five" class="hidden space-y-3">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div class="bet-group"><div class="bet-group-title">总和 大小（≥23 大）</div>
+            <button class="bet-btn red" data-t="sum" data-s="big">大 <em>1.95</em></button><button class="bet-btn blue" data-t="sum" data-s="small">小 <em>1.95</em></button></div>
+          <div class="bet-group"><div class="bet-group-title">总和 单双</div>
+            <button class="bet-btn red" data-t="sum" data-s="odd">单 <em>1.95</em></button><button class="bet-btn blue" data-t="sum" data-s="even">双 <em>1.95</em></button></div>
+          <div class="bet-group"><div class="bet-group-title">龙虎（万 vs 个）</div>
+            <button class="bet-btn red" data-t="dragon" data-s="dragon">龙 <em>1.95</em></button><button class="bet-btn blue" data-t="dragon" data-s="tiger">虎 <em>1.95</em></button><button class="bet-btn green" data-t="dragon" data-s="tie">和 <em>8.5</em></button></div>
+          <div class="bet-group"><div class="bet-group-title">前三形态</div>
+            <button class="bet-btn" data-t="shape" data-s="leopard">豹子 <em>70</em></button><button class="bet-btn" data-t="shape" data-s="straight">顺子 <em>15</em></button><button class="bet-btn" data-t="shape" data-s="pair">对子 <em>3.3</em></button><button class="bet-btn" data-t="shape" data-s="mixed">杂六 <em>1.35</em></button></div>
+        </div>
+        <div class="bet-group"><div class="bet-group-title">定位两面 ×1.95</div><div id="pos2-grid" class="grid grid-cols-5 gap-2"></div></div>
+        <div class="bet-group"><div class="bet-group-title">定位胆 ×9.5 · 先选位置再选数字</div>
+          <div id="pos-tabs" class="flex gap-1 mb-2"></div><div id="pos-grid" class="grid grid-cols-5 sm:grid-cols-10 gap-2"></div></div>
+      </div>
       <div id="bet-grid" class="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div class="bet-group col-span-2 md:col-span-1"><div class="bet-group-title">单双</div>
           <button class="bet-btn" data-t="parity" data-s="odd">单 <em>1.95</em></button>
@@ -106,6 +123,7 @@ export const page = () => `<!DOCTYPE html>
         <h2 class="font-bold text-sm"><i class="fas fa-chart-simple mr-2 text-cyan-400"></i>路单走势（近 60 局）</h2>
         <select id="trend-type" class="bg-slate-800 text-xs rounded px-2 py-1 border border-slate-700">
           <option value="parity">单双</option><option value="size">大小</option><option value="bp">庄闲</option><option value="chartype">字符</option>
+          <option value="sumSize" class="five-only">总和大小</option><option value="sumParity" class="five-only">总和单双</option><option value="dragon" class="five-only">龙虎</option>
         </select>
       </div>
       <div id="trend-grid" class="trend-grid"></div>

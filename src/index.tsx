@@ -3,6 +3,10 @@ import { cors } from 'hono/cors'
 import { computeOutcomes, judge, isValidBet, ODDS, LIMITS, ROOMS, sha256, hmacSha256, randomHex, type Room, type BetType } from './engine'
 import { getNowBlock, findFirstBlockAtOrAfter, type TronBlock } from './tron'
 import { page } from './page'
+import { analysisPage } from './page_analysis'
+import { computeOutcomes5, judge5, isBet5Type, ODDS5, type Bet5Type } from './engine5'
+import { SOURCES, isSource, syncSource, loadDraws } from './sync'
+import { MARKETS, marketByKey, buildSeries, backtest, ensemble, stats as drawStats, MECHANISMS } from './analysis'
 
 type Bindings = { DB: D1Database }
 const app = new Hono<{ Bindings: Bindings }>()
@@ -45,7 +49,7 @@ async function settleDue(db: D1Database, room: Room) {
     .bind(room, t).all<any>()
   if (!due.results.length) return
   let head: TronBlock | null = null
-  if (room === 'tron') { try { head = await getNowBlock() } catch { return } }
+  if (room === 'tron' || room === 'five') { try { head = await getNowBlock() } catch { return } }
   for (const r of due.results) {
     // 抢锁：open -> settling（或 settling 超时 20s 重试）
     const lock = await db.prepare(`UPDATE rounds SET status='settling', settling_ms=? WHERE id=? AND (status='open' OR (status='settling' AND settling_ms < ?))`)
@@ -66,7 +70,7 @@ async function settleRound(db: D1Database, r: any, head: TronBlock | null): Prom
   const betsHash = await sha256(betIds.join(','))
 
   let resultHash: string, blockNumber: number | null = null, blockTs: number | null = null
-  if (r.room === 'tron') {
+  if (r.room === 'tron' || r.room === 'five') {
     // 超过 10 分钟仍取不到区块 -> 作废退款
     const blk = await findFirstBlockAtOrAfter(r.end_ms, head ?? undefined)
     if (!blk) {
@@ -78,12 +82,15 @@ async function settleRound(db: D1Database, r: any, head: TronBlock | null): Prom
     resultHash = await hmacSha256(r.server_seed, `${r.room}:${r.round_no}:${betsHash}`)
   }
 
+  const isFive = r.room === 'five'
+  const o5 = isFive ? computeOutcomes5(resultHash) : null
   const o = computeOutcomes(resultHash)
+  if (isFive && !o5) return await voidRound(db, r, bets)
   const stmts: D1PreparedStatement[] = []
   let payoutTotal = 0
   const userDelta = new Map<string, { pay: number; win: number }>()
   for (const b of bets) {
-    const res = judge(o, b.bet_type as BetType, b.selection)
+    const res = isFive ? judge5(o5!, b.bet_type as Bet5Type, b.selection) : judge(o, b.bet_type as BetType, b.selection)
     const payout = res === 'win' ? Math.floor(b.amount * b.odds) : res === 'refund' ? b.amount : 0
     payoutTotal += payout
     stmts.push(db.prepare('UPDATE bets SET status=?, payout=? WHERE id=?').bind(res, payout, b.id))
@@ -95,7 +102,9 @@ async function settleRound(db: D1Database, r: any, head: TronBlock | null): Prom
   }
   for (const [uid, d] of userDelta) stmts.push(db.prepare('UPDATE users SET balance=balance+?, total_win=total_win+? WHERE id=?').bind(d.pay, d.win, uid))
   stmts.push(db.prepare(`UPDATE rounds SET status='settled', bets_hash=?, block_number=?, block_ts=?, result_hash=?, digit1=?, digit2=?, outcomes=?, payout_total=?, settled_ms=? WHERE id=?`)
-    .bind(betsHash, blockNumber, blockTs, resultHash, o.digit1, o.digit2, JSON.stringify(o), payoutTotal, now(), r.id))
+    .bind(betsHash, blockNumber, blockTs, resultHash, o.digit1, o.digit2, JSON.stringify(isFive ? o5 : o), payoutTotal, now(), r.id))
+  if (isFive && o5) stmts.push(db.prepare('INSERT OR IGNORE INTO draws (source, expect, block, hash, n1,n2,n3,n4,n5, open_ms) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .bind('local:five', String(r.round_no), blockNumber, resultHash, ...o5.nums, r.end_ms))
   await db.batch(stmts)
   return true
 }
@@ -124,7 +133,7 @@ function publicRound(r: any) {
 }
 
 // ------------------------------------------------------------------ API: meta
-app.get('/api/rooms', (c) => c.json({ ok: true, rooms: ROOMS, odds: ODDS, limits: LIMITS, server_time: now() }))
+app.get('/api/rooms', (c) => c.json({ ok: true, rooms: ROOMS, odds: ODDS, limits: LIMITS, server_time: now(), sources: SOURCES }))
 
 // ------------------------------------------------------------------ API: auth (匿名虚拟账户)
 app.post('/api/auth/guest', async (c) => {
@@ -180,7 +189,14 @@ app.post('/api/bet', async (c) => {
   const { room, bet_type, selection } = body
   const amount = Math.floor(Number(body.amount))
   if (!isRoom(room)) return bad(c, 'unknown room')
-  if (!isValidBet(bet_type, String(selection))) return bad(c, '无效玩法或选项')
+  let odds: number
+  if (room === 'five') {
+    if (!isBet5Type(bet_type)) return bad(c, '无效玩法')
+    const o = ODDS5[bet_type](String(selection)); if (!o) return bad(c, '无效选项'); odds = o
+  } else {
+    if (!isValidBet(bet_type, String(selection))) return bad(c, '无效玩法或选项')
+    odds = ODDS[bet_type as BetType][String(selection)]
+  }
   if (!Number.isFinite(amount) || amount < LIMITS.minBet || amount > LIMITS.maxBet) return bad(c, `单注 ${LIMITS.minBet} ~ ${LIMITS.maxBet}`)
 
   const db = c.env.DB
@@ -194,7 +210,6 @@ app.post('/api/bet', async (c) => {
   const deduct = await db.prepare('UPDATE users SET balance=balance-?, total_bet=total_bet+?, bet_count=bet_count+1 WHERE id=? AND balance>=?').bind(amount, amount, u.id, amount).run()
   if (!deduct.meta.changes) return bad(c, '余额不足')
 
-  const odds = ODDS[bet_type as BetType][String(selection)]
   const id = await sha256(`${u.id}:${cur.id}:${t}:${randomHex(8)}`)
   await db.batch([
     db.prepare('INSERT INTO bets (id, round_id, user_id, room, round_no, bet_type, selection, amount, odds, created_ms) VALUES (?,?,?,?,?,?,?,?,?,?)')
@@ -219,7 +234,7 @@ app.get('/api/stats', async (c) => {
   const room = c.req.query('room') || 'tron'
   if (!isRoom(room)) return bad(c, 'unknown room')
   const rows = (await c.env.DB.prepare(`SELECT outcomes FROM rounds WHERE room=? AND status='settled' ORDER BY round_no DESC LIMIT 100`).bind(room).all<any>()).results
-  const cnt: Record<string, Record<string, number>> = { parity: {}, size: {}, bp: {}, chartype: {}, lucky: {} }
+  const cnt: Record<string, Record<string, number>> = room === 'five' ? { sumSize: {}, sumParity: {}, dragon: {}, shape: {} } : { parity: {}, size: {}, bp: {}, chartype: {}, lucky: {} }
   for (const r of rows) {
     const o = JSON.parse(r.outcomes)
     for (const k of Object.keys(cnt)) { const v = o[k]; if (v !== null && v !== undefined) cnt[k][String(v)] = (cnt[k][String(v)] || 0) + 1 }
@@ -249,7 +264,7 @@ app.get('/api/verify/:room/:no', async (c) => {
   const recomputed = computeOutcomes(r.result_hash)
   const steps: any[] = []
   let recomputedHash = r.result_hash, seedOk: boolean | null = null
-  if (room === 'tron') {
+  if (room === 'tron' || room === 'five') {
     steps.push({ step: 1, title: '确定开奖区块', detail: `本局截止时间 end_ms=${r.end_ms}（${new Date(r.end_ms).toISOString()}），取「区块时间戳 ≥ end_ms 的第一个 TRON 区块」`, value: `#${r.block_number} @ ${r.block_ts}` })
     steps.push({ step: 2, title: '读取区块哈希', detail: '可在 Tronscan 独立核对', value: r.result_hash, link: `https://tronscan.org/#/block/${r.block_number}` })
   } else {
@@ -260,9 +275,12 @@ app.get('/api/verify/:room/:no', async (c) => {
     steps.push({ step: 3, title: '全场注单哈希（客户端熵）', detail: `bets_hash = sha256(sorted(bet_ids).join(','))，共 ${betIds.length} 注`, value: recomputedBetsHash, bet_ids: betIds })
     steps.push({ step: 4, title: 'HMAC 开奖', detail: `result = HMAC_SHA256(server_seed, "${room}:${no}:" + bets_hash)`, value: recomputedHash })
   }
-  steps.push({ step: steps.length + 1, title: '取数规则', detail: '从哈希末位向左取第 1 个数字 = 闲/单双/大小/幸运数；第 2 个数字 = 庄；末位字符类型 = 数字/字母', value: `digit1=${recomputed.digit1}  digit2=${recomputed.digit2}  last='${recomputed.lastChar}'` })
-  const consistent = recomputedHash === r.result_hash && recomputedBetsHash === r.bets_hash && JSON.stringify(recomputed) === r.outcomes && (seedOk ?? true)
-  return c.json({ ok: true, room, round_no: no, status: r.status, consistent, stored: { result_hash: r.result_hash, bets_hash: r.bets_hash, outcomes: JSON.parse(r.outcomes) }, recomputed: { result_hash: recomputedHash, bets_hash: recomputedBetsHash, outcomes: recomputed }, steps })
+  const isFive = room === 'five'
+  const recomputedAny: any = isFive ? computeOutcomes5(r.result_hash) : recomputed
+  if (isFive) steps.push({ step: steps.length + 1, title: '取数规则（哈希分分彩）', detail: '剔除哈希中的字母 a-f，取最后 5 个数字 → 万千百十个', value: recomputedAny ? recomputedAny.nums.join(',') + `  总和=${recomputedAny.sum} 龙虎=${recomputedAny.dragon} 形态=${recomputedAny.shape}` : '数字不足' })
+  else steps.push({ step: steps.length + 1, title: '取数规则', detail: '从哈希末位向左取第 1 个数字 = 闲/单双/大小/幸运数；第 2 个数字 = 庄；末位字符类型 = 数字/字母', value: `digit1=${recomputed.digit1}  digit2=${recomputed.digit2}  last='${recomputed.lastChar}'` })
+  const consistent = recomputedHash === r.result_hash && recomputedBetsHash === r.bets_hash && JSON.stringify(recomputedAny) === r.outcomes && (seedOk ?? true)
+  return c.json({ ok: true, room, round_no: no, status: r.status, consistent, stored: { result_hash: r.result_hash, bets_hash: r.bets_hash, outcomes: JSON.parse(r.outcomes) }, recomputed: { result_hash: recomputedHash, bets_hash: recomputedBetsHash, outcomes: recomputedAny }, steps })
 })
 
 app.get('/api/my/bets', async (c) => {
@@ -278,7 +296,89 @@ app.get('/api/leaderboard', async (c) => {
   return c.json({ ok: true, rows: rows.results })
 })
 
+// ------------------------------------------------------------------ API: 数据采集 & 分析
+const analysisCache = new Map<string, { t: number; v: any }>()
+async function drawsFor(db: D1Database, source: string, limit = 1000) {
+  if (source.startsWith('qkltj:')) await syncSource(db, source)
+  return await loadDraws(db, source, limit)
+}
+
+app.get('/api/sources', async (c) => {
+  const meta = (await c.env.DB.prepare('SELECT * FROM sync_meta').all<any>()).results
+  const counts = (await c.env.DB.prepare('SELECT source, COUNT(*) n, MAX(open_ms) latest FROM draws GROUP BY source').all<any>()).results
+  return c.json({ ok: true, sources: Object.entries(SOURCES).map(([k, v]) => ({ key: k, ...v, meta: meta.find(m => m.source === k) || null, count: counts.find(x => x.source === k)?.n || 0, latest: counts.find(x => x.source === k)?.latest || null })) })
+})
+
+app.post('/api/sync', async (c) => {
+  const source = c.req.query('source')
+  const targets = source && isSource(source) ? [source] : Object.keys(SOURCES).filter(s => s.startsWith('qkltj:'))
+  const out: any = {}
+  for (const s of targets) out[s] = await syncSource(c.env.DB, s, c.req.query('force') === '1')
+  return c.json({ ok: true, result: out })
+})
+
+app.get('/api/draws', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const limit = Math.min(1000, Number(c.req.query('limit') || 100))
+  const rows = await drawsFor(c.env.DB, source, limit)
+  return c.json({ ok: true, source, rows: rows.map(d => ({ ...d, outcomes: computeOutcomes5(d.hash) })) })
+})
+
+app.get('/api/analysis/markets', (c) => c.json({ ok: true, markets: MARKETS.map(m => ({ key: m.key, name: m.name, classes: m.classes, labels: m.labels })), mechanisms: MECHANISMS.map(m => ({ id: m.id, name: m.name, group: m.group, desc: m.desc })) }))
+
+app.get('/api/analysis/stats', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const limit = Math.min(1000, Number(c.req.query('limit') || 1000))
+  const rows = await drawsFor(c.env.DB, source, limit)
+  return c.json({ ok: true, source, ...drawStats(rows as any) })
+})
+
+/** 核心：20 机制预测 + 回测 + 集成量化 */
+app.get('/api/analysis/predict', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  const mk = c.req.query('market') || 'sum-size'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const m = marketByKey(mk); if (!m) return bad(c, 'unknown market')
+  const limit = Math.min(1000, Number(c.req.query('limit') || 1000))
+  const steps = Math.min(300, Number(c.req.query('steps') || 150))
+  const rows = await drawsFor(c.env.DB, source, limit)
+  const latest = rows[0]?.expect || ''
+  const ck = `${source}|${mk}|${limit}|${steps}|${latest}`
+  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) return c.json(hit.v)
+  const series = buildSeries(rows as any, m)
+  const bt = backtest(series, m, steps)
+  const en = ensemble(series, m, bt.res)
+  const v = { ok: true, source, market: { key: m.key, name: m.name, classes: m.classes, labels: m.labels }, sample: series.seq.length, latest_expect: latest,
+    backtest: { steps: bt.steps, baseline: bt.baseline, mechanisms: bt.res },
+    ensemble: { p: en.p, top: en.top, top_label: m.labels[en.top], tilt: en.tilt, consensus: en.consensus, votes: en.votes, streak: en.streak, gaps: en.gaps, per: en.per.map(x => ({ id: x.id, name: x.name, pick: x.p.indexOf(Math.max(...x.p)), p: x.p, weight: x.weight })) },
+    recent: series.seq.slice(-60), recent_expects: series.expects.slice(-60),
+    disclaimer: '哈希结果为密码学随机数，回测命中率长期应收敛于基线。本分析仅为统计展示，不构成任何预测保证。' }
+  analysisCache.set(ck, { t: now(), v }); if (analysisCache.size > 200) analysisCache.delete(analysisCache.keys().next().value!)
+  return c.json(v)
+})
+
+/** 全市场概览：每个市场的集成倒向（轻量回测 60 步） */
+app.get('/api/analysis/overview', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const rows = await drawsFor(c.env.DB, source, 600)
+  const latest = rows[0]?.expect || ''
+  const ck = `ov|${source}|${latest}`
+  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) return c.json(hit.v)
+  const out = MARKETS.filter(m => !m.key.startsWith('pos-digit')).map(m => {
+    const s = buildSeries(rows as any, m); const bt = backtest(s, m, 60); const en = ensemble(s, m, bt.res)
+    const best = [...bt.res].sort((a, b) => b.acc - a.acc)[0]
+    return { key: m.key, name: m.name, labels: m.labels, p: en.p, top: en.top, top_label: m.labels[en.top], tilt: en.tilt, consensus: en.consensus, streak: en.streak, best_mech: { name: best.name, acc: best.acc }, baseline: bt.baseline, avg_acc: bt.res.reduce((x, r) => x + r.acc, 0) / bt.res.length }
+  })
+  const v = { ok: true, source, sample: rows.length, latest_expect: latest, markets: out }
+  analysisCache.set(ck, { t: now(), v })
+  return c.json(v)
+})
+
 // ------------------------------------------------------------------ 页面
 app.get('/', (c) => c.html(page()))
+app.get('/analysis', (c) => c.html(analysisPage()))
 
 export default app
