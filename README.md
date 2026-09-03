@@ -96,7 +96,7 @@
 - **诚实原则**：快照写入时目标期尚未开奖，评分只比对名单，无任何可调参数——这是对「量化选号器是否优于随机」最直接的长期检验
 
 ### 策略竞技场 · 自动战绩榜（独立页面 `/arena`，表 `arena_rounds`）
-- **赛制**：11 个策略并行，每期开奖前各自自动锁定 **500 注三位号（万/千/百）**，`INSERT OR IGNORE` 首次为准；开奖后自动结算命中 / 名次 / 盈亏（每注 1 单位，参考赔率 950×，保本命中率 52.6%）
+- **赛制**：12 个策略并行（11 个规则/统计策略 + 1 个 AI 预测官），每期开奖前各自自动锁定 **500 注三位号（万/千/百）**，`INSERT OR IGNORE` 首次为准；开奖后自动结算命中 / 名次 / 盈亏（每注 1 单位，参考赔率 950×，保本命中率 52.6%）
 - **策略池**：量化集成·均衡（temp 1.5）/ 量化集成·聚焦（temp 1.0）/ 热号追击 / 冷号回补 / 单双大小倾向 / 贝叶斯衰减后验（半衰期 30）/ 马尔可夫一阶转移 / **随机对照组**（期号种子，理论 50%）/ **组合最优·自适应加权** / **跟随最强·动态切换**（整份复制之前滚动 40 期 z 最高的基础策略）/ **多策略共识投票**（按被几个基础策略同时选中排序）
 - **向前滚动优化（walk-forward）**：「组合最优」只用目标期之前已结算的滚动 40 期战绩计算各基础策略 z 分数 → `w = 信任度·exp(0.6·clamp(z,−2,2)) + (1−信任度)`（信任度 n/(n+20)，样本不足自动趋向等权）→ 加权融合 1000 维概率 → Top 500；每期自动重算权重，即「以向前数据为依托，在下一期生成时做优化」
 - **自动化**：心跳 `GET /api/sync/status?tick=1` → 同步开奖 → 结算已开奖期 → 为下一期生成全部策略 → 顺带补齐最近漏掉的期（每 tick ≤2 期）；页面无需常开
@@ -104,6 +104,14 @@
 - **页面**：KPI（组合最优命中率/盈亏、当前最强、随机对照）· 战绩榜（已结算/命中/命中率/基线/提升/z/滚动命中率/滚动 z/累计盈亏/ROI/最大回撤/连续未中/下期权重/结论）· 累计盈亏 & 累计命中率曲线（ECharts，组合最优加粗、对照组虚线、50% 基线）· 组合最优下期权重条 · 自动生成的投资策略分析（诚实版）· 本期待开 9 策略 × 500 注（策略卡切换、三种格式、一键复制）· 逐期结算矩阵（点击期号弹窗查看该期各策略全部号码并高亮命中）
 - **投资策略模拟**：6 套「选哪套 × 何时下注」完整方案（组合最优每期必投 / 跟随最强每期必投 / 组合最优择时 z>0.5 / 跟随最强择时 z>1 / 连败 2 期止损 / 逆向跟最弱对照），每期决策只用之前已结算数据，输出下注期/观望期/命中率/z/累计盈亏/ROI/最大回撤/实际跟投分布 + 累计盈亏曲线；结论文案明示「多方案挑最好带有选择偏差」
 - **诚实原则**：任何策略必须长期显著跑赢随机对照组（z>1.96）才算有信号；页面明示 500 注每期期望 −25（950× 赔率），仅做统计验证，不构成投资建议
+
+### AI 预测官 / AI 分析官（大模型推理闭环，`/arena` 中部 `#ai-section`，表 `ai_forecasts` / `ai_reports`）
+- **AI 预测官（策略 key `ai`，仅实盘）**：每期开奖后、下一期生成时，Worker 直接 `fetch` OpenAI 兼容接口（默认 `gpt-5-mini`，`response_format=json_object`），输入三块上下文：① **全部统计信号摘要**（近 60 期三位号、各位 60/200 期频率、当前遗漏、近 30 期大小/单双/和值/龙虎/形态走势、200 期形态分布）② **各策略滚动 40 期战绩 + 组合最优当前权重** ③ **它自己近 6 期的预测、验证假设与真实结果**（命中/名次/盈亏）→ 输出结构化 JSON：`regime`（当前局势判断）/ `confidence` / `pos_weights`（万千百 3×10 权重）/ `strategy_blend`（对 7 个基础策略的融合比例）/ `boost` / `avoid` / `reasoning` / `next_focus`（下期验证假设）
+- **落地为号码**：`aiScores` = norm(√(自有分布 × 策略融合分布))，其中自有分布 = 三位权重乘积（+5 地板、0.8 次幂温和化防过度自信），再 boost ×1.6 / avoid ×0.4 → 1000 维得分 → Top 500 → 以 `strategy='ai'` 写入 `arena_rounds`，与随机对照、组合最优等**同规则结算、同榜排名、同曲线对比**
+- **不间断迭代**：命中/失误在下一期作为「你上几期的预测与结果」喂回模型，系统提示明确要求连续失误时切换思路；页面「逐期预测 · 复盘」时间线展示每期的局势判断、把握、推理摘要、验证假设与实际开奖/命中名次
+- **AI 分析官**：按钮 `POST /api/arena/report` 把 12 策略完整战绩、组合最优权重、6 套投资策略模拟、AI 预测官逐期表现、近 30 期结算一并交给模型，输出 Markdown 报告（一句话结论 / 各策略解读 / AI 复盘 / 权重建议 / 下一阶段择时·仓位·止损规则），系统提示强制「不编造数据、明示理论期望为负与样本不足」；同一结算期只生成一次（缓存于 `ai_reports`）
+- **成本 / 稳健性**：每期 1 次调用（`INSERT OR IGNORE`，失败落 `error` 不重试）；`AI_EFFORT=low` 默认（约 8-15 秒，1 分钟一期的厅安全），35 秒超时则本期轮空；回放模式不含 AI（避免历史刷费与前视）；未配置密钥时 AI 行自动隐藏、其余策略照常
+- **环境变量**：`OPENAI_API_KEY` / `OPENAI_BASE_URL`（必需，缺一则 AI 关闭）、`AI_MODEL`（默认 gpt-5-mini）、`AI_EFFORT`（low/medium/high）。本地写在 `.dev.vars`（已 gitignore），生产用 `wrangler pages secret put`
 
 ### 首页「统计结果」逐期数据表（严格对齐 qkltj 接口）
 - 数据源：`GET https://api.qkltj.com/api/draw-result?code=6001&rows=N`，字段 **原样入库**：`opennumber / lottoType / lottoTypeCn / openTime / id / block / hash / expect`
@@ -165,6 +173,9 @@
 | GET | `/api/arena/strategies` | 策略定义（key/name/desc/color/control/meta）+ 每策略注数 + 赔率 |
 | GET | `/api/arena/round?source=&expect=&strategy=` | 单期单策略详情（numbers[] / actual / hit / rank / pnl） |
 | POST | `/api/arena/replay?source=&n=1-30&lookback=` | 回放补齐历史（严格 walk-forward，返回 replayed / remaining） |
+| GET | `/api/arena/ai?source=&limit=` | **AI 预测官**逐期记录：regime / confidence / reasoning / next_focus / boost / avoid / pos_weights / strategy_blend + 结算 actual/hit/rank/pnl + tokens/latency/error |
+| GET | `/api/arena/report?source=` | 最新一份 AI 分析官报告（Markdown） |
+| POST | `/api/arena/report?source=` | 基于当前全部战绩生成 AI 分析官报告（同一结算期缓存） |
 | GET | `/api/analysis/recommend?source=&steps=` | **本期推荐**：5 玩法 19 组 81 候选概率 + 幸运数字综合榜 + 预见性策略 |
 | GET | `/api/qkltj/table?code=6001&limit=30` | 首页统计结果表：官方字段 + `highlight`（哈希中取用数字下标）+ `mismatch` |
 | GET | `/api/sync/status?source=&tick=1` | 同步状态（latest_expect / lag_ms / expected_publish_ms / audit / fresh / version）；`tick=1` 顺带执行到点同步 |
@@ -174,7 +185,7 @@
 
 ## 数据架构
 - **存储**: Cloudflare D1 (SQLite)
-- **表**: `users` / `rounds` / `bets` / `draws`（统一格式开奖库：source+expect 主键，n1~n5 + 官方原字段 opennumber/lotto_type/lotto_type_cn/open_time/src_id/mismatch）/ `sync_meta`（同步节流）/ `pick_log`（选号器每期 Top-N 快照 + 开奖评分）/ `arena_rounds`（竞技场：source+expect+strategy 主键，mode live/replay，500 注号码、倾向覆盖、当期权重、actual/hit/rank/pnl）
+- **表**: `users` / `rounds` / `bets` / `draws`（统一格式开奖库：source+expect 主键，n1~n5 + 官方原字段 opennumber/lotto_type/lotto_type_cn/open_time/src_id/mismatch）/ `sync_meta`（同步节流）/ `pick_log`（选号器每期 Top-N 快照 + 开奖评分）/ `arena_rounds`（竞技场：source+expect+strategy 主键，mode live/replay，500 注号码、倾向覆盖、当期权重、actual/hit/rank/pnl）/ `ai_forecasts`（AI 预测官每期结构化输出 + 推理 + regime/confidence + tokens/latency/error）/ `ai_reports`（AI 分析官报告，按结算期缓存）
 - **调度**: 无 cron，采用 **懒结算**——任意请求到达时结算所有到期局（`open → settling(锁) → settled/void`），天然适配 Workers 无常驻进程的限制
 - **局号**: `floor(now / roundMs)`，全球一致、可离线推算任一时刻的局号
 
@@ -188,12 +199,15 @@ pm2 start ecosystem.config.cjs      # http://localhost:3000
 ## 部署
 - **平台**: Cloudflare Pages + D1
 - **步骤**: `wrangler d1 create webapp-production` → 填 `database_id` → `npm run db:migrate:prod` → `npm run deploy`
-- **技术栈**: Hono + TypeScript + TailwindCSS(CDN) + D1
+- **技术栈**: Hono + TypeScript + TailwindCSS(CDN) + D1 + OpenAI 兼容 LLM（gpt-5-mini，Worker 内直接 fetch）
+- **生产密钥**: `wrangler pages secret put OPENAI_API_KEY` / `OPENAI_BASE_URL`（可选 `AI_MODEL` / `AI_EFFORT`）
 - **最后更新**: 2026-09-03
 
 ## 未实现 / 下一步建议
 - [x] 选号器战绩追踪（已完成，见上）
 - [x] 策略竞技场 · 自动战绩榜 `/arena`（已完成，见上）
+- [x] AI 预测官（实盘参赛、逐期自我复盘）+ AI 分析官报告（已完成，见上）
+- [ ] AI 扩展：多模型同台（gpt-5 vs mini vs nano 各一个选手）、AI 报告定时归档、把 AI 报告建议自动转成可回测的择时规则
 - [ ] 竞技场扩展：可配置注数（300/500/800）与赔率、按小时段/趋势状态分组战绩、导出 CSV
 - [ ] 「本期推荐」5 玩法战绩追踪：同样快照落库 + 开奖评分，展示推荐命中率曲线 vs 基线
 - [ ] 用户下注行为多维分析（按玩法/时段/筹码分布/跟随倾向 vs 命中）

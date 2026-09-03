@@ -14,8 +14,9 @@ import { pick } from './picker'
 import { recordPick, pickTrack } from './pick_track'
 import { autoArena, arenaBoard, arenaRound, replayArena, settleArena, STRATEGIES, ARENA_N, ARENA_ODDS, ARENA_MIN_HIST } from './arena'
 import { arenaPage } from './page_arena'
+import { aiEnabled, aiModel, aiEffort, forecastFor, aiScores, aiHistory, generateReport, latestReport, type AiEnv } from './ai'
 
-type Bindings = { DB: D1Database }
+type Bindings = { DB: D1Database } & AiEnv
 const app = new Hono<{ Bindings: Bindings }>()
 app.use('/api/*', cors())
 
@@ -353,7 +354,7 @@ app.post('/api/sync', async (c) => {
 app.get('/api/sync/status', async (c) => {
   const source = c.req.query('source')
   const targets = source && isSource(source) ? [source] : Object.keys(SOURCES).filter(s => s.startsWith('qkltj:'))
-  if (c.req.query('tick') === '1') for (const s of targets) { await syncSource(c.env.DB, s); await autoTrack(c.env.DB, s); await arenaTick(c.env.DB, s) } // 顺带触发到点同步 + 战绩快照 + 竞技场生成/结算
+  if (c.req.query('tick') === '1') for (const s of targets) { await syncSource(c.env.DB, s); await autoTrack(c.env.DB, s); await arenaTick(c.env.DB, s, c.env) } // 顺带触发到点同步 + 战绩快照 + 竞技场生成/结算
   const status: any = {}
   for (const s of targets) status[s] = await syncStatus(c.env.DB, s)
   return c.json({ ok: true, status })
@@ -523,10 +524,15 @@ async function autoTrack(db: D1Database, source: string) {
 
 /** 策略竞技场每期自动：结算已开奖 → 为下一期生成全部策略 500 注 → 顺带补齐最近漏掉的期（每 tick 最多 2 期，避免拖慢心跳） */
 const arenaBusy = new Set<string>()
-async function arenaTick(db: D1Database, source: string) {
+async function arenaTick(db: D1Database, source: string, env: AiEnv) {
   if (arenaBusy.has(source)) return
   arenaBusy.add(source)
-  try { const rows = await loadDraws(db, source, 800); await autoArena(db, source, rows as any, 2) }
+  try {
+    const rows = await loadDraws(db, source, 800)
+    // AI 选手：仅在配置了密钥时参赛；每期一次模型调用，失败则本期轮空（error 落库，不会重试刷费）
+    const external = aiEnabled(env) ? { key: 'ai', scorer: async (ctx: any) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights); return f ? aiScores(f, ctx.vec) : null } } : undefined
+    await autoArena(db, source, rows as any, 2, external)
+  }
   catch (e) { console.error('arena tick', e) }
   finally { arenaBusy.delete(source) }
 }
@@ -538,10 +544,35 @@ app.get('/api/arena/board', async (c) => {
   const mode = (c.req.query('mode') || 'all') as 'all' | 'live' | 'replay'
   const limit = Number(c.req.query('limit') || 200)
   if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)
-  await arenaTick(c.env.DB, source)      // 保证当前期已生成、已开奖期已结算
+  await arenaTick(c.env.DB, source, c.env)      // 保证当前期已生成、已开奖期已结算
   const t0 = now()
   const r = await arenaBoard(c.env.DB, source, { mode, limit })
-  return c.json({ ok: true, source, mode, ...r, compute_ms: now() - t0 })
+  const ai = { enabled: aiEnabled(c.env), model: aiEnabled(c.env) ? aiModel(c.env) : null, effort: aiEffort(c.env), history: await aiHistory(c.env.DB, source, 8) }
+  return c.json({ ok: true, source, mode, ...r, ai, compute_ms: now() - t0 })
+})
+/** AI 预测官逐期记录（推理 + 结算） */
+app.get('/api/arena/ai', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const k = Math.max(1, Math.min(200, Number(c.req.query('limit') || 30)))
+  return c.json({ ok: true, source, enabled: aiEnabled(c.env), model: aiEnabled(c.env) ? aiModel(c.env) : null, history: await aiHistory(c.env.DB, source, k) })
+})
+/** AI 分析官阶段报告：GET 取最新；POST 基于当前战绩生成（同一结算期只生成一次） */
+app.get('/api/arena/report', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const r = await latestReport(c.env.DB, source)
+  return c.json({ ok: true, source, enabled: aiEnabled(c.env), report: r || null })
+})
+app.post('/api/arena/report', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  if (!aiEnabled(c.env)) return bad(c, 'AI 未配置（需要 OPENAI_API_KEY / OPENAI_BASE_URL）', 503)
+  try {
+    const board = await arenaBoard(c.env.DB, source, { mode: 'all', limit: 300 })
+    const r = await generateReport(c.env.DB, c.env, source, board)
+    return c.json({ ok: true, source, ...r })
+  } catch (e: any) { return bad(c, 'AI 报告生成失败：' + (e.message || e), 502) }
 })
 app.get('/api/arena/strategies', (c) => c.json({ ok: true, count: ARENA_N, odds: ARENA_ODDS, min_hist: ARENA_MIN_HIST, strategies: STRATEGIES }))
 app.get('/api/arena/round', async (c) => {

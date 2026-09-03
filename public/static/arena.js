@@ -25,6 +25,8 @@ async function init() {
   $('cur-copy').onclick = copyCurrent
   $('cur-text').onclick = function () { this.select() }
   $('hist-n').onchange = e => { S.histN = Number(e.target.value); renderHist() }
+  $('ai-report-btn').onclick = aiReport
+  loadReport()
   $('modal-close').onclick = () => $('modal').classList.add('hidden'); $('modal').onclick = e => { if (e.target === $('modal')) $('modal').classList.add('hidden') }
   $('rules').innerHTML = `${S.defs.length} 个策略并行，每期开奖前各自锁定 <b class="text-slate-200">${defs.data.count} 注三位号</b>（万/千/百），INSERT OR IGNORE 首次为准、不可改写；开奖后自动结算命中/名次/盈亏（每注 1 单位，赔率 ${defs.data.odds}×）。
     「组合最优」只用目标期之前已结算的滚动战绩给基础策略加权（z 分数 → 指数权重 → 样本收缩），融合概率后取 Top ${defs.data.count}——这就是「以向前数据为依托、每期自动优化」。「随机对照组」用期号做种子随机取号，理论命中率 50%，所有策略都要和它比。
@@ -37,7 +39,7 @@ async function load() {
   $('board-meta').textContent = '计算中…'
   const [meta, r] = await Promise.all([api.get('/sources'), api.get('/arena/board', { params: { source: S.source, mode: S.mode, limit: 300 } })])
   S.sources = meta.data.sources; S.data = r.data
-  renderKpis(); renderBoard(); renderCharts(); renderWeights(); renderPlans(); renderCurrent(); renderHist()
+  renderKpis(); renderBoard(); renderCharts(); renderWeights(); renderPlans(); renderAi(); renderCurrent(); renderHist()
   $('disclaimer').innerHTML = '<i class="fas fa-triangle-exclamation mr-1"></i>' + r.data.disclaimer
   $('odds-1').textContent = r.data.odds; $('meta-k').textContent = r.data.meta_k
   $('board-meta').textContent = `已结算 ${r.data.n_periods} 期 · 待开 ${r.data.pending} 期 · 计算 ${r.data.compute_ms}ms`
@@ -139,16 +141,75 @@ function renderPlans() {
   }, true)
 }
 
+// ---------- AI 预测官 ----------
+function md(t) {  // 极简 Markdown → HTML（标题/列表/加粗/段落）
+  const esc = (x) => x.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  const lines = esc(t).split('\n'); let out = '', inUl = false
+  for (const l of lines) {
+    const b = l.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    if (/^##+\s/.test(l)) { if (inUl) { out += '</ul>'; inUl = false } out += `<h2>${b.replace(/^##+\s/, '')}</h2>` }
+    else if (/^\s*[-*]\s/.test(l)) { if (!inUl) { out += '<ul>'; inUl = true } out += `<li>${b.replace(/^\s*[-*]\s/, '')}</li>` }
+    else if (l.trim()) { if (inUl) { out += '</ul>'; inUl = false } out += `<p>${b}</p>` }
+  }
+  return out + (inUl ? '</ul>' : '')
+}
+function renderAi() {
+  const d = S.data, ai = d.ai || { enabled: false, history: [] }
+  const st = d.strategies.find(s => s.key === 'ai')
+  $('ai-status').innerHTML = ai.enabled ? `<i class="fas fa-circle text-emerald-400 mr-1 text-[8px]"></i>已启用 · ${ai.model} · ${ai.effort || 'low'} 推理` : `<i class="fas fa-circle text-slate-500 mr-1 text-[8px]"></i>未配置 API Key`
+  $('ai-meta').textContent = st && st.n ? `已实盘 ${st.n} 期 · 命中 ${st.hits} · ${pct(st.rate)} · z=${st.z} · 盈亏 ${sgn(st.pnl)}` : '等待首期实盘结算'
+  const h = ai.history || []
+  const cur = h.find(x => x.expect === (d.current && d.current.expect)) || h[0]
+  if (!cur) { $('ai-current').innerHTML = `<div class="ai-card text-xs text-slate-500">${ai.enabled ? '本期预测将在下一次心跳自动生成…' : '在项目 API Keys 里注入 OpenAI 兼容密钥后自动启用'}</div>` }
+  else {
+    const rows = d.current && d.current.strategies.find(s => s.strategy === 'ai')
+    const pw = cur.pos_weights || null
+    const sb = cur.strategy_blend && Object.keys(cur.strategy_blend).length ? Object.entries(cur.strategy_blend).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, v]) => { const df = S.defs.find(x => x.key === k); return `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">${df ? df.short : k} ${Math.round(v * 100)}%</span>` }).join(' ') : ''
+    $('ai-current').innerHTML = `<div class="ai-card">
+      <div class="flex items-center justify-between"><span class="text-xs text-slate-500">期号</span><span class="mono text-amber-300 font-bold">${cur.expect}</span></div>
+      ${cur.error ? `<div class="text-xs text-red-400 mt-2">本期调用失败：${cur.error}</div>` : `
+      <div class="mt-2 text-sm"><i class="fas fa-compass text-pink-400 mr-1"></i><b>${cur.regime || '—'}</b> <span class="text-xs text-slate-500 ml-1">把握 ${pct(cur.confidence, 0)}</span></div>
+      <div class="text-xs text-slate-300 mt-2 leading-relaxed">${cur.reasoning || ''}</div>
+      ${cur.next_focus ? `<div class="text-[11px] text-pink-300 mt-2"><i class="fas fa-flag mr-1"></i>下期验证：${cur.next_focus}</div>` : ''}
+      ${cur.boost && cur.boost.length ? `<div class="text-[11px] mt-2"><span class="text-slate-500">加注</span> <span class="mono text-emerald-300">${cur.boost.slice(0, 12).join(' ')}</span></div>` : ''}
+      ${cur.avoid && cur.avoid.length ? `<div class="text-[11px] mt-1"><span class="text-slate-500">回避</span> <span class="mono text-red-300">${cur.avoid.slice(0, 12).join(' ')}</span></div>` : ''}
+      ${sb ? `<div class="text-[11px] mt-2 flex flex-wrap gap-1 items-center"><span class="text-slate-500">参考策略</span> ${sb}</div>` : ''}
+      ${pw ? ['万', '千', '百'].map((n, p) => { const m = Math.max(...pw[p], 1); return `<div class="pw mt-2"><span class="text-slate-500 self-center">${n}位</span>${pw[p].map((v, i) => `<div class="text-center" title="${i}: ${v}"><div class="b" style="height:${Math.max(2, v / m * 30)}px"></div><div class="text-slate-500">${i}</div></div>`).join('')}</div>` }).join('') : ''}
+      <div class="text-[10px] text-slate-500 mt-2">${cur.model} · ${cur.latency_ms}ms · ${fmtT(cur.created_ms)}${rows ? ` · 已锁定 ${rows.count} 注（倾向覆盖 ${pct(rows.coverage)}）` : ''}</div>`}
+    </div>`
+  }
+  $('ai-timeline').innerHTML = h.length ? h.map(x => `<div class="ai-row ${x.hit ? 'hit' : ''} ${x.error ? 'err' : ''}">
+    <div class="mono text-slate-400">${x.expect.slice(-6)}</div>
+    <div>${x.error ? `<span class="text-red-400">调用失败 · ${x.error}</span>` : `<b class="text-slate-200">${x.regime || '—'}</b> <span class="text-slate-500">把握 ${pct(x.confidence, 0)}</span><div class="text-slate-400 mt-0.5 line-clamp-2">${x.reasoning || ''}</div>${x.next_focus ? `<div class="text-pink-300/80 text-[10px] mt-0.5">验证：${x.next_focus}</div>` : ''}`}</div>
+    <div class="text-right">${x.actual ? `<div class="mono text-amber-300">${x.actual}</div>${x.hit ? `<div class="text-emerald-400 font-bold">命中 #${x.rank}</div>` : `<div class="text-slate-500">未中 ${x.pnl}</div>`}` : '<div class="text-slate-500">待开奖</div>'}</div>
+  </div>`).join('') : '<div class="text-xs text-slate-500">暂无记录</div>'
+}
+async function loadReport() {
+  try { const r = (await api.get('/arena/report', { params: { source: S.source } })).data; if (r.report) showReport(r.report) } catch {}
+}
+function showReport(r) {
+  $('ai-report').classList.remove('hidden')
+  $('ai-report-meta').textContent = `· 截至第 ${r.expect} 期 · ${r.model} · ${fmtT(r.created_ms)}`
+  $('ai-report-body').innerHTML = md(r.report)
+}
+async function aiReport() {
+  const btn = $('ai-report-btn'); btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>AI 分析中（约 20-60 秒）…'
+  try { const r = (await api.post('/arena/report', null, { params: { source: S.source } })).data; showReport(r); $('ai-report').scrollIntoView({ behavior: 'smooth', block: 'start' }) }
+  catch (e) { alert('报告生成失败：' + (e.response?.data?.error || e.message)) }
+  btn.disabled = false; btn.innerHTML = '<i class="fas fa-file-lines mr-1"></i>生成 AI 分析报告'
+}
+
 function curNums() { const c = S.data.current; if (!c) return null; const s = c.strategies.find(x => x.strategy === S.strat); return s ? s.numbers.split(' ') : null }
 function renderCurrent() {
   const d = S.data, c = d.current
   if (!c) { $('cur-expect').textContent = '—'; $('cur-meta').textContent = '尚未生成（数据源需 ≥120 期历史）'; $('strat-cards').innerHTML = ''; $('cur-text').value = ''; $('cur-grid').innerHTML = ''; return }
   $('cur-expect').textContent = c.expect
   $('cur-meta').textContent = `基于 ${c.based_on} 期及之前数据 · 生成于 ${fmtT(c.created_ms)} · 开奖后自动结算`
-  $('strat-cards').innerHTML = c.strategies.map(s => { const def = defOf(s.strategy); return `<div class="strat-card ${s.strategy === S.strat ? 'active' : ''}" data-k="${s.strategy}">
+  $('strat-cards').innerHTML = [...c.strategies].sort((a, b) => S.defs.findIndex(x => x.key === a.strategy) - S.defs.findIndex(x => x.key === b.strategy)).map(s => { const def = defOf(s.strategy); return `<div class="strat-card ${s.strategy === S.strat ? 'active' : ''}" data-k="${s.strategy}">
     <div class="text-[11px] truncate" style="color:${def.color}">${def.short}</div>
     <div class="mono text-sm font-bold">${s.count} 注</div>
     <div class="text-[10px] text-slate-500">倾向覆盖 ${pct(s.coverage)}${def.meta ? '' : ` · 权重 ${pct(s.weight)}`}</div></div>` }).join('')
+    + (d.ai && d.ai.enabled && !c.strategies.some(s => s.strategy === 'ai') ? `<div class="strat-card opacity-70" title="大模型正在推理本期预测，完成后自动出现"><div class="text-[11px] truncate" style="color:#f472b6">AI 预测</div><div class="text-sm font-bold"><i class="fas fa-spinner fa-spin mr-1"></i>推理中</div><div class="text-[10px] text-slate-500">约 10-30 秒</div></div>` : '')
   document.querySelectorAll('.strat-card').forEach(el => el.onclick = () => { S.strat = el.dataset.k; $('cur-strat').value = S.strat; renderCurrent() })
   const nums = curNums() || []
   $('cur-text').value = S.fmt === 'line' ? nums.join('\n') : S.fmt === 'comma' ? nums.join(',') : nums.join(' ')
