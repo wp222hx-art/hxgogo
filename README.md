@@ -70,6 +70,13 @@
 - 近 100 期命中点阵、遗漏长度分布 vs 几何分布理论曲线、自动文字解读
 - **市场 K 线**: 总和 K 线（价格=每期总和，22.5 中轴）、总和大率 / 单率 / 龙率 K 线（滚动频率）
 
+### 首页「统计结果」逐期数据表（严格对齐 qkltj 接口）
+- 数据源：`GET https://api.qkltj.com/api/draw-result?code=6001&rows=N`，字段 **原样入库**：`opennumber / lottoType / lottoTypeCn / openTime / id / block / hash / expect`
+- **运算结果以官方 `opennumber` 为准**（n1~n5 直接取自官方值）；本地哈希推算仅做交叉校验，不一致时 `mismatch=1` 并在表格以 ⚠ 标注（当前 6 源 0 条不一致）
+- 同步改为 **UPSERT**：历史行也会回填官方字段，保证与接口逐字段一致（已用 100 期逐字段比对：0 差异）
+- 表格列：统计时间 | 奖期 | 区块（Tronscan/Etherscan 链接） | 区块哈希值（官方取用的最后 5 个数字字符 **红色高亮**） | 运算结果
+- 支持切换 6001/6002/6003/6004/7001、20~100 期、每 20s 自动刷新、新一期首行闪动；「接口原文核对」链接直通 `/api/qkltj/raw`
+
 ### 其他
 - 匿名虚拟账户（Token 存 localStorage），初始 10,000 积分；余额 < 500 每小时可领 5,000 救济金
 - 实时倒计时、开奖哈希滚动动画、末位数字高亮（黄=闲/红=庄）
@@ -102,10 +109,12 @@
 | GET | `/api/analysis/overview?source=` | 全市场倾向总览 |
 | GET | `/api/analysis/kline?source=&digit=0-9&pos=any\|0-4&bucket=1-50&window=5-200` | **幸运数字频率 K 线**（OHLC/MA/遗漏/z 分数/10 数字概况）+ 总和/大率/单率/龙率 K 线 |
 | GET | `/api/analysis/recommend?source=&steps=` | **本期推荐**：5 玩法 19 组 81 候选概率 + 幸运数字综合榜 + 预见性策略 |
+| GET | `/api/qkltj/table?code=6001&limit=30` | 首页统计结果表：官方字段 + `highlight`（哈希中取用数字下标）+ `mismatch` |
+| GET | `/api/qkltj/raw?code=6001&rows=1` | **严格直通** qkltj 接口原文（逐期一致性核对） |
 
 ## 数据架构
 - **存储**: Cloudflare D1 (SQLite)
-- **表**: `users` / `rounds` / `bets` / `draws`（统一格式开奖库：source+expect 主键，n1~n5）/ `sync_meta`（同步节流）
+- **表**: `users` / `rounds` / `bets` / `draws`（统一格式开奖库：source+expect 主键，n1~n5 + 官方原字段 opennumber/lotto_type/lotto_type_cn/open_time/src_id/mismatch）/ `sync_meta`（同步节流）
 - **调度**: 无 cron，采用 **懒结算**——任意请求到达时结算所有到期局（`open → settling(锁) → settled/void`），天然适配 Workers 无常驻进程的限制
 - **局号**: `floor(now / roundMs)`，全球一致、可离线推算任一时刻的局号
 

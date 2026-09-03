@@ -319,6 +319,42 @@ app.post('/api/sync', async (c) => {
   return c.json({ ok: true, result: out })
 })
 
+/** 哈希中被用作运算结果的 5 个数字字符下标（从尾部倒数 5 个 0-9 字符） */
+function hashDigitIdx(hash: string): number[] {
+  const idx: number[] = []
+  for (let i = hash.length - 1; i >= 0 && idx.length < 5; i--) if (hash[i] >= '0' && hash[i] <= '9') idx.push(i)
+  return idx.reverse()
+}
+
+/** 首页“统计结果”表：严格按 qkltj 接口字段输出（opennumber 为运算结果） */
+app.get('/api/qkltj/table', async (c) => {
+  const code = c.req.query('code') || '6001'
+  const source = 'qkltj:' + code
+  if (!isSource(source)) return bad(c, 'unknown code')
+  const limit = Math.min(200, Math.max(1, Number(c.req.query('limit') || 30)))
+  const rows = await drawsFor(c.env.DB, source, limit)
+  const cfg = SOURCES[source]
+  return c.json({
+    ok: true, code, name: cfg.name, chain: cfg.chain, intervalMs: cfg.intervalMs,
+    rows: rows.map((d: any) => ({
+      openTime: d.open_time || new Date(d.open_ms + 8 * 3600_000).toISOString().slice(0, 19).replace('T', ' '),
+      expect: d.expect, block: d.block, hash: d.hash,
+      opennumber: d.opennumber || [d.n1, d.n2, d.n3, d.n4, d.n5].join(','),
+      lottoType: d.lotto_type, lottoTypeCn: d.lotto_type_cn, id: d.src_id,
+      mismatch: d.mismatch || 0, highlight: hashDigitIdx(d.hash),
+    })),
+  })
+})
+
+/** 严格直通：原样转发 qkltj 接口（用于逐期一致性核对） */
+app.get('/api/qkltj/raw', async (c) => {
+  const code = c.req.query('code') || '6001'
+  if (!isSource('qkltj:' + code)) return bad(c, 'unknown code')
+  const rows = Math.min(1000, Math.max(1, Number(c.req.query('rows') || 1)))
+  const res = await fetch(`https://api.qkltj.com/api/draw-result?code=${code}&rows=${rows}`, { headers: { accept: 'application/json' } })
+  return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } })
+})
+
 app.get('/api/draws', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')

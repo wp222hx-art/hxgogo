@@ -48,3 +48,10 @@
 .countdown-warn { color: #f87171 !important; animation: pulse 1s infinite; }
 @keyframes pulse { 50% { opacity: .5; } }
 ::-webkit-scrollbar { width: 6px; height: 6px; } ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+/* 官方统计结果表 */
+.qk-table th { padding: 8px 10px; font-weight: 600; border-bottom: 1px solid #334155; font-size: 12px; }
+.qk-table td { padding: 8px 10px; border-bottom: 1px solid #1e293b; vertical-align: middle; }
+.qk-table tbody tr:hover { background: rgba(30,41,59,.6); }
+.qk-hi { color: #f87171; font-weight: 700; }
+.qk-tab { padding: 4px 10px; border-radius: 6px; background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+.qk-tab.active { background: #f59e0b; color: #000; border-color: #f59e0b; font-weight: 600; }

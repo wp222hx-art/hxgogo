@@ -298,6 +298,47 @@ function bind() {
   document.querySelectorAll('#verify-modal, #me-modal').forEach(m => m.onclick = (e) => { if (e.target === m) m.classList.add('hidden') })
 }
 
+// ---------- 官方逐期统计结果表（严格按 qkltj 接口） ----------
+const qk = { code: '6001', limit: 30, timer: null, lastExpect: null }
+function qkHash(h, idx) {
+  const set = new Set(idx || [])
+  let out = ''
+  for (let i = 0; i < h.length; i++) out += set.has(i) ? `<span class="qk-hi">${h[i]}</span>` : h[i]
+  return out
+}
+async function loadQkltjTable() {
+  const body = $('qk-body'); if (!body) return
+  try {
+    const r = await api.get('/qkltj/table', { params: { code: qk.code, limit: qk.limit } })
+    const d = r.data
+    $('qk-name').textContent = d.name
+    $('qk-raw').href = `/api/qkltj/raw?code=${qk.code}&rows=1`
+    const explorer = d.chain === 'eth' ? 'https://etherscan.io/block/' : 'https://tronscan.org/#/block/'
+    if (!d.rows.length) { body.innerHTML = '<tr><td colspan="5" class="text-center text-slate-500 py-6">暂无数据</td></tr>'; return }
+    body.innerHTML = d.rows.map((x, i) => `
+      <tr class="${i === 0 && qk.lastExpect && qk.lastExpect !== x.expect ? 'flash' : ''}">
+        <td class="whitespace-nowrap text-slate-300">${x.openTime}</td>
+        <td class="whitespace-nowrap font-mono">${x.expect}</td>
+        <td class="whitespace-nowrap"><a href="${explorer}${x.block}" target="_blank" rel="noopener" class="text-sky-400 hover:underline font-mono">${x.block ?? '-'}</a></td>
+        <td class="font-mono text-xs break-all text-slate-200">${qkHash(x.hash, x.highlight)}</td>
+        <td class="text-right font-mono font-bold text-amber-300 whitespace-nowrap">${x.opennumber}${x.mismatch ? ' <i class="fas fa-triangle-exclamation text-amber-400" title="官方值与哈希推算不一致"></i>' : ''}</td>
+      </tr>`).join('')
+    qk.lastExpect = d.rows[0].expect
+    $('qk-status').innerHTML = `<i class="fas fa-satellite-dish mr-1 text-emerald-400"></i>api.qkltj.com · 最新 ${d.rows[0].expect} · ${new Date().toLocaleTimeString()} 已刷新`
+  } catch (e) {
+    $('qk-status').innerHTML = `<i class="fas fa-triangle-exclamation mr-1 text-red-400"></i>刷新失败：${e.response?.data?.error || e.message}`
+  }
+}
+function bindQkltj() {
+  document.querySelectorAll('.qk-tab').forEach(b => b.onclick = () => {
+    document.querySelectorAll('.qk-tab').forEach(x => x.classList.remove('active')); b.classList.add('active')
+    qk.code = b.dataset.code; qk.lastExpect = null; loadQkltjTable()
+  })
+  $('qk-limit').onchange = (e) => { qk.limit = Number(e.target.value); loadQkltjTable() }
+  loadQkltjTable()
+  qk.timer = setInterval(loadQkltjTable, 20000)
+}
+
 // ---------- 启动 ----------
 ;(async () => {
   state.meta = (await api.get('/rooms')).data
@@ -307,4 +348,5 @@ function bind() {
   setInterval(poll, 2500)
   setInterval(tickCountdown, 250)
   loadLeaderboard()
+  bindQkltj()
 })()

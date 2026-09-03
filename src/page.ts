@@ -147,6 +147,38 @@ export const page = () => `<!DOCTYPE html>
   </aside>
 </main>
 
+<!-- 官方逐期统计结果（严格按 api.qkltj.com/api/draw-result 字段） -->
+<section id="qkltj-table-section" class="max-w-7xl mx-auto px-4 pb-5">
+  <article class="card">
+    <header class="flex flex-wrap items-center gap-3 mb-3">
+      <h2 class="font-bold text-lg"><i class="fas fa-table-list text-amber-400 mr-2"></i>统计结果 <span id="qk-name" class="text-slate-400 text-sm font-normal ml-1">哈希分分彩</span></h2>
+      <nav id="qk-tabs" class="flex gap-1 text-xs">
+        <button data-code="6001" class="qk-tab active">分分彩</button>
+        <button data-code="6002" class="qk-tab">三分彩</button>
+        <button data-code="6003" class="qk-tab">五分彩</button>
+        <button data-code="6004" class="qk-tab">十分彩</button>
+        <button data-code="7001" class="qk-tab">ETH 分分彩</button>
+      </nav>
+      <select id="qk-limit" class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
+        <option value="20">20 期</option><option value="30" selected>30 期</option><option value="50">50 期</option><option value="100">100 期</option>
+      </select>
+      <span id="qk-status" class="text-xs text-slate-500 ml-auto"><i class="fas fa-satellite-dish mr-1"></i>数据源 api.qkltj.com · 每 20s 刷新</span>
+      <a id="qk-raw" href="/api/qkltj/raw?code=6001&rows=1" target="_blank" class="text-xs text-sky-400 hover:underline"><i class="fas fa-code mr-1"></i>接口原文核对</a>
+    </header>
+    <div class="overflow-x-auto">
+      <table id="qk-table" class="w-full text-sm qk-table">
+        <thead>
+          <tr class="text-slate-300">
+            <th class="text-left">统计时间</th><th class="text-left">奖期</th><th class="text-left">区块 (Block)</th><th class="text-left">区块哈希值</th><th class="text-right">运算结果</th>
+          </tr>
+        </thead>
+        <tbody id="qk-body"><tr><td colspan="5" class="text-center text-slate-500 py-6"><i class="fas fa-spinner fa-spin mr-1"></i>加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <p class="text-[11px] text-slate-500 mt-2"><i class="fas fa-circle-info mr-1"></i>运算结果 = 接口 <code>opennumber</code> 原值；哈希中<span class="text-red-400 font-bold">红色</span>为官方取用的最后 5 个数字字符（去除 a-f 后倒数 5 位）。若官方值与本地推算不一致会以 <i class="fas fa-triangle-exclamation text-amber-400"></i> 标注。</p>
+  </article>
+</section>
+
 <footer class="max-w-7xl mx-auto px-4 pb-8 text-xs text-slate-500 leading-relaxed">
   <div class="border-t border-slate-800 pt-4">
     <p><i class="fas fa-circle-info mr-1"></i><b>免责声明</b>：本站为「链上哈希随机数 + 可验证公平机制」的技术演示，所有积分均为虚拟数值，不可充值、不可提现、不具有任何货币价值。开奖哈希来自 TRON 公链公开区块或服务端承诺种子，任何人均可离线复算校验。哈希函数（SHA-256）的输出不可预测，历史走势对未来结果没有任何预测意义。</p>

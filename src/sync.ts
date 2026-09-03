@@ -41,14 +41,24 @@ export async function syncSource(db: D1Database, source: string, force = false):
     const data = await fetchQkltj(cfg.code, rows)
     const stmts: D1PreparedStatement[] = []
     for (const r of data) {
-      const five = extractFive(r.hash); if (!five) continue
-      // 校验站方 opennumber 与我们从哈希推算一致（不一致也存，但用推算值，保持规则统一）
-      stmts.push(db.prepare('INSERT OR IGNORE INTO draws (source, expect, block, hash, n1,n2,n3,n4,n5, open_ms) VALUES (?,?,?,?,?,?,?,?,?,?)')
-        .bind(source, String(r.expect), Number(r.block) || null, r.hash, ...five, parseOpenTime(r.openTime)))
+      if (!r || !r.hash || !r.expect) continue
+      // 严格以官方 opennumber 为准；hash 推算仅用于交叉校验（不一致标记 mismatch=1）
+      const official = typeof r.opennumber === 'string' ? r.opennumber.split(',').map((x: string) => Number(x.trim())) : []
+      const derived = extractFive(r.hash)
+      const five = official.length === 5 && official.every((x: number) => Number.isInteger(x) && x >= 0 && x <= 9) ? official : derived
+      if (!five) continue
+      const mismatch = derived && official.length === 5 && derived.some((v, i) => v !== official[i]) ? 1 : 0
+      // UPSERT：已有行也回填官方字段，保证与接口完全一致
+      stmts.push(db.prepare(`INSERT INTO draws (source, expect, block, hash, n1,n2,n3,n4,n5, open_ms, opennumber, lotto_type, lotto_type_cn, open_time, src_id, mismatch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(source, expect) DO UPDATE SET block=excluded.block, hash=excluded.hash, n1=excluded.n1, n2=excluded.n2, n3=excluded.n3, n4=excluded.n4, n5=excluded.n5, open_ms=excluded.open_ms,
+          opennumber=excluded.opennumber, lotto_type=excluded.lotto_type, lotto_type_cn=excluded.lotto_type_cn, open_time=excluded.open_time, src_id=excluded.src_id, mismatch=excluded.mismatch
+        WHERE draws.opennumber IS NULL OR draws.opennumber<>excluded.opennumber OR draws.hash<>excluded.hash`)
+        .bind(source, String(r.expect), Number(r.block) || null, r.hash, five[0], five[1], five[2], five[3], five[4], parseOpenTime(r.openTime), r.opennumber ?? null, r.lottoType ?? null, r.lottoTypeCn ?? null, r.openTime ?? null, r.id ?? null, mismatch))
     }
-    let inserted = 0
-    for (let i = 0; i < stmts.length; i += 100) { const res = await db.batch(stmts.slice(i, i + 100)); inserted += res.reduce((s, r) => s + (r.meta.changes || 0), 0) }
+    const before = await db.prepare('SELECT COUNT(*) c FROM draws WHERE source=?').bind(source).first<any>()
+    for (let i = 0; i < stmts.length; i += 100) await db.batch(stmts.slice(i, i + 100))
     const cnt = await db.prepare('SELECT COUNT(*) c FROM draws WHERE source=?').bind(source).first<any>()
+    const inserted = Math.max(0, (cnt.c || 0) - (before.c || 0))
     await db.prepare('UPDATE sync_meta SET total=?, last_error=NULL WHERE source=?').bind(cnt.c, source).run()
     return { inserted }
   } catch (e: any) {
