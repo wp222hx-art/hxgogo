@@ -151,16 +151,32 @@ function pickText(fmt) {
   const nos = arr.map(x => x.no)
   return fmt === 'comma' ? nos.join(',') : fmt === 'line' ? nos.join('\n') : nos.join(' ')
 }
-async function copyText(t) {
-  try { await navigator.clipboard.writeText(t) } catch (e) { const ta = $('pick-text'); ta.value = t; ta.select(); document.execCommand('copy') }
-  const el = $('pick-copied'); el.classList.remove('hidden'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.add('hidden'), 1800)
+async function copyText(t, toastId = 'pick-copied') {
+  let ok = false
+  try { await navigator.clipboard.writeText(t); ok = true } catch (e) {}
+  if (!ok) { const ta = $('pick-text'); const keep = ta.value; ta.value = t; ta.removeAttribute('readonly'); ta.focus(); ta.select(); ta.setSelectionRange(0, t.length); ok = document.execCommand('copy'); ta.setAttribute('readonly', ''); ta.value = keep }
+  const el = $(toastId); el.classList.remove('hidden'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.add('hidden'), 2200)
+}
+/** 下方文本框：复制框内全部内容（与当前格式/筛选一致） */
+async function copyTextBox() {
+  const ta = $('pick-text'); const t = ta.value
+  if (!t) return
+  const n = t.split(/[\s,]+/).filter(Boolean).length
+  $('pick-text-copied-n').textContent = n
+  await copyText(t, 'pick-text-copied')
+  ta.focus(); ta.select()  // 视觉反馈：框内全部高亮
+}
+function syncTextBox() {
+  const t = $('pick-text').value
+  $('pick-text-count').textContent = t ? t.split(/[\s,]+/).filter(Boolean).length : 0
+  $('pick-text-fmt').textContent = ({ space: '空格分隔', comma: '逗号分隔', line: '每行一个', core: '仅核心层', duplex: '复式方案' })[PICK.fmt] || PICK.fmt
 }
 function renderPickGrid() {
   const d = PICK.data; if (!d) return
   const arr = pickVisible()
   $('pick-grid').innerHTML = arr.map(x => `<div class="pick-no pk-${x.tier}" data-no="${x.no}" title="#${x.rank} · 倾向 ${x.lift}× 基线${x.tags.length ? ' · ' + x.tags.join('/') : ''}"><span class="r">${x.rank}</span>${x.no}</div>`).join('')
   $('pick-grid').querySelectorAll('.pick-no').forEach(el => el.onclick = () => copyText(el.dataset.no))
-  $('pick-text').value = pickText(PICK.fmt)
+  $('pick-text').value = pickText(PICK.fmt); syncTextBox()
   $('pick-title').textContent = `下一期 ${d.next_expect} · 共 ${d.count} 注 · 当前显示 ${arr.length} 注`
 }
 async function loadPick(silent) {
@@ -216,7 +232,10 @@ function bindPick() {
   $('pick-count').onchange = e => setCount(Number(e.target.value), 'num')
   document.querySelectorAll('#pick-presets .tab').forEach(b => b.onclick = () => setCount(Number(b.dataset.n)))
   $('pick-tier').onchange = renderPickGrid; $('pick-sort').onchange = renderPickGrid; $('pick-temp').onchange = () => loadPick()
-  document.querySelectorAll('.pick-copy').forEach(b => b.onclick = () => { document.querySelectorAll('.pick-copy').forEach(x => x.classList.remove('active')); b.classList.add('active'); PICK.fmt = b.dataset.fmt; $('pick-text').value = pickText(PICK.fmt); copyText(pickText(PICK.fmt)) })
+  document.querySelectorAll('.pick-copy').forEach(b => b.onclick = () => { document.querySelectorAll('.pick-copy').forEach(x => x.classList.remove('active')); b.classList.add('active'); PICK.fmt = b.dataset.fmt; $('pick-text').value = pickText(PICK.fmt); syncTextBox(); copyText(pickText(PICK.fmt)) })
+  $('pick-text-copy').onclick = copyTextBox
+  $('pick-text-select').onclick = () => { const ta = $('pick-text'); ta.focus(); ta.select() }
+  $('pick-text').onclick = e => { if (e.detail === 3) e.target.select() }
 }
 
 const PK = { pos: 0, timer: null, latest: '' }

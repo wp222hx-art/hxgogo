@@ -134,7 +134,16 @@ export const analysisPage = () => `<!DOCTYPE html>
       <span class="text-[10px] text-slate-500 ml-auto">图例：<span class="pk-core px-1 rounded">核心</span> <span class="pk-main px-1 rounded">主力</span> <span class="pk-edge px-1 rounded">外围</span>（点击任一号码可单独复制）</span>
     </div>
     <div id="pick-grid" class="pick-grid"></div>
-    <textarea id="pick-text" class="w-full mt-2 bg-slate-950 border border-slate-800 rounded p-2 text-[11px] font-mono text-slate-300 h-20" readonly></textarea>
+    <div class="mt-3 rounded-lg border border-amber-500/40 bg-slate-950/80 p-2" id="pick-text-box">
+      <div class="flex flex-wrap items-center gap-2 mb-2">
+        <span class="text-xs text-slate-300"><i class="fas fa-clipboard-list text-amber-400 mr-1"></i>号码文本（<span id="pick-text-count">0</span> 注 · <span id="pick-text-fmt">空格分隔</span>）</span>
+        <span class="text-[10px] text-slate-500">下方框内即将复制的全部内容，与网格一致</span>
+        <button id="pick-text-copy" class="ml-auto px-4 py-1.5 rounded-md bg-amber-400 hover:bg-amber-300 text-black text-sm font-bold shadow"><i class="fas fa-copy mr-1"></i>一键复制全部号码</button>
+        <button id="pick-text-select" class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs border border-slate-700"><i class="fas fa-i-cursor mr-1"></i>全选</button>
+        <span id="pick-text-copied" class="text-xs text-emerald-400 hidden"><i class="fas fa-check mr-1"></i>已复制 <span id="pick-text-copied-n"></span> 注到剪贴板</span>
+      </div>
+      <textarea id="pick-text" class="w-full bg-slate-950 border border-slate-800 rounded p-2 text-[11px] font-mono text-slate-300 h-24 focus:border-amber-400 outline-none" readonly></textarea>
+    </div>
     <div class="grid lg:grid-cols-3 gap-3 mt-3">
       <div class="kpi lg:col-span-2" id="pick-bt"></div>
       <div class="kpi text-[11px] text-slate-400" id="pick-disc"></div>
