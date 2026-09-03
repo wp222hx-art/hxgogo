@@ -345,11 +345,13 @@ async function loadReconcile() {
 function bindQkltj() {
   document.querySelectorAll('.qk-tab').forEach(b => b.onclick = () => {
     document.querySelectorAll('.qk-tab').forEach(x => x.classList.remove('active')); b.classList.add('active')
-    qk.code = b.dataset.code; qk.lastExpect = null; loadQkltjTable()
+    qk.code = b.dataset.code; qk.lastExpect = null; loadQkltjTable(); if (window.SyncBar) SyncBar.refresh()
   })
   $('qk-limit').onchange = (e) => { qk.limit = Number(e.target.value); loadQkltjTable() }
   loadQkltjTable(); loadReconcile()
-  qk.timer = setInterval(() => { loadQkltjTable(); loadReconcile() }, 20000)
+  // 实时：SyncBar 按开奖节拍轮询官方接口；期号变化 / 手动同步后立即刷新表格与对账
+  if (window.SyncBar) SyncBar.mount('sync-bar', { getSource: () => 'qkltj:' + qk.code, onNewData: () => { loadQkltjTable(); loadReconcile() }, onForced: () => { qk.lastExpect = null; loadQkltjTable(); loadReconcile() } })
+  qk.timer = setInterval(() => { loadQkltjTable(); loadReconcile() }, 30000) // 兜底
 }
 
 // ---------- 启动 ----------

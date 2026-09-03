@@ -84,6 +84,14 @@
 - 表格列：统计时间 | 奖期 | 区块（Tronscan/Etherscan 链接） | 区块哈希值（官方取用的最后 5 个数字字符 **红色高亮**） | 运算结果
 - 支持切换 6001/6002/6003/6004/7001、20~100 期、每 20s 自动刷新、新一期首行闪动；「接口原文核对」链接直通 `/api/qkltj/raw`
 
+### 实时同步机制（与 api.qkltj.com 逐字段一致）+ 手动同步
+- **按开奖节拍调度（非固定轮询）**：记录每源 `latest_open_ms`，下一期理论发布时间 = latest_open + interval（+15s 官方入库延迟）之前不请求；到点后每 4s 追赶，拿到新期即停。分分彩实测新期检测延迟 **≈ 2~3s**（官方 openTime 03:46:14 → 本站 03:46:16），每次仅拉 5 行
+- **周期审计**：每 5 分钟拉 100 行逐字段（block/hash/opennumber/openTime）与本地比对，差异即 UPSERT 修正并记录 `audit_rows/diff/fixed`
+- **缓存版本化**：所有分析接口缓存 key 含 `dataVersion(source)`，任何写入即 bump 并清空该源缓存 → 同步后即一致，不会拿到旧结果
+- **缓存可见**：命中缓存的响应带 `cached:true / cache_age_ms` 与 `X-Cache: HIT` 头；前端出现「缓存 Ns · 点击刷新」黄色徽标，点击即强制同步
+- **手动同步按钮「立即同步」**（首页统计结果卡 / 分析页顶部状态条）：`POST /api/sync?force=1` → 拉 100 行逐字段核对 → 修正 → 清缓存 → 展示报告（新增/修正/一致条数、最新期、延迟、逐条差异）
+- **状态条**：绿点=实时一致、黄点=滞后追赶、红点=接口异常；显示最新期与时间、下一期倒计时、审计结果、上次拉取延迟、库内期数；无需 cron（每次前端心跳携带 `tick=1` 由服务端顺带执行到点同步）
+
 ### 「统计时间 ↔ 区块」对应口径（逆向 qkltj.com/js/common.js + 链上 60 期逐块验证）
 - **取块规则**：哈希分分彩固定取每分钟 **03 秒** 的 TRON 区块（03 秒无块取下一个）；实测 60/60 期区块时间戳秒位 = 03，相邻期区块号恒差 20；ETH 分分彩取每分钟 11 秒区块
 - **奖期 expect** = `YYYYMMDD` + 当日分钟序号(4 位, UTC+8)，如 `202609030670` = 09-03 11:10
@@ -125,6 +133,8 @@
 | GET | `/api/analysis/kline?source=&digit=0-9&pos=any\|0-4&bucket=1-50&window=5-200` | **幸运数字频率 K 线**（OHLC/MA/遗漏/z 分数/10 数字概况）+ 总和/大率/单率/龙率 K 线 |
 | GET | `/api/analysis/recommend?source=&steps=` | **本期推荐**：5 玩法 19 组 81 候选概率 + 幸运数字综合榜 + 预见性策略 |
 | GET | `/api/qkltj/table?code=6001&limit=30` | 首页统计结果表：官方字段 + `highlight`（哈希中取用数字下标）+ `mismatch` |
+| GET | `/api/sync/status?source=&tick=1` | 同步状态（latest_expect / lag_ms / expected_publish_ms / audit / fresh / version）；`tick=1` 顺带执行到点同步 |
+| POST | `/api/sync?source=&force=1` | 同步；`force=1` 拉 100 行逐字段核对修正并清空分析缓存，返回 `{fetched,inserted,updated,unchanged,consistent,diffs[]}` |
 | GET | `/api/qkltj/reconcile?limit=30` | 本站五位厅 vs 官方 6001 逐期对账（同期号→区块/哈希是否一致） |
 | GET | `/api/qkltj/raw?code=6001&rows=1` | **严格直通** qkltj 接口原文（逐期一致性核对） |
 

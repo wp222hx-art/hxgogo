@@ -53,6 +53,8 @@ export const analysisPage = () => `<!DOCTYPE html>
 </header>
 
 <main class="max-w-7xl mx-auto px-4 py-5 space-y-5">
+  <!-- 实时同步状态条 + 手动同步 -->
+  <div id="sync-bar"></div>
   <!-- 数据源 KPI -->
   <section id="kpis" class="grid grid-cols-2 md:grid-cols-6 gap-3"></section>
 
@@ -204,5 +206,6 @@ export const analysisPage = () => `<!DOCTYPE html>
   </section>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+<script src="/static/sync.js"></script>
 <script src="/static/analysis.js"></script>
 </body></html>`

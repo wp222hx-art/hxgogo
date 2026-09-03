@@ -150,6 +150,7 @@ export const page = () => `<!DOCTYPE html>
 <!-- 官方逐期统计结果（严格按 api.qkltj.com/api/draw-result 字段） -->
 <section id="qkltj-table-section" class="max-w-7xl mx-auto px-4 pb-5">
   <article class="card">
+    <div id="sync-bar" class="mb-3"></div>
     <header class="flex flex-wrap items-center gap-3 mb-3">
       <h2 class="font-bold text-lg"><i class="fas fa-table-list text-amber-400 mr-2"></i>统计结果 <span id="qk-name" class="text-slate-400 text-sm font-normal ml-1">哈希分分彩</span></h2>
       <nav id="qk-tabs" class="flex gap-1 text-xs">
@@ -162,7 +163,7 @@ export const page = () => `<!DOCTYPE html>
       <select id="qk-limit" class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
         <option value="20">20 期</option><option value="30" selected>30 期</option><option value="50">50 期</option><option value="100">100 期</option>
       </select>
-      <span id="qk-status" class="text-xs text-slate-500 ml-auto"><i class="fas fa-satellite-dish mr-1"></i>数据源 api.qkltj.com · 每 20s 刷新</span>
+      <span id="qk-status" class="text-xs text-slate-500 ml-auto"><i class="fas fa-satellite-dish mr-1"></i>数据源 api.qkltj.com · 按开奖节拍实时同步</span>
       <a id="qk-raw" href="/api/qkltj/raw?code=6001&rows=1" target="_blank" class="text-xs text-sky-400 hover:underline"><i class="fas fa-code mr-1"></i>接口原文核对</a>
     </header>
     <div class="overflow-x-auto">
@@ -232,6 +233,7 @@ export const page = () => `<!DOCTYPE html>
 <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 hidden px-4 py-2 rounded-lg text-sm shadow-xl"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+<script src="/static/sync.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>`

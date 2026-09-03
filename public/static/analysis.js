@@ -22,7 +22,10 @@ async function init() {
   $('market-sel').onchange = e => { S.market = e.target.value; loadPredict() }
   $('steps-sel').onchange = loadPredict; $('limit-sel').onchange = loadPredict
   $('pk-bucket').onchange = () => loadParity(); $('pk-limit').onchange = () => loadParity()
-  $('sync-btn').onclick = async () => { $('sync-btn').innerHTML = '<i class="fas fa-rotate fa-spin mr-1"></i>同步中'; await api.post('/sync?force=1&source=' + S.source); $('sync-btn').innerHTML = '<i class="fas fa-rotate mr-1"></i>同步'; loadAll() }
+  $('sync-btn').onclick = () => SyncBar.force()
+  // 拦截所有分析接口响应：命中服务端缓存时显示「缓存」徽标（点击即可强制同步）
+  api.interceptors.response.use(r => { if (r.data && r.data.cached) SyncBar.noteCache(r.data); return r })
+  SyncBar.mount('sync-bar', { getSource: () => S.source, onNewData: () => loadAll(), onForced: () => loadAll() })
   loadAll()
 }
 async function loadAll() { renderKpis(); await Promise.all([loadRecommend(), loadParity(), loadKline(), loadOverview(), loadPredict(), loadStats()]) }

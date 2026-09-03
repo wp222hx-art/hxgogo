@@ -5,7 +5,7 @@ import { getNowBlock, findFirstBlockAtOrAfter, type TronBlock } from './tron'
 import { page } from './page'
 import { analysisPage } from './page_analysis'
 import { computeOutcomes5, judge5, isBet5Type, ODDS5, type Bet5Type } from './engine5'
-import { SOURCES, isSource, syncSource, loadDraws } from './sync'
+import { SOURCES, isSource, syncSource, loadDraws, syncStatus, dataVersion, onInvalidate } from './sync'
 import { MARKETS, marketByKey, buildSeries, backtest, ensemble, stats as drawStats, MECHANISMS } from './analysis'
 import { kline, marketKlines } from './kline'
 import { recommend } from './recommend'
@@ -321,6 +321,8 @@ app.get('/api/leaderboard', async (c) => {
 
 // ------------------------------------------------------------------ API: 数据采集 & 分析
 const analysisCache = new Map<string, { t: number; v: any }>()
+// 数据写入 → 立刻清掉该源的分析缓存（保证「同步后即一致」）
+onInvalidate((source) => { for (const k of [...analysisCache.keys()]) if (k.includes(source)) analysisCache.delete(k) })
 async function drawsFor(db: D1Database, source: string, limit = 1000) {
   if (source.startsWith('qkltj:')) await syncSource(db, source)
   return await loadDraws(db, source, limit)
@@ -335,9 +337,22 @@ app.get('/api/sources', async (c) => {
 app.post('/api/sync', async (c) => {
   const source = c.req.query('source')
   const targets = source && isSource(source) ? [source] : Object.keys(SOURCES).filter(s => s.startsWith('qkltj:'))
+  const force = c.req.query('force') === '1'
   const out: any = {}
-  for (const s of targets) out[s] = await syncSource(c.env.DB, s, c.req.query('force') === '1')
-  return c.json({ ok: true, result: out })
+  for (const s of targets) out[s] = await syncSource(c.env.DB, s, force)
+  const status: any = {}
+  for (const s of targets) status[s] = await syncStatus(c.env.DB, s)
+  return c.json({ ok: true, force, result: out, status })
+})
+
+/** 同步状态：最新期、下一期预计时间、审计结果、数据版本（前端状态条 & 手动同步按钮的依据） */
+app.get('/api/sync/status', async (c) => {
+  const source = c.req.query('source')
+  const targets = source && isSource(source) ? [source] : Object.keys(SOURCES).filter(s => s.startsWith('qkltj:'))
+  if (c.req.query('tick') === '1') for (const s of targets) await syncSource(c.env.DB, s) // 顺带触发到点同步
+  const status: any = {}
+  for (const s of targets) status[s] = await syncStatus(c.env.DB, s)
+  return c.json({ ok: true, status })
 })
 
 /** 哈希中被用作运算结果的 5 个数字字符下标（从尾部倒数 5 个 0-9 字符） */
@@ -356,7 +371,7 @@ app.get('/api/qkltj/table', async (c) => {
   const rows = await drawsFor(c.env.DB, source, limit)
   const cfg = SOURCES[source]
   return c.json({
-    ok: true, code, name: cfg.name, chain: cfg.chain, intervalMs: cfg.intervalMs,
+    ok: true, code, name: cfg.name, chain: cfg.chain, intervalMs: cfg.intervalMs, sync: await syncStatus(c.env.DB, source),
     rows: rows.map((d: any) => ({
       openTime: d.open_time || new Date(d.open_ms + 8 * 3600_000).toISOString().slice(0, 19).replace('T', ' '),
       expect: d.expect, block: d.block, hash: d.hash,
@@ -420,8 +435,8 @@ app.get('/api/analysis/predict', async (c) => {
   const steps = Math.min(300, Number(c.req.query('steps') || 150))
   const rows = await drawsFor(c.env.DB, source, limit)
   const latest = rows[0]?.expect || ''
-  const ck = `${source}|${mk}|${limit}|${steps}|${latest}`
-  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) return c.json(hit.v)
+  const ck = `${source}|${mk}|${limit}|${steps}|${latest}|v${dataVersion(source)}`
+  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) { c.header('X-Cache', 'HIT'); return c.json({ ...hit.v, cached: true, cached_ms: hit.t, cache_age_ms: now() - hit.t }) }
   const series = buildSeries(rows as any, m)
   const bt = backtest(series, m, steps)
   const en = ensemble(series, m, bt.res)
@@ -440,8 +455,8 @@ app.get('/api/analysis/overview', async (c) => {
   if (!isSource(source)) return bad(c, 'unknown source')
   const rows = await drawsFor(c.env.DB, source, 600)
   const latest = rows[0]?.expect || ''
-  const ck = `ov|${source}|${latest}`
-  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) return c.json(hit.v)
+  const ck = `ov|${source}|${latest}|v${dataVersion(source)}`
+  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) { c.header('X-Cache', 'HIT'); return c.json({ ...hit.v, cached: true, cached_ms: hit.t, cache_age_ms: now() - hit.t }) }
   const out = MARKETS.filter(m => !m.key.startsWith('pos-digit')).map(m => {
     const s = buildSeries(rows as any, m); const bt = backtest(s, m, 60); const en = ensemble(s, m, bt.res)
     const best = [...bt.res].sort((a, b) => b.acc - a.acc)[0]
@@ -462,8 +477,8 @@ app.get('/api/analysis/parity', async (c) => {
   const limit = Math.max(60, Math.min(1000, Number(c.req.query('limit') || 500)))
   const rows = await drawsFor(c.env.DB, source, limit)
   const latest = rows[0]?.expect || ''
-  const ck = `pk|${source}|${pos}|${bucket}|${limit}|${latest}`
-  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 30_000) return c.json(hit.v)
+  const ck = `pk|${source}|${pos}|${bucket}|${limit}|${latest}|v${dataVersion(source)}`
+  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 30_000) { c.header('X-Cache', 'HIT'); return c.json({ ...hit.v, cached: true, cached_ms: hit.t, cache_age_ms: now() - hit.t }) }
   const src = SOURCES[source as keyof typeof SOURCES]
   const v = { ok: true, source, interval_ms: src.intervalMs, ...parityKline(rows as any, { pos, bucket }) }
   analysisCache.set(ck, { t: now(), v })
@@ -481,8 +496,8 @@ app.get('/api/analysis/kline', async (c) => {
   const limit = Math.min(1000, Number(c.req.query('limit') || 1000))
   const rows = await drawsFor(c.env.DB, source, limit)
   const latest = rows[0]?.expect || ''
-  const ck = `kl|${source}|${digit}|${pos}|${bucket}|${window}|${limit}|${latest}`
-  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) return c.json(hit.v)
+  const ck = `kl|${source}|${digit}|${pos}|${bucket}|${window}|${limit}|${latest}|v${dataVersion(source)}`
+  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) { c.header('X-Cache', 'HIT'); return c.json({ ...hit.v, cached: true, cached_ms: hit.t, cache_age_ms: now() - hit.t }) }
   const v = { ok: true, source, latest_expect: latest, ...kline(rows as any, { digit, pos, bucket, window }), markets: marketKlines(rows as any, bucket, window) }
   analysisCache.set(ck, { t: now(), v })
   return c.json(v)
@@ -495,8 +510,8 @@ app.get('/api/analysis/recommend', async (c) => {
   const steps = Math.min(150, Number(c.req.query('steps') || 60))
   const rows = await drawsFor(c.env.DB, source, 600)
   const latest = rows[0]?.expect || ''
-  const ck = `rc|${source}|${steps}|${latest}`
-  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) return c.json(hit.v)
+  const ck = `rc|${source}|${steps}|${latest}|v${dataVersion(source)}`
+  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) { c.header('X-Cache', 'HIT'); return c.json({ ...hit.v, cached: true, cached_ms: hit.t, cache_age_ms: now() - hit.t }) }
   const src = SOURCES[source as keyof typeof SOURCES]
   const nextExpect = latest && /^\d+$/.test(latest) ? String(BigInt(latest) + 1n) : ''
   const v = { ok: true, source, latest_expect: latest, next_expect: nextExpect, interval_ms: src.intervalMs, ...recommend(rows as any, steps) }
