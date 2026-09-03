@@ -50,6 +50,7 @@ textarea.nums { width:100%; height:110px; background:#fff; color:#111; border-ra
     <div class="flex items-center gap-2">
       <select id="source-sel" class="bg-slate-800 text-sm rounded-lg px-3 py-1.5 border border-slate-700"></select>
       <button id="sync-btn" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-rotate mr-1"></i>同步</button>
+      <a href="/ai" class="inline-flex text-xs bg-pink-500 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-brain mr-1"></i>AI 推荐</a>
       <a href="/analysis" class="hidden md:inline-flex text-xs bg-cyan-600 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-chart-line mr-1"></i>量化分析</a>
       <a href="/" class="text-xs bg-amber-500 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-dice mr-1"></i>返回游戏</a>
     </div>
@@ -62,26 +63,14 @@ textarea.nums { width:100%; height:110px; background:#fff; color:#111; border-ra
   <!-- 顶部 KPI -->
   <section id="kpis" class="grid grid-cols-2 md:grid-cols-6 gap-3"></section>
 
-  <!-- 本期 AI 推荐 500 注（主入口） -->
-  <section class="card border-pink-500/40" id="ai-pick-section" style="border-color:#f472b655">
-    <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
-      <h2 class="font-bold text-lg"><i class="fas fa-brain mr-2 text-pink-400"></i>本期 AI 推荐 · <span id="pick-expect" class="font-mono text-amber-300">—</span> <span class="text-xs text-slate-500 font-normal ml-2" id="pick-meta"></span></h2>
-      <div class="flex items-center gap-2 text-xs">
-        <span id="pick-status" class="px-2 py-1 rounded-lg bg-slate-800 text-slate-400"></span>
-        <select id="pick-fmt" class="bg-slate-800 rounded-lg px-2 py-1.5 border border-slate-700"><option value="space">空格分隔</option><option value="comma">逗号分隔</option><option value="line">每行一个</option></select>
-        <button id="pick-copy" class="bg-pink-500 hover:bg-pink-400 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-copy mr-1"></i>一键复制 500 注</button>
-        <span id="pick-copied" class="hidden text-emerald-400"><i class="fas fa-check mr-1"></i>已复制</span>
-      </div>
+  <!-- AI 推荐入口（详情已独立到 /ai 页） -->
+  <a href="/ai" id="ai-pick-link" class="card flex flex-wrap items-center justify-between gap-3 hover:border-pink-400/60 transition" style="border-color:#f472b655">
+    <div class="flex items-center gap-3">
+      <span class="w-10 h-10 rounded-xl bg-gradient-to-br from-pink-400 to-purple-600 grid place-items-center text-black font-black">AI</span>
+      <div><div class="font-bold">本期 AI 推荐 · 500 注 · 一键复制</div><div class="text-xs text-slate-400">已独立成页：每期实时给出 AI 策略的 500 注与推理，含逐期命中记录</div></div>
     </div>
-    <div class="grid lg:grid-cols-5 gap-4">
-      <div class="lg:col-span-3 space-y-2">
-        <div id="pick-reason" class="ai-card"></div>
-        <textarea id="pick-text" class="nums" readonly spellcheck="false" style="height:90px"></textarea>
-        <div class="num-grid" id="pick-grid" style="max-height:220px"></div>
-      </div>
-      <div class="lg:col-span-2 space-y-2" id="pick-breakdown"></div>
-    </div>
-  </section>
+    <span class="text-xs bg-pink-500 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-arrow-right mr-1"></i>打开 AI 推荐页</span>
+  </a>
 
   <!-- 规则说明 -->
   <section class="card">

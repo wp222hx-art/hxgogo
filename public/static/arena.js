@@ -1,7 +1,7 @@
 // ================= HashArena 策略竞技场（自动战绩榜） =================
 const $ = (id) => document.getElementById(id)
 const api = axios.create({ baseURL: '/api' })
-const S = { source: new URLSearchParams(location.search).get('source') || 'qkltj:6001', mode: 'all', sources: [], data: null, strat: 'meta', fmt: 'space', ec: {}, histN: 30, defs: [], pickFmt: 'space', pick: null, pickTimer: null }
+const S = { source: new URLSearchParams(location.search).get('source') || 'qkltj:6001', mode: 'all', sources: [], data: null, strat: 'meta', fmt: 'space', ec: {}, histN: 30, defs: [] }
 const pct = (x, d = 1) => x === null || x === undefined ? '—' : (x * 100).toFixed(d) + '%'
 const sgn = (x, d = 0) => x === null || x === undefined ? '—' : (x > 0 ? '+' : '') + Number(x).toFixed(d)
 const fmtT = (ms) => new Date(ms).toLocaleString('zh-CN', { hour12: false })
@@ -25,9 +25,6 @@ async function init() {
   $('cur-copy').onclick = copyCurrent
   $('cur-text').onclick = function () { this.select() }
   $('hist-n').onchange = e => { S.histN = Number(e.target.value); renderHist() }
-  $('pick-fmt').onchange = e => { S.pickFmt = e.target.value; renderPickText() }
-  $('pick-copy').onclick = copyPick
-  $('pick-text').onclick = function () { this.select() }
   loadReport()
   $('modal-close').onclick = () => $('modal').classList.add('hidden'); $('modal').onclick = e => { if (e.target === $('modal')) $('modal').classList.add('hidden') }
   $('rules').innerHTML = `${S.defs.length} 个策略并行，每期开奖前各自锁定 <b class="text-slate-200">${defs.data.count} 注三位号</b>（万/千/百），INSERT OR IGNORE 首次为准、不可改写；开奖后自动结算命中/名次/盈亏（每注 1 单位，赔率 ${defs.data.odds}×）。
@@ -41,7 +38,7 @@ async function load() {
   $('board-meta').textContent = '计算中…'
   const [meta, r] = await Promise.all([api.get('/sources'), api.get('/arena/board', { params: { source: S.source, mode: S.mode, limit: 300 } }), loadRetired()])
   S.sources = meta.data.sources; S.data = r.data
-  renderKpis(); renderBoard(); renderCharts(); renderWeights(); renderPlans(); renderAiPlans(); renderAi(); renderPick(r.data.ai && r.data.ai.pick, r.data.ai); renderCurrent(); renderHist()
+  renderKpis(); renderBoard(); renderCharts(); renderWeights(); renderPlans(); renderAiPlans(); renderAi(); renderCurrent(); renderHist()
   $('disclaimer').innerHTML = '<i class="fas fa-triangle-exclamation mr-1"></i>' + r.data.disclaimer
   $('odds-1').textContent = r.data.odds; $('meta-k').textContent = r.data.meta_k
   $('board-meta').textContent = `已结算 ${r.data.n_periods} 期 · 待开 ${r.data.pending} 期 · 计算 ${r.data.compute_ms}ms`
@@ -190,81 +187,7 @@ function renderAi() {
   </div>`).join('') : '<div class="text-xs text-slate-500">暂无记录</div>'
 }
 
-// ================= 本期 AI 推荐 500 注（主入口） =================
-function renderPickText() {
-  const nums = S.pick && S.pick.numbers || []
-  $('pick-text').value = S.pickFmt === 'line' ? nums.join('\n') : S.pickFmt === 'comma' ? nums.join(',') : nums.join(' ')
-}
-async function copyPick() {
-  const t = $('pick-text').value; if (!t) return
-  let ok = false
-  try { await navigator.clipboard.writeText(t); ok = true } catch (e) {}
-  if (!ok) { const ta = $('pick-text'); ta.removeAttribute('readonly'); ta.focus(); ta.select(); ok = document.execCommand('copy'); ta.setAttribute('readonly', '') }
-  const el = $('pick-copied'); el.classList.remove('hidden'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.add('hidden'), 2200)
-}
-/** 推理中 → 每 4 秒轮询轻量接口，直到本期 500 注就绪 */
-async function pollPick() {
-  clearTimeout(S.pickTimer)
-  try { const r = (await api.get('/arena/pick', { params: { source: S.source } })).data; if (r.pick) { renderPick(r.pick, { enabled: true, model: r.model, effort: r.effort, record: r.record }); if (r.pick.status === 'ready' || r.pick.status === 'fallback') load() } }
-  catch (e) {}
-}
-function renderPick(pick, ai) {
-  S.pick = pick; clearTimeout(S.pickTimer)
-  const sec = $('ai-pick-section')
-  if (!ai || !ai.enabled) { sec.classList.add('hidden'); return }
-  sec.classList.remove('hidden')
-  const st = S.data && S.data.strategies.find(s => s.key === 'ai')
-  const rec = st && st.n ? `AI 已实盘 ${st.n} 期 · 命中 ${st.hits}（${pct(st.rate)}）· 盈亏 ${sgn(st.pnl)}` : (ai.record ? `AI 已实盘 ${ai.record.n} 期 · 命中 ${ai.record.hits}（${pct(ai.record.rate)}）· 盈亏 ${sgn(ai.record.pnl)}` : 'AI 尚无结算战绩')
-  if (!pick) {
-    $('pick-expect').textContent = '—'; $('pick-meta').textContent = '等待本期生成（数据源需 ≥120 期历史）'; $('pick-status').innerHTML = ''
-    $('pick-reason').innerHTML = `<div class="text-xs text-slate-500">本期号码将在下一次心跳自动生成…</div>`; $('pick-text').value = ''; $('pick-grid').innerHTML = ''; $('pick-breakdown').innerHTML = ''
-    S.pickTimer = setTimeout(pollPick, 4000); return
-  }
-  $('pick-expect').textContent = pick.expect
-  $('pick-meta').textContent = `基于第 ${pick.based_on} 期及之前全部数据 · ${rec}`
-  const f = pick.forecast
-  if (pick.status === 'thinking') {
-    $('pick-status').innerHTML = `<i class="fas fa-spinner fa-spin mr-1 text-pink-400"></i>${ai.model} 推理中（约 10-30 秒）`
-    $('pick-reason').innerHTML = `<div class="text-sm text-slate-300"><i class="fas fa-brain text-pink-400 mr-1"></i>大模型正在读取近 60 期走势、各位频率/遗漏、各策略滚动战绩以及它自己上几期的复盘，生成本期 500 注…</div>`
-    $('pick-text').value = ''; $('pick-grid').innerHTML = ''; $('pick-breakdown').innerHTML = ''
-    S.pickTimer = setTimeout(pollPick, 4000); return
-  }
-  $('pick-status').innerHTML = pick.fallback
-    ? `<i class="fas fa-triangle-exclamation text-amber-400 mr-1"></i>本期 AI 调用失败（${pick.error || '超时'}）→ 已用「组合最优」500 注兜底`
-    : `<i class="fas fa-circle text-emerald-400 mr-1 text-[8px]"></i>${pick.model} · ${pick.latency_ms}ms · ${pick.tokens || '—'} tokens · 已锁定 ${pick.count} 注`
-  const pw = f && f.pos_weights
-  const sb = f && f.strategy_blend && Object.keys(f.strategy_blend).length ? Object.entries(f.strategy_blend).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, v]) => { const df = S.defs.find(x => x.key === k); return `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">${df ? df.short : k} ${Math.round(v)}</span>` }).join(' ') : ''
-  $('pick-reason').innerHTML = f ? `
-    <div class="text-sm"><i class="fas fa-compass text-pink-400 mr-1"></i><b class="text-slate-100">${f.regime || '—'}</b> <span class="text-xs text-slate-500 ml-1">AI 自评把握 ${pct(f.confidence, 0)}</span></div>
-    <div class="mt-2 text-[11px] text-pink-300 font-bold"><i class="fas fa-lightbulb mr-1"></i>推理依据</div>
-    <div class="text-xs text-slate-200 leading-relaxed">${f.reasoning || ''}</div>
-    ${f.pick_plan ? `<div class="mt-2 text-[11px] text-pink-300 font-bold"><i class="fas fa-bullseye mr-1"></i>这 500 注是怎么选的</div><div class="text-xs text-slate-200 leading-relaxed">${f.pick_plan}</div>` : ''}
-    ${sb ? `<div class="text-[11px] mt-2 flex flex-wrap gap-1 items-center"><span class="text-slate-500">融合策略权重</span> ${sb}</div>` : ''}
-    ${f.boost && f.boost.length ? `<div class="text-[11px] mt-1.5"><span class="text-slate-500">加注</span> <span class="mono text-emerald-300">${f.boost.slice(0, 15).join(' ')}</span></div>` : ''}
-    ${f.avoid && f.avoid.length ? `<div class="text-[11px] mt-1"><span class="text-slate-500">回避</span> <span class="mono text-red-300">${f.avoid.slice(0, 15).join(' ')}</span></div>` : ''}
-    ${f.next_focus ? `<div class="text-[11px] text-pink-300/80 mt-2"><i class="fas fa-flag mr-1"></i>下期验证：${f.next_focus}</div>` : ''}
-    <div class="text-[10px] text-slate-500 mt-2">${pick.created_ms ? fmtT(pick.created_ms) : ''} · 开奖后自动结算并反馈给 AI 复盘</div>`
-    : `<div class="text-xs text-slate-400">本期 AI 推理未成功（${pick.error || '—'}），以下 500 注来自「组合最优」策略（各基础策略按近 40 期战绩加权融合），供参考。</div>`
-  renderPickText()
-  $('pick-grid').innerHTML = (pick.numbers || []).map((n, i) => `<span title="#${i + 1}" class="${f && f.boost && f.boost.includes(n) ? 'hit' : ''}">${n}</span>`).join('')
-  const b = pick.breakdown
-  if (!b) { $('pick-breakdown').innerHTML = ''; return }
-  const N = b.count
-  const posHtml = ['万', '千', '百'].map((nm, p) => { const cnt = b.pos_count[p]; const m = Math.max(...cnt, 1); const foc = b.pos_focus[p].map(x => x.d).join(' ')
-    return `<div class="mt-1"><div class="flex justify-between text-[11px]"><span class="text-slate-400">${nm}位 · 500 注中各数字注数</span><span class="text-pink-300 mono">重点 ${foc || '均匀'}</span></div>
-      <div class="pw" style="height:52px">${cnt.map((v, i) => `<div class="text-center" title="${nm}位 ${i}：${v} 注${pw ? '（AI 权重 ' + pw[p][i] + '）' : ''}"><div class="b" style="height:${Math.max(2, v / m * 34)}px;${v > N / 10 ? '' : 'opacity:.45'}"></div><div class="text-slate-500">${i}</div></div>`).join('')}</div></div>` }).join('')
-  const dist = (o) => Object.entries(o).map(([k, v]) => `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">${k} ${v}</span>`).join(' ')
-  const cons = b.consensus.slice(0, 6).map(c => { const df = defOf(c.strategy); return `<div class="flex items-center gap-2 text-[11px]"><span style="color:${df.color}" class="w-16 truncate">${df.short}</span><div class="wbar flex-1"><div style="width:${c.ratio * 100}%;background:${df.color}"></div></div><span class="mono text-slate-400 w-14 text-right">${c.overlap} 注</span></div>` }).join('')
-  $('pick-breakdown').innerHTML = `<div class="ai-card">
-    <div class="text-[11px] text-pink-300 font-bold mb-1"><i class="fas fa-layer-group mr-1"></i>500 注结构拆解（由号码实际统计，非 AI 口述）</div>
-    ${posHtml}
-    <div class="text-[11px] mt-3 flex flex-wrap gap-1 items-center"><span class="text-slate-500 mr-1">形态</span>${dist(b.shape)}</div>
-    <div class="text-[11px] mt-1 flex flex-wrap gap-1 items-center"><span class="text-slate-500 mr-1">万位</span>${dist(b.wan)}</div>
-    <div class="text-[11px] mt-1 flex flex-wrap gap-1 items-center"><span class="text-slate-500 mr-1">和值</span>${dist({ 大: b.sum_big, 小: b.sum_small })}</div>
-    ${f ? `<div class="text-[11px] mt-2 text-slate-400">加注号入选 <b class="text-emerald-300">${b.boost_in.length}</b>/${f.boost.length} · 回避号剔除 <b class="text-red-300">${b.avoid_out.length}</b>/${f.avoid.length}${b.avoid_in.length ? ` <span class="text-amber-300">（${b.avoid_in.length} 个回避号仍因综合得分高而保留）</span>` : ''}</div>` : ''}
-    <div class="text-[11px] text-slate-500 mt-3 mb-1">与其他策略的重合（共识度）</div>${cons}
-  </div>`
-}
+// 本期 AI 推荐 500 注已独立到 /ai 页面（public/static/ai.js）
 async function loadReport() {
   try { const r = (await api.get('/arena/report', { params: { source: S.source } })).data; if (r.report) showReport(r.report) } catch {}
 }

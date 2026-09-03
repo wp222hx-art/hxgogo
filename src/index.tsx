@@ -12,8 +12,9 @@ import { recommend } from './recommend'
 import { parityKline } from './parity_kline'
 import { pick } from './picker'
 import { recordPick, pickTrack } from './pick_track'
-import { autoArena, arenaBoard, arenaRound, replayArena, settleArena, STRATEGIES, ARENA_N, ARENA_ODDS, ARENA_MIN_HIST } from './arena'
+import { autoArena, arenaBoard, arenaRound, replayArena, settleArena, externalRound, nextOf, STRATEGIES, ARENA_N, ARENA_ODDS, ARENA_MIN_HIST } from './arena'
 import { arenaPage } from './page_arena'
+import { aiPage } from './page_ai'
 import { aiEnabled, aiModel, aiEffort, forecastFor, aiScores, aiHistory, generateReport, latestReport, aiExtraPlans, aiPlansMaintain, aiPick, type AiEnv } from './ai'
 import { listAiPlans } from './ai_plans'
 
@@ -328,7 +329,7 @@ app.get('/api/leaderboard', async (c) => {
 // ------------------------------------------------------------------ API: 数据采集 & 分析
 const analysisCache = new Map<string, { t: number; v: any }>()
 // 数据写入 → 立刻清掉该源的分析缓存（保证「同步后即一致」）
-onInvalidate((source) => { for (const k of [...analysisCache.keys()]) if (k.includes(source)) analysisCache.delete(k) })
+onInvalidate((source) => { for (const k of [...analysisCache.keys()]) if (k.includes(source)) analysisCache.delete(k); invalidateArena(source) })
 async function drawsFor(db: D1Database, source: string, limit = 1000) {
   if (source.startsWith('qkltj:')) await syncSource(db, source)
   return await loadDraws(db, source, limit)
@@ -355,7 +356,7 @@ app.post('/api/sync', async (c) => {
 app.get('/api/sync/status', async (c) => {
   const source = c.req.query('source')
   const targets = source && isSource(source) ? [source] : Object.keys(SOURCES).filter(s => s.startsWith('qkltj:'))
-  if (c.req.query('tick') === '1') for (const s of targets) { await syncSource(c.env.DB, s); await autoTrack(c.env.DB, s); await arenaTick(c.env.DB, s, c.env) } // 顺带触发到点同步 + 战绩快照 + 竞技场生成/结算
+  if (c.req.query('tick') === '1') for (const s of targets) { await syncSource(c.env.DB, s); await autoTrack(c.env.DB, s); await arenaTick(c.env.DB, s); if (await aiNeeded(c.env.DB, s)) bg(c, aiKick(c.env.DB, c.env, s)) } // 顺带触发到点同步 + 战绩快照 + 竞技场生成/结算
   const status: any = {}
   for (const s of targets) status[s] = await syncStatus(c.env.DB, s)
   return c.json({ ok: true, status })
@@ -523,19 +524,45 @@ async function autoTrack(db: D1Database, source: string) {
   }
 }
 
-/** 策略竞技场每期自动：结算已开奖 → 为下一期生成全部策略 500 注 → 顺带补齐最近漏掉的期（每 tick 最多 2 期，避免拖慢心跳） */
+/** 策略竞技场每期自动：结算已开奖 → 为下一期生成全部策略 500 注 → 顺带补齐最近漏掉的期（每 tick 最多 2 期，避免拖慢心跳）
+ *  AI 选手的模型调用（6-15s）不在请求内等待：由 aiKick 放到 waitUntil 后台执行，页面请求只做毫秒级 DB 读写 */
 const arenaBusy = new Set<string>()
-async function arenaTick(db: D1Database, source: string, env: AiEnv) {
+async function arenaTick(db: D1Database, source: string) {
   if (arenaBusy.has(source)) return
   arenaBusy.add(source)
-  try {
-    const rows = await loadDraws(db, source, 800)
-    // AI 选手：仅在配置了密钥时参赛；每期一次模型调用，失败则本期轮空（error 落库，不会重试刷费）
-    const external = aiEnabled(env) ? { key: 'ai', scorer: async (ctx: any) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights); return f ? aiScores(f, ctx.vec) : null } } : undefined
-    await autoArena(db, source, rows as any, 2, external)
-  }
+  try { const rows = await loadDraws(db, source, 800); await autoArena(db, source, rows as any, 2) }
   catch (e) { console.error('arena tick', e) }
   finally { arenaBusy.delete(source) }
+}
+/** 后台触发 AI 推理（进程内去重；INSERT OR IGNORE 兜底多实例）；返回 Promise 供 waitUntil */
+const aiBusy = new Set<string>()
+async function aiKick(db: D1Database, env: AiEnv, source: string) {
+  if (!aiEnabled(env) || aiBusy.has(source)) return
+  aiBusy.add(source)
+  try {
+    const rows = await loadDraws(db, source, 800)
+    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights); return f ? aiScores(f, ctx.vec) : null })
+    if (done) invalidateArena(source)
+  } catch (e) { console.error('ai kick', e) } finally { aiBusy.delete(source) }
+}
+/** 是否需要为当前待开期跑 AI（无 forecast 记录时才需要；有 error 记录 = 本期已放弃） */
+async function aiNeeded(db: D1Database, source: string) {
+  const latest = (await db.prepare('SELECT expect FROM draws WHERE source=? ORDER BY expect DESC LIMIT 1').bind(source).first<any>())?.expect
+  if (!latest) return false
+  const next = nextOf(latest)
+  const f = await db.prepare('SELECT 1 FROM ai_forecasts WHERE source=? AND expect=?').bind(source, next).first()
+  return !f
+}
+const bg = (c: any, job: Promise<any>) => { try { c.executionCtx.waitUntil(job) } catch { /* 非 Worker 环境：让其自然完成 */ } }
+
+/** 竞技场结果缓存：key 含数据版本 + 竞技场写入版本，TTL 30s；任何 arena 写入（生成/结算/AI 落库）都会 bump */
+const arenaCache = new Map<string, { t: number; v: any }>()
+const arenaVer = new Map<string, number>()
+const invalidateArena = (source: string) => { arenaVer.set(source, (arenaVer.get(source) || 0) + 1); for (const k of [...arenaCache.keys()]) if (k.includes(source)) arenaCache.delete(k) }
+async function cachedArena<T>(key: string, ttl: number, fn: () => Promise<T>): Promise<{ v: T; cached: boolean; age: number }> {
+  const hit = arenaCache.get(key); if (hit && now() - hit.t < ttl) return { v: hit.v, cached: true, age: now() - hit.t }
+  const v = await fn(); arenaCache.set(key, { t: now(), v }); if (arenaCache.size > 100) arenaCache.delete(arenaCache.keys().next().value!)
+  return { v, cached: false, age: 0 }
 }
 
 /** 自动报告节奏（实盘每 N 期一份；默认 0 = 关闭，只保留逐期推荐；需要时用 AI_REPORT_EVERY=30 开启） */
@@ -558,31 +585,55 @@ app.get('/api/arena/board', async (c) => {
   if (!isSource(source)) return bad(c, 'unknown source')
   const mode = (c.req.query('mode') || 'all') as 'all' | 'live' | 'replay'
   const limit = Number(c.req.query('limit') || 200)
-  if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)
-  await arenaTick(c.env.DB, source, c.env)      // 保证当前期已生成、已开奖期已结算
+  const tm: Record<string, number> = {}; let tt = now()
+  if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source); tm.sync = now() - tt; tt = now()
+  await arenaTick(c.env.DB, source); tm.tick = now() - tt; tt = now()      // 毫秒级：保证当前期基础策略已生成、已开奖期已结算
+  const gen = (await c.env.DB.prepare(`SELECT COUNT(*) n FROM arena_rounds WHERE source=? AND created_ms>?`).bind(source, now() - 3000).first<any>())?.n || 0
+  if (gen) invalidateArena(source)
+  if (await aiNeeded(c.env.DB, source)) bg(c, aiKick(c.env.DB, c.env, source))   // AI 推理放后台，不阻塞本请求
+  tm.check = now() - tt
   const t0 = now()
-  const r = await arenaBoard(c.env.DB, source, { mode, limit, extraPlans: await aiExtraPlans(c.env.DB, source) })
-  const retired = await aiPlansMaintain(c.env.DB, source, r)   // 样本外显著劣于基线 / 超出活跃上限 → 自动退役
-  const ai = { enabled: aiEnabled(c.env), model: aiEnabled(c.env) ? aiModel(c.env) : null, effort: aiEffort(c.env), report_every: reportEvery(c.env), history: await aiHistory(c.env.DB, source, 8), plans_retired_now: retired,
-    pick: aiEnabled(c.env) ? await aiPick(c.env.DB, source, r.current) : null }   // 本期 AI 推荐 500 注 + 推理 + 结构拆解
-  // 自动报告节奏（默认关闭）：实盘每 report_every 期结算后，在后台生成一份新报告（→ 抽取新规则 → 新回测方案）
-  if (aiEnabled(c.env) && reportEvery(c.env) > 0) { const job = autoReport(c.env.DB, c.env, source, r); try { c.executionCtx.waitUntil(job) } catch { await job } }
-  return c.json({ ok: true, source, mode, ...r, ai, compute_ms: now() - t0 })
+  const key = `board|${source}|${mode}|${limit}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
+  const { v: r, cached, age } = await cachedArena(key, 30_000, async () => {
+    const r = await arenaBoard(c.env.DB, source, { mode, limit, extraPlans: await aiExtraPlans(c.env.DB, source) })
+    const retired = await aiPlansMaintain(c.env.DB, source, r)
+    const ai = { enabled: aiEnabled(c.env), model: aiEnabled(c.env) ? aiModel(c.env) : null, effort: aiEffort(c.env), report_every: reportEvery(c.env), history: await aiHistory(c.env.DB, source, 8), plans_retired_now: retired }
+    return { ...r, ai }
+  })
+  if (aiEnabled(c.env) && reportEvery(c.env) > 0) bg(c, autoReport(c.env.DB, c.env, source, r))
+  c.header('X-Cache', cached ? 'HIT' : 'MISS')
+  return c.json({ ok: true, source, mode, ...r, cached, cache_age_ms: age, compute_ms: now() - t0, timing: { ...tm, board: now() - t0 } })
 })
 
-/** 本期 AI 推荐（轻量接口）：确保本期已生成（含 AI 推理）→ 返回 500 注 + 推理 + 结构拆解；未就绪时 status=thinking，前端轮询 */
+/** 本期 AI 推荐（轻量、极快）：只读 DB；AI 未就绪时 status=thinking 并在后台触发推理，前端轮询。history = 最近 N 期 AI 500 注 + 结算 */
 app.get('/api/arena/pick', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
   if (!aiEnabled(c.env)) return c.json({ ok: false, error: 'AI 未配置（需 OPENAI_API_KEY / OPENAI_BASE_URL）' }, 400)
+  const hist = Math.min(60, Number(c.req.query('history') || 12))
   if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)
-  await arenaTick(c.env.DB, source, c.env)
-  const pend = (await c.env.DB.prepare(`SELECT expect, strategy, based_on, numbers, count, coverage, weight FROM arena_rounds WHERE source=? AND scored_ms IS NULL ORDER BY expect DESC LIMIT 40`).bind(source).all<any>()).results
-  const expect = pend[0]?.expect
-  const current = expect ? { expect, based_on: pend[0].based_on, strategies: pend.filter(r => r.expect === expect) } : null
-  const pick = await aiPick(c.env.DB, source, current)
-  const st = (await c.env.DB.prepare(`SELECT COUNT(*) n, SUM(hit) h, SUM(pnl) pnl FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL`).bind(source).first<any>())
-  return c.json({ ok: true, source, model: aiModel(c.env), effort: aiEffort(c.env), pick, record: st && st.n ? { n: st.n, hits: st.h || 0, rate: Math.round((st.h || 0) / st.n * 1000) / 1000, pnl: st.pnl || 0 } : null, history: await aiHistory(c.env.DB, source, 8) })
+  await arenaTick(c.env.DB, source)
+  const needAi = await aiNeeded(c.env.DB, source)
+  if (needAi) bg(c, aiKick(c.env.DB, c.env, source))
+  const t0 = now()
+  const key = `pick|${source}|${hist}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
+  const { v, cached, age } = await cachedArena(key, 20_000, async () => {
+    const db = c.env.DB
+    const pend = (await db.prepare(`SELECT expect, strategy, based_on, numbers, count, coverage, weight FROM arena_rounds WHERE source=? AND scored_ms IS NULL ORDER BY expect DESC LIMIT 40`).bind(source).all<any>()).results
+    const expect = pend[0]?.expect
+    const current = expect ? { expect, based_on: pend[0].based_on, strategies: pend.filter(r => r.expect === expect) } : null
+    const pick = await aiPick(db, source, current)
+    const st = await db.prepare(`SELECT COUNT(*) n, SUM(hit) h, SUM(pnl) pnl FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL`).bind(source).first<any>()
+    const rows = (await db.prepare(`SELECT a.expect, a.numbers, a.count, a.actual, a.hit, a.rank, a.pnl, a.created_ms, f.regime, f.confidence, f.reasoning, f.output, d.open_ms
+      FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect LEFT JOIN draws d ON d.source=a.source AND d.expect=a.expect
+      WHERE a.source=? AND a.strategy='ai' AND a.scored_ms IS NOT NULL ORDER BY a.expect DESC LIMIT ?`).bind(source, hist).all<any>()).results
+    const history = rows.map(r => { let o: any = null; try { o = JSON.parse(r.output) } catch {} return { expect: r.expect, numbers: r.numbers, count: r.count, actual: r.actual, hit: !!r.hit, rank: r.rank, pnl: r.pnl, open_ms: r.open_ms, regime: r.regime, confidence: r.confidence, reasoning: r.reasoning, pick_plan: o?.pick_plan || '', boost: o?.boost || [] } })
+    // 最近 20 期命中序列（新→旧）供迷你条形图
+    const streak = (await db.prepare(`SELECT hit FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT 20`).bind(source).all<any>()).results.map(r => r.hit ? 1 : 0)
+    return { pick, record: st && st.n ? { n: st.n, hits: st.h || 0, rate: Math.round((st.h || 0) / st.n * 1000) / 1000, pnl: st.pnl || 0, streak } : null, history }
+  })
+  c.header('X-Cache', cached ? 'HIT' : 'MISS')
+  return c.json({ ok: true, source, model: aiModel(c.env), effort: aiEffort(c.env), ...v, cached, cache_age_ms: age, compute_ms: now() - t0 })
 })
 /** AI 建议回测方案：活跃 + 已退役（含规则文本、样本内/样本外战绩） */
 app.get('/api/arena/plans', async (c) => {
@@ -639,6 +690,7 @@ app.post('/api/arena/replay', async (c) => {
   const rows = await loadDraws(c.env.DB, source, lookback + ARENA_MIN_HIST + 5)
   await settleArena(c.env.DB, source)
   const replayed = await replayArena(c.env.DB, source, rows as any, n, lookback)
+  if (replayed) invalidateArena(source)
   const remaining = (await c.env.DB.prepare(`SELECT COUNT(*) n FROM draws d WHERE d.source=? AND NOT EXISTS (SELECT 1 FROM arena_rounds a WHERE a.source=d.source AND a.expect=d.expect AND a.strategy='meta') AND d.open_ms >= (SELECT MIN(open_ms) FROM (SELECT open_ms FROM draws WHERE source=? ORDER BY open_ms DESC LIMIT ?))`).bind(source, source, Math.min(lookback, rows.length - ARENA_MIN_HIST)).first<any>())?.n || 0
   return c.json({ ok: true, source, replayed, remaining: Math.max(0, remaining), compute_ms: now() - t0 })
 })
@@ -711,5 +763,6 @@ app.get('/api/analysis/recommend', async (c) => {
 app.get('/', (c) => c.html(page()))
 app.get('/analysis', (c) => c.html(analysisPage()))
 app.get('/arena', (c) => c.html(arenaPage()))
+app.get('/ai', (c) => c.html(aiPage()))
 
 export default app

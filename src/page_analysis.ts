@@ -55,6 +55,7 @@ export const analysisPage = () => `<!DOCTYPE html>
       <select id="source-sel" class="bg-slate-800 text-sm rounded-lg px-3 py-1.5 border border-slate-700"></select>
       <button id="sync-btn" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-rotate mr-1"></i>同步</button>
       <a href="/arena" class="hidden md:inline-flex text-xs bg-emerald-600 text-white font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-trophy mr-1"></i>策略竞技场</a>
+      <a href="/ai" class="inline-flex text-xs bg-pink-500 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-brain mr-1"></i>AI 推荐</a>
       <a href="/" class="text-xs bg-amber-500 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-dice mr-1"></i>返回游戏</a>
     </div>
   </div>

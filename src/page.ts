@@ -25,6 +25,7 @@ export const page = () => `<!DOCTYPE html>
     </nav>
     <a href="/analysis" class="hidden md:inline-flex items-center text-xs bg-cyan-600 hover:bg-cyan-500 text-white px-3 py-1.5 rounded-lg"><i class="fas fa-chart-line mr-1"></i>量化分析</a>
     <a href="/arena" class="hidden md:inline-flex items-center text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg"><i class="fas fa-trophy mr-1"></i>策略竞技场</a>
+    <a href="/ai" class="inline-flex items-center text-xs bg-pink-500 hover:bg-pink-400 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-brain mr-1"></i>AI 推荐</a>
     <div id="user-box" class="flex items-center gap-3 text-sm">
       <div class="text-right leading-tight">
         <div id="user-nick" class="text-slate-400 text-xs">连接中…</div>

@@ -190,7 +190,7 @@ export async function settleArena(db: D1Database, source: string) {
 }
 
 /** 加载目标期之前的已结算战绩（各策略最近 META_K 条，升序） */
-async function loadPerf(db: D1Database, source: string, beforeExpect: string): Promise<PerfMap> {
+export async function loadPerf(db: D1Database, source: string, beforeExpect: string): Promise<PerfMap> {
   const rows = (await db.prepare(`SELECT strategy, expect, hit, count FROM arena_rounds WHERE source=? AND expect<? AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT ?`)
     .bind(source, beforeExpect, META_K * STRATEGIES.length).all<any>()).results
   const perf: PerfMap = {}
@@ -198,7 +198,7 @@ async function loadPerf(db: D1Database, source: string, beforeExpect: string): P
   return perf
 }
 
-const nextOf = (expect: string) => /^\d+$/.test(expect) ? String(BigInt(expect) + 1n) : ''
+export const nextOf = (expect: string) => /^\d+$/.test(expect) ? String(BigInt(expect) + 1n) : ''
 const arenaDone = new Map<string, string>()   // source → 已生成的下一期（进程内去重）
 
 /** 外部（AI）选手：给定上下文，返回 1000 维得分；null = 本期不参赛 */
@@ -229,6 +229,20 @@ export async function autoArena(db: D1Database, source: string, draws: Draw[], b
   let replayed = 0
   if (backfill > 0) replayed = await replayArena(db, source, draws, backfill, 60)
   return { generated, replayed, externalDone }
+}
+
+/** 外部（AI）选手独立生成：可在后台（waitUntil）执行，不阻塞页面请求；已存在则直接返回 */
+export async function externalRound(db: D1Database, source: string, draws: Draw[], key: string, scorer: ExternalScorer) {
+  if (draws.length < ARENA_MIN_HIST) return false
+  const latest = draws[0].expect; const next = nextOf(latest); if (!next) return false
+  const have = await db.prepare('SELECT 1 FROM arena_rounds WHERE source=? AND expect=? AND strategy=?').bind(source, next, key).first()
+  if (have) return false
+  const perf = await loadPerf(db, source, next)
+  const gen = generateRound(draws, `${source}|${next}`, perf)
+  const scores = await scorer({ next, hist: draws, perf, weights: gen.weights, vec: gen.vec })
+  if (!scores) return false
+  await insertRounds(db, source, next, latest, 'live', [roundFromScores(key, scores)])
+  return true
 }
 
 /** 回放补齐：在最近 lookback 期内找没有竞技场记录的已开奖期，按时间正序生成并即时结算（严格只用该期之前的数据） */

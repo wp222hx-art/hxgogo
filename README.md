@@ -9,6 +9,7 @@
 - **沙箱预览**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai
 - **量化分析中心**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/analysis
 - **策略竞技场（自动战绩榜）**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/arena
+- **AI 推荐（每期 500 注 · 一键复制）⭐**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/ai
 - **生产环境**: 待部署（Cloudflare Pages）
 
 ## 已完成功能
@@ -105,19 +106,23 @@
 - **投资策略模拟**：6 套「选哪套 × 何时下注」完整方案（组合最优每期必投 / 跟随最强每期必投 / 组合最优择时 z>0.5 / 跟随最强择时 z>1 / 连败 2 期止损 / 逆向跟最弱对照），每期决策只用之前已结算数据，输出下注期/观望期/命中率/z/累计盈亏/ROI/最大回撤/实际跟投分布 + 累计盈亏曲线；结论文案明示「多方案挑最好带有选择偏差」
 - **诚实原则**：任何策略必须长期显著跑赢随机对照组（z>1.96）才算有信号；页面明示 500 注每期期望 −25（950× 赔率），仅做统计验证，不构成投资建议
 
-### 本期 AI 推荐 500 注（`/arena` 顶部 `#ai-pick-section` · 主入口）
-- **每期一个选择**：每期开奖后，系统自动为下一期（本期待开）调用大模型推理并锁定 **500 注三位号**（万/千/百），页面顶部直接展示 + 一键复制（空格/逗号/每行一个）。推理中显示「推理中」并每 4 秒轮询 `GET /api/arena/pick`，就绪自动刷新
-- **推理说明**：`regime`（局势判断）· `reasoning`（推理依据）· **`pick_plan`（这 500 注是怎么选的：各位重点数字、参考策略、加注/回避逻辑）** · 融合策略权重 · 加注/回避号 · 下期验证假设
-- **结构拆解（由号码实际统计，非 AI 口述）**：各位 0-9 注数柱状图 + 重点数字、形态（豹/顺/对/杂）、万位大小单双、和值大小、加注号入选/回避号剔除计数、与其他策略的重合注数（共识度）
-- **兜底**：本期 AI 调用失败/超时 → 用「组合最优」500 注兜底并明确标注 `fallback`，保证每期都有选择；成功后与其他策略同台结算并反馈 AI 复盘
-- 分析官报告**默认不再自动生成**（`AI_REPORT_EVERY` 默认 0；页面按钮已移除，接口保留，可设 `AI_REPORT_EVERY=30` 重新开启二阶闭环）
+### AI 推荐 · 独立页面 `/ai`（每期 500 注 · 一键复制）⭐ 当前主功能
+极简单页：**一屏内 = 本期期号 + 开奖倒计时 + 一键复制 + 500 注**，下方是战绩概览与逐期记录。只展示 `ai` 策略（AI 预测官）的号码，不再混入其他策略。
+- **本期面板 `#cur`**：待开期号、基于哪一期、距开奖倒计时（预计开奖时刻 + 15s 发布延迟，归零后显示「开奖中」并每 4s 轮询直到新期号出现）、`一键复制 500 注`（Clipboard API + execCommand 兜底，格式：空格 / 逗号 / 每行一个，记忆在 localStorage）、可全选的文本框 + 500 格网格（粉色 = AI 额外看好 `boost`）
+- **推理折叠区 `#cur-why`**：盘面判断 / 自评把握 / 推理 / **500 注构成方案 `pick_plan`** / 落地结构（各位重点数字实际注数、形态、大小单双、和值、策略融合比例、加注/回避号）/ 各位 0-9 权重柱图 / 下期验证假设 / 模型·耗时·tokens
+- **状态机**：`thinking`（推理中：不定长进度条 + 已等待秒数，每 4s 轮询）→ `ready`（锁定）；调用失败 → `fallback`（用组合最优 500 注兜底并明确标注），保证每期都有可复制的选择
+- **战绩 `#stats`**：已实盘期数、命中率（对照保本 52.6%）、累计盈亏（950×）、近 20 期命中条
+- **逐期记录 `#hist-sec`**：最近 12/30/60 期，每行 = 期号 · 实际开出 · 盘面判断 · 命中#名次/未中 · 盈亏；展开后显示该期 500 注（绿色 = 命中号）+ 推理与方案 + 复制该期 500 注
+- `/arena` 顶部改为一张跳转卡 `#ai-pick-link`，首页 / 量化 / 竞技场导航均新增「AI 推荐」入口
 
-### 本期 AI 推荐 · 500 注 + 推理（`/arena` 置顶主面板 `#ai-pick-section`）⭐ 当前主功能
-- **每期一个明确选择**：每期开奖后 → 下一期生成时，AI 预测官读取全部信号 + 各策略战绩 + 自己近 6 期复盘 → 输出 `pos_weights × strategy_blend × boost/avoid` → 折算 1000 维得分取 **Top 500 注**，锁定进 `arena_rounds(strategy='ai')`，面板置顶展示并可一键复制（空格 / 逗号 / 每行一个）
-- **推理说明两段式**：`reasoning`（局势判断与依据、与上期思路的差异）+ `pick_plan`（面向投注者：三位各自重点覆盖哪几个数字、主要参考哪些策略、加注/回避逻辑），加上融合策略权重 chips、加注/回避号、下期验证假设
-- **500 注结构拆解（由号码实际统计，非 AI 口述）**：`explainPick` 统计每位 0–9 各占多少注（柱状图 + 重点数字）、形态分布（豹/顺/对/杂）、万位大小单双、和值大小、加注号入选数 / 回避号剔除数、与其他策略的重合注数（共识度）——用于核对 AI 说的和实际给的是否一致
-- **永不空窗**：状态机 `thinking`（推理中，前端每 4 秒轮询 `/api/arena/pick`）→ `ready`；若本期调用失败/超时则 `fallback` 用「组合最优」500 注兜底并明确标注，保证每期都有一份可投的选择
-- **分析报告改为可选**：`AI_REPORT_EVERY` 默认 0（不自动生成），页面不再暴露报告按钮；已有报告作为历史存档在时间线下方显示；需要时 `POST /api/arena/report` 或设 `AI_REPORT_EVERY=30` 重新开启二阶闭环
+### 前端加载体系优化（缓存 + 后台推理 + 进度反馈）
+**问题**：此前 `/api/arena/board` 与 `/api/arena/pick` 在请求路径内**同步等待大模型推理（6–15s）**，且 board JSON 约 290KB，页面首屏 2–15s 不等。
+**方案**（`src/index.tsx`）：
+1. **AI 推理移出请求路径**：`arenaTick` 只做同步/生成/结算（纯本地计算，~50ms）；AI 通过 `aiNeeded → bg(aiKick)` 用 `c.executionCtx.waitUntil` 在后台执行（`aiBusy` 防并发，`externalRound` 写入 `arena_rounds(strategy='ai')`），任何接口都不再等 AI
+2. **服务端内存缓存 `cachedArena`**：key = `路由|source|参数|v{dataVersion}|a{arenaVer}`，board TTL 30s、pick TTL 20s；任何 arena 写入 / 同步入库 / 回放都会 `invalidateArena` 递增版本号立即失效；响应头 `X-Cache: HIT|MISS`，body 带 `cached / cache_age_ms / compute_ms / timing{sync,tick,check,board}`
+3. **前端陈旧优先（stale-while-revalidate）**：`/ai` 把每次 `ready` 结果写入 `localStorage['ai:pick:<source>']`，再次打开**先渲染本地缓存**（标注「本地缓存 · 刷新中…」）再后台刷新
+4. **进度条四阶段** `#loader`：连接数据源 25% → 同步最新开奖 50% → AI 推理本期 75% → 锁定 500 注 100%，配骨架屏；数据到达后淡入内容；请求失败显示原因并 5s 自动重试
+- **实测**：pick 接口 MISS ~110ms / HIT ~60ms（原 6–15s）；board MISS ~1.4s（服务端计算 ~220ms，其余为 wrangler 本地 + 290KB 传输）/ HIT ~80ms；`/ai` 首屏（含 CDN）~4s 内出内容，二次打开 <1s；AI 仍每期后台完成（约 7–8s）并自动翻转 `thinking → ready`
 
 ### AI 预测官 / AI 分析官（大模型推理闭环，`/arena` 中部 `#ai-section`，表 `ai_forecasts` / `ai_reports`）
 - **AI 预测官（策略 key `ai`，仅实盘）**：每期开奖后、下一期生成时，Worker 直接 `fetch` OpenAI 兼容接口（默认 `gpt-5-mini`，`response_format=json_object`），输入三块上下文：① **全部统计信号摘要**（近 60 期三位号、各位 60/200 期频率、当前遗漏、近 30 期大小/单双/和值/龙虎/形态走势、200 期形态分布）② **各策略滚动 40 期战绩 + 组合最优当前权重** ③ **它自己近 6 期的预测、验证假设与真实结果**（命中/名次/盈亏）→ 输出结构化 JSON：`regime`（当前局势判断）/ `confidence` / `pos_weights`（万千百 3×10 权重）/ `strategy_blend`（对 7 个基础策略的融合比例）/ `boost` / `avoid` / `reasoning` / `next_focus`（下期验证假设）
@@ -201,15 +206,15 @@
 | GET | `/api/arena/strategies` | 策略定义（key/name/desc/color/control/meta）+ 每策略注数 + 赔率 |
 | GET | `/api/arena/round?source=&expect=&strategy=` | 单期单策略详情（numbers[] / actual / hit / rank / pnl） |
 | POST | `/api/arena/replay?source=&n=1-30&lookback=` | 回放补齐历史（严格 walk-forward，返回 replayed / remaining） |
-| GET | `/api/arena/pick?source=` | **本期 AI 推荐**：pick{expect, status ready/thinking/fallback, numbers[500], forecast{regime,reasoning,pick_plan,pos_weights,strategy_blend,boost,avoid,next_focus}, breakdown{pos_count,pos_focus,shape,wan,sum_big,consensus…}} + record（AI 实盘战绩）+ history |
-| GET | `/api/arena/pick?source=` | **本期 AI 推荐**：确保本期已生成 → `pick{expect, status ready/thinking/fallback, numbers[500], forecast{regime, confidence, reasoning, pick_plan, pos_weights, strategy_blend, boost, avoid, next_focus}, breakdown{pos_count, pos_focus, shape, wan, sum_big, boost_in, avoid_out, consensus[]}, model, latency_ms, tokens}` + record（AI 累计战绩）+ history |
 | GET | `/api/arena/ai?source=&limit=` | **AI 预测官**逐期记录：regime / confidence / reasoning / next_focus / boost / avoid / pos_weights / strategy_blend + 结算 actual/hit/rank/pnl + tokens/latency/error |
 | GET | `/api/arena/report?source=` | 最新一份 AI 分析官报告（Markdown） |
 | POST | `/api/arena/report?source=` | 基于当前全部战绩生成 AI 分析官报告（同一结算期缓存）；随后自动编译规则，返回 `plans_added` / `plans_error` |
 | GET | `/api/arena/plans?source=` | **AI 建议回测**：active[]（规则 DSL + 人话描述 + 样本内/样本外统计）/ retired[]（含 retire_reason）/ builtin（内置 6 套 key） |
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
-> `/api/arena/board` 的 `plans[]` 现包含 `ai:true` 行（`plan_id / report_expect / rationale / forward{bets,hits,rate,z,pnl,roi,max_dd} / since_index`），`ai` 字段新增 `report_every` / `plans_retired_now` / `pick`（同 `/api/arena/pick` 的 pick）。
+| GET | `/api/arena/pick?source=&history=12\|30\|60` | **本期 AI 推荐（/ai 页数据源，缓存 20s）**：`pick{expect, based_on, status ready/thinking/fallback, numbers[500], coverage, forecast{regime, confidence, reasoning, pick_plan, pos_weights, strategy_blend, boost, avoid, next_focus}, breakdown{pos_count, pos_focus, shape, wan, sum_big, blend, boost_in, avoid_out, consensus[]}, model, latency_ms, tokens, created_ms}` + `record{n, hits, rate, pnl, streak[20]}` + `history[]{expect, numbers, count, actual, hit, rank, pnl, open_ms, regime, confidence, reasoning, pick_plan, boost}` + `cached / cache_age_ms / compute_ms`；响应头 `X-Cache` |
+
+> `/api/arena/board` 的 `plans[]` 现包含 `ai:true` 行（`plan_id / report_expect / rationale / forward{bets,hits,rate,z,pnl,roi,max_dd} / since_index`），`ai` 字段新增 `report_every` / `plans_retired_now`（本期 pick 已移至 `/api/arena/pick`，board 不再内嵌）；board 也带 `cached / cache_age_ms / compute_ms / timing`。
 | GET | `/api/analysis/recommend?source=&steps=` | **本期推荐**：5 玩法 19 组 81 候选概率 + 幸运数字综合榜 + 预见性策略 |
 | GET | `/api/qkltj/table?code=6001&limit=30` | 首页统计结果表：官方字段 + `highlight`（哈希中取用数字下标）+ `mismatch` |
 | GET | `/api/sync/status?source=&tick=1` | 同步状态（latest_expect / lag_ms / expected_publish_ms / audit / fresh / version）；`tick=1` 顺带执行到点同步 |
