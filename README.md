@@ -112,6 +112,13 @@
 - **兜底**：本期 AI 调用失败/超时 → 用「组合最优」500 注兜底并明确标注 `fallback`，保证每期都有选择；成功后与其他策略同台结算并反馈 AI 复盘
 - 分析官报告**默认不再自动生成**（`AI_REPORT_EVERY` 默认 0；页面按钮已移除，接口保留，可设 `AI_REPORT_EVERY=30` 重新开启二阶闭环）
 
+### 本期 AI 推荐 · 500 注 + 推理（`/arena` 置顶主面板 `#ai-pick-section`）⭐ 当前主功能
+- **每期一个明确选择**：每期开奖后 → 下一期生成时，AI 预测官读取全部信号 + 各策略战绩 + 自己近 6 期复盘 → 输出 `pos_weights × strategy_blend × boost/avoid` → 折算 1000 维得分取 **Top 500 注**，锁定进 `arena_rounds(strategy='ai')`，面板置顶展示并可一键复制（空格 / 逗号 / 每行一个）
+- **推理说明两段式**：`reasoning`（局势判断与依据、与上期思路的差异）+ `pick_plan`（面向投注者：三位各自重点覆盖哪几个数字、主要参考哪些策略、加注/回避逻辑），加上融合策略权重 chips、加注/回避号、下期验证假设
+- **500 注结构拆解（由号码实际统计，非 AI 口述）**：`explainPick` 统计每位 0–9 各占多少注（柱状图 + 重点数字）、形态分布（豹/顺/对/杂）、万位大小单双、和值大小、加注号入选数 / 回避号剔除数、与其他策略的重合注数（共识度）——用于核对 AI 说的和实际给的是否一致
+- **永不空窗**：状态机 `thinking`（推理中，前端每 4 秒轮询 `/api/arena/pick`）→ `ready`；若本期调用失败/超时则 `fallback` 用「组合最优」500 注兜底并明确标注，保证每期都有一份可投的选择
+- **分析报告改为可选**：`AI_REPORT_EVERY` 默认 0（不自动生成），页面不再暴露报告按钮；已有报告作为历史存档在时间线下方显示；需要时 `POST /api/arena/report` 或设 `AI_REPORT_EVERY=30` 重新开启二阶闭环
+
 ### AI 预测官 / AI 分析官（大模型推理闭环，`/arena` 中部 `#ai-section`，表 `ai_forecasts` / `ai_reports`）
 - **AI 预测官（策略 key `ai`，仅实盘）**：每期开奖后、下一期生成时，Worker 直接 `fetch` OpenAI 兼容接口（默认 `gpt-5-mini`，`response_format=json_object`），输入三块上下文：① **全部统计信号摘要**（近 60 期三位号、各位 60/200 期频率、当前遗漏、近 30 期大小/单双/和值/龙虎/形态走势、200 期形态分布）② **各策略滚动 40 期战绩 + 组合最优当前权重** ③ **它自己近 6 期的预测、验证假设与真实结果**（命中/名次/盈亏）→ 输出结构化 JSON：`regime`（当前局势判断）/ `confidence` / `pos_weights`（万千百 3×10 权重）/ `strategy_blend`（对 7 个基础策略的融合比例）/ `boost` / `avoid` / `reasoning` / `next_focus`（下期验证假设）
 - **落地为号码**：`aiScores` = norm(√(自有分布 × 策略融合分布))，其中自有分布 = 三位权重乘积（+5 地板、0.8 次幂温和化防过度自信），再 boost ×1.6 / avoid ×0.4 → 1000 维得分 → Top 500 → 以 `strategy='ai'` 写入 `arena_rounds`，与随机对照、组合最优等**同规则结算、同榜排名、同曲线对比**
@@ -195,6 +202,7 @@
 | GET | `/api/arena/round?source=&expect=&strategy=` | 单期单策略详情（numbers[] / actual / hit / rank / pnl） |
 | POST | `/api/arena/replay?source=&n=1-30&lookback=` | 回放补齐历史（严格 walk-forward，返回 replayed / remaining） |
 | GET | `/api/arena/pick?source=` | **本期 AI 推荐**：pick{expect, status ready/thinking/fallback, numbers[500], forecast{regime,reasoning,pick_plan,pos_weights,strategy_blend,boost,avoid,next_focus}, breakdown{pos_count,pos_focus,shape,wan,sum_big,consensus…}} + record（AI 实盘战绩）+ history |
+| GET | `/api/arena/pick?source=` | **本期 AI 推荐**：确保本期已生成 → `pick{expect, status ready/thinking/fallback, numbers[500], forecast{regime, confidence, reasoning, pick_plan, pos_weights, strategy_blend, boost, avoid, next_focus}, breakdown{pos_count, pos_focus, shape, wan, sum_big, boost_in, avoid_out, consensus[]}, model, latency_ms, tokens}` + record（AI 累计战绩）+ history |
 | GET | `/api/arena/ai?source=&limit=` | **AI 预测官**逐期记录：regime / confidence / reasoning / next_focus / boost / avoid / pos_weights / strategy_blend + 结算 actual/hit/rank/pnl + tokens/latency/error |
 | GET | `/api/arena/report?source=` | 最新一份 AI 分析官报告（Markdown） |
 | POST | `/api/arena/report?source=` | 基于当前全部战绩生成 AI 分析官报告（同一结算期缓存）；随后自动编译规则，返回 `plans_added` / `plans_error` |
