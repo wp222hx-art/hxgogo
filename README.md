@@ -111,7 +111,21 @@
 - **不间断迭代**：命中/失误在下一期作为「你上几期的预测与结果」喂回模型，系统提示明确要求连续失误时切换思路；页面「逐期预测 · 复盘」时间线展示每期的局势判断、把握、推理摘要、验证假设与实际开奖/命中名次
 - **AI 分析官**：按钮 `POST /api/arena/report` 把 12 策略完整战绩、组合最优权重、6 套投资策略模拟、AI 预测官逐期表现、近 30 期结算一并交给模型，输出 Markdown 报告（一句话结论 / 各策略解读 / AI 复盘 / 权重建议 / 下一阶段择时·仓位·止损规则），系统提示强制「不编造数据、明示理论期望为负与样本不足」；同一结算期只生成一次（缓存于 `ai_reports`）
 - **成本 / 稳健性**：每期 1 次调用（`INSERT OR IGNORE`，失败落 `error` 不重试）；`AI_EFFORT=low` 默认（约 8-15 秒，1 分钟一期的厅安全），35 秒超时则本期轮空；回放模式不含 AI（避免历史刷费与前视）；未配置密钥时 AI 行自动隐藏、其余策略照常
-- **环境变量**：`OPENAI_API_KEY` / `OPENAI_BASE_URL`（必需，缺一则 AI 关闭）、`AI_MODEL`（默认 gpt-5-mini）、`AI_EFFORT`（low/medium/high）。本地写在 `.dev.vars`（已 gitignore），生产用 `wrangler pages secret put`
+- **环境变量**：`OPENAI_API_KEY` / `OPENAI_BASE_URL`（必需，缺一则 AI 关闭）、`AI_MODEL`（默认 gpt-5-mini）、`AI_EFFORT`（low/medium/high）、`AI_REPORT_EVERY`（自动报告节奏，默认 30 期，0 关闭）。本地写在 `.dev.vars`（已 gitignore），生产用 `wrangler pages secret put`
+
+### AI 建议自动回测 · 二阶闭环（`/arena` `#ai-plans-section`，表 `ai_plans`，模块 `src/ai_plans.ts`）
+「AI 提建议 → 系统验证 → 结果反馈给 AI」：分析官报告里的择时/仓位/止损建议不再只是文字，而是被自动编译成**可回测的投资策略**，和内置 6 套模拟同台比较，并把样本外结果喂回下一份报告。
+- **规则编译**：报告生成后追加一次低推理 LLM 调用（`extractRules`，`json_object`），把报告「下一阶段规则」压成 ≤3 条受限 DSL；每条经 `normalizeRule` 严格校验/裁剪（非法指标、越界参数、引用 `ai` 策略均丢弃），落表 `ai_plans` 并记录 `report_expect`（提出时刻）
+- **规则 DSL**（只允许系统真实能算的量，杜绝口头玄学）：
+  - `conditions`（AND）/ `any_conditions`（OR）：`metric ∈ roll_z | roll_rate | miss_streak | hit_streak | meta_weight | best_z`，可指定 `strategy` 与 `window`，`op ∈ > >= < <=`
+  - `target`：`fixed`（固定跟某策略）/ `best_z` / `worst_z` / `best_rate`（按滚动窗口择优，`min_n` 不足或无候选时走 `fallback`，`null`=观望）
+  - `sizing`：`base / high / low` 倍数（0.5–2）+ `high_if / low_if` 条件
+  - `risk`：`stop_after_misses`（连错暂停）+ `pause_periods` + `max_drawdown`（单位「注」；LLM 若写成比例 ≤1 自动换算为 ×100×500，下限 1000；触发后暂停 2×pause_periods 并重置回撤峰值，而非永久停机）
+- **Walk-forward 回测**：每次加载战绩榜，`aiExtraPlans` 用与内置 6 套完全相同的逐期链（只用该期之前信息）模拟每条活跃规则，结果作为粉色 `ai:true` 行并入 `plans[]`；**样本内**（规则提出前的历史）与**样本外**（`expect > report_expect`，规则提出后的真实新期）分列展示，图表以虚线 + `since_index` 标线区分——只有样本外才是 AI 建议的真实成绩
+- **反馈闭环**：下一份报告上下文新增 `ai_plans`（每条规则人话描述、提出时刻、样本内+样本外全量、样本外单独）与 `ai_plans_retired`，系统提示要求写「## AI 建议回测复盘」章节：对上一轮建议逐条认账/改进，再提 1–3 条新的机械规则（只能用 `available_metrics`）
+- **自动退役**：`retirePlans` —— 样本外 ≥30 投且 z<−1 → 退役（`retire_reason=forward_negative`）；活跃 >4 套 → 退役样本外盈亏最差者（`too_many`）；也可手动 `POST /api/arena/plans/:id/retire`
+- **自动节奏**：实盘每累计 `AI_REPORT_EVERY`（默认 30）期结算，`/api/arena/board` 在 `waitUntil` 中后台生成新报告 → 新规则自动入池（`reportBusy` 防并发；未配置密钥时静默关闭）
+- **UI**：投资策略表新增「样本外」列；`#ai-plans-section` 卡片展示每套规则的规则原文 / AI 依据 / 样本内 / 样本外 / 退役按钮，折叠区列出已退役规则与原因
 
 ### 首页「统计结果」逐期数据表（严格对齐 qkltj 接口）
 - 数据源：`GET https://api.qkltj.com/api/draw-result?code=6001&rows=N`，字段 **原样入库**：`opennumber / lottoType / lottoTypeCn / openTime / id / block / hash / expect`
@@ -175,7 +189,11 @@
 | POST | `/api/arena/replay?source=&n=1-30&lookback=` | 回放补齐历史（严格 walk-forward，返回 replayed / remaining） |
 | GET | `/api/arena/ai?source=&limit=` | **AI 预测官**逐期记录：regime / confidence / reasoning / next_focus / boost / avoid / pos_weights / strategy_blend + 结算 actual/hit/rank/pnl + tokens/latency/error |
 | GET | `/api/arena/report?source=` | 最新一份 AI 分析官报告（Markdown） |
-| POST | `/api/arena/report?source=` | 基于当前全部战绩生成 AI 分析官报告（同一结算期缓存） |
+| POST | `/api/arena/report?source=` | 基于当前全部战绩生成 AI 分析官报告（同一结算期缓存）；随后自动编译规则，返回 `plans_added` / `plans_error` |
+| GET | `/api/arena/plans?source=` | **AI 建议回测**：active[]（规则 DSL + 人话描述 + 样本内/样本外统计）/ retired[]（含 retire_reason）/ builtin（内置 6 套 key） |
+| POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
+
+> `/api/arena/board` 的 `plans[]` 现包含 `ai:true` 行（`plan_id / report_expect / rationale / forward{bets,hits,rate,z,pnl,roi,max_dd} / since_index`），`ai` 字段新增 `report_every` / `plans_retired_now`。
 | GET | `/api/analysis/recommend?source=&steps=` | **本期推荐**：5 玩法 19 组 81 候选概率 + 幸运数字综合榜 + 预见性策略 |
 | GET | `/api/qkltj/table?code=6001&limit=30` | 首页统计结果表：官方字段 + `highlight`（哈希中取用数字下标）+ `mismatch` |
 | GET | `/api/sync/status?source=&tick=1` | 同步状态（latest_expect / lag_ms / expected_publish_ms / audit / fresh / version）；`tick=1` 顺带执行到点同步 |
@@ -185,7 +203,7 @@
 
 ## 数据架构
 - **存储**: Cloudflare D1 (SQLite)
-- **表**: `users` / `rounds` / `bets` / `draws`（统一格式开奖库：source+expect 主键，n1~n5 + 官方原字段 opennumber/lotto_type/lotto_type_cn/open_time/src_id/mismatch）/ `sync_meta`（同步节流）/ `pick_log`（选号器每期 Top-N 快照 + 开奖评分）/ `arena_rounds`（竞技场：source+expect+strategy 主键，mode live/replay，500 注号码、倾向覆盖、当期权重、actual/hit/rank/pnl）/ `ai_forecasts`（AI 预测官每期结构化输出 + 推理 + regime/confidence + tokens/latency/error）/ `ai_reports`（AI 分析官报告，按结算期缓存）
+- **表**: `users` / `rounds` / `bets` / `draws`（统一格式开奖库：source+expect 主键，n1~n5 + 官方原字段 opennumber/lotto_type/lotto_type_cn/open_time/src_id/mismatch）/ `sync_meta`（同步节流）/ `pick_log`（选号器每期 Top-N 快照 + 开奖评分）/ `arena_rounds`（竞技场：source+expect+strategy 主键，mode live/replay，500 注号码、倾向覆盖、当期权重、actual/hit/rank/pnl）/ `ai_forecasts`（AI 预测官每期结构化输出 + 推理 + regime/confidence + tokens/latency/error）/ `ai_reports`（AI 分析官报告，按结算期缓存）/ `ai_plans`（AI 建议编译出的规则 DSL：source、report_expect、name、rule JSON、rationale、model、retired_ms、retire_reason）
 - **调度**: 无 cron，采用 **懒结算**——任意请求到达时结算所有到期局（`open → settling(锁) → settled/void`），天然适配 Workers 无常驻进程的限制
 - **局号**: `floor(now / roundMs)`，全球一致、可离线推算任一时刻的局号
 
@@ -207,7 +225,8 @@ pm2 start ecosystem.config.cjs      # http://localhost:3000
 - [x] 选号器战绩追踪（已完成，见上）
 - [x] 策略竞技场 · 自动战绩榜 `/arena`（已完成，见上）
 - [x] AI 预测官（实盘参赛、逐期自我复盘）+ AI 分析官报告（已完成，见上）
-- [ ] AI 扩展：多模型同台（gpt-5 vs mini vs nano 各一个选手）、AI 报告定时归档、把 AI 报告建议自动转成可回测的择时规则
+- [x] AI 建议自动回测二阶闭环（报告 → 规则 DSL → walk-forward 样本内/样本外 → 反馈下一份报告 → 自动退役 / 自动节奏）
+- [ ] AI 扩展：多模型同台（gpt-5 vs mini vs nano 各一个选手）、AI 报告定时归档、DSL 扩展（允许引用形态/和值等原始信号）、规则版本对比（同名规则迭代前后样本外曲线叠加）
 - [ ] 竞技场扩展：可配置注数（300/500/800）与赔率、按小时段/趋势状态分组战绩、导出 CSV
 - [ ] 「本期推荐」5 玩法战绩追踪：同样快照落库 + 开奖评分，展示推荐命中率曲线 vs 基线
 - [ ] 用户下注行为多维分析（按玩法/时段/筹码分布/跟随倾向 vs 命中）

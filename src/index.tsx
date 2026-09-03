@@ -14,7 +14,8 @@ import { pick } from './picker'
 import { recordPick, pickTrack } from './pick_track'
 import { autoArena, arenaBoard, arenaRound, replayArena, settleArena, STRATEGIES, ARENA_N, ARENA_ODDS, ARENA_MIN_HIST } from './arena'
 import { arenaPage } from './page_arena'
-import { aiEnabled, aiModel, aiEffort, forecastFor, aiScores, aiHistory, generateReport, latestReport, type AiEnv } from './ai'
+import { aiEnabled, aiModel, aiEffort, forecastFor, aiScores, aiHistory, generateReport, latestReport, aiExtraPlans, aiPlansMaintain, type AiEnv } from './ai'
+import { listAiPlans } from './ai_plans'
 
 type Bindings = { DB: D1Database } & AiEnv
 const app = new Hono<{ Bindings: Bindings }>()
@@ -537,6 +538,20 @@ async function arenaTick(db: D1Database, source: string, env: AiEnv) {
   finally { arenaBusy.delete(source) }
 }
 
+/** 自动报告节奏（实盘每 N 期一份；默认 30，可用 AI_REPORT_EVERY 调整；0 关闭） */
+const reportEvery = (env: AiEnv & { AI_REPORT_EVERY?: string }) => { const n = Number(env.AI_REPORT_EVERY ?? 30); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 30 }
+const reportBusy = new Set<string>()
+async function autoReport(db: D1Database, env: AiEnv, source: string, board: any) {
+  const every = reportEvery(env as any); if (!every || reportBusy.has(source)) return
+  const latest = board.periods.at(-1)?.expect; if (!latest) return
+  const last = await latestReport(db, source)
+  const liveSince = (await db.prepare(`SELECT COUNT(DISTINCT expect) n FROM arena_rounds WHERE source=? AND mode='live' AND scored_ms IS NOT NULL AND expect>?`).bind(source, last?.expect || '0').first<any>())?.n || 0
+  if (last && liveSince < every) return
+  if (!last && liveSince < 1) return
+  reportBusy.add(source)
+  try { await generateReport(db, env, source, board) } catch (e) { console.error('auto report', e) } finally { reportBusy.delete(source) }
+}
+
 // ---- 策略竞技场 API
 app.get('/api/arena/board', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
@@ -546,9 +561,25 @@ app.get('/api/arena/board', async (c) => {
   if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)
   await arenaTick(c.env.DB, source, c.env)      // 保证当前期已生成、已开奖期已结算
   const t0 = now()
-  const r = await arenaBoard(c.env.DB, source, { mode, limit })
-  const ai = { enabled: aiEnabled(c.env), model: aiEnabled(c.env) ? aiModel(c.env) : null, effort: aiEffort(c.env), history: await aiHistory(c.env.DB, source, 8) }
+  const r = await arenaBoard(c.env.DB, source, { mode, limit, extraPlans: await aiExtraPlans(c.env.DB, source) })
+  const retired = await aiPlansMaintain(c.env.DB, source, r)   // 样本外显著劣于基线 / 超出活跃上限 → 自动退役
+  const ai = { enabled: aiEnabled(c.env), model: aiEnabled(c.env) ? aiModel(c.env) : null, effort: aiEffort(c.env), report_every: reportEvery(c.env), history: await aiHistory(c.env.DB, source, 8), plans_retired_now: retired }
+  // 自动报告节奏：实盘每 report_every 期结算后，在后台生成一份新报告（→ 抽取新规则 → 新回测方案），形成不间断的二阶闭环
+  if (aiEnabled(c.env)) { const job = autoReport(c.env.DB, c.env, source, r); try { c.executionCtx.waitUntil(job) } catch { await job } }
   return c.json({ ok: true, source, mode, ...r, ai, compute_ms: now() - t0 })
+})
+/** AI 建议回测方案：活跃 + 已退役（含规则文本、样本内/样本外战绩） */
+app.get('/api/arena/plans', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const board = await arenaBoard(c.env.DB, source, { mode: 'all', limit: 600, extraPlans: await aiExtraPlans(c.env.DB, source) })
+  const rows = await listAiPlans(c.env.DB, source, true)
+  return c.json({ ok: true, source, active: board.plans.filter((p: any) => p.ai), retired: rows.filter(r => r.retired_ms).map(r => ({ id: r.id, name: r.name, report_expect: r.report_expect, rationale: r.rationale, created_ms: r.created_ms, retired_ms: r.retired_ms, retire_reason: r.retire_reason, rule: JSON.parse(r.rule) })), builtin: board.plans.filter((p: any) => !p.ai) })
+})
+app.post('/api/arena/plans/:id/retire', async (c) => {
+  const id = Number(c.req.param('id')); if (!id) return bad(c, 'bad id')
+  await c.env.DB.prepare('UPDATE ai_plans SET retired_ms=?, retire_reason=? WHERE id=? AND retired_ms IS NULL').bind(now(), '手动退役', id).run()
+  return c.json({ ok: true, id })
 })
 /** AI 预测官逐期记录（推理 + 结算） */
 app.get('/api/arena/ai', async (c) => {
@@ -569,7 +600,7 @@ app.post('/api/arena/report', async (c) => {
   if (!isSource(source)) return bad(c, 'unknown source')
   if (!aiEnabled(c.env)) return bad(c, 'AI 未配置（需要 OPENAI_API_KEY / OPENAI_BASE_URL）', 503)
   try {
-    const board = await arenaBoard(c.env.DB, source, { mode: 'all', limit: 300 })
+    const board = await arenaBoard(c.env.DB, source, { mode: 'all', limit: 300, extraPlans: await aiExtraPlans(c.env.DB, source) })
     const r = await generateReport(c.env.DB, c.env, source, board)
     return c.json({ ok: true, source, ...r })
   } catch (e: any) { return bad(c, 'AI 报告生成失败：' + (e.message || e), 502) }

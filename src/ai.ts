@@ -4,7 +4,8 @@
 //  2) 每期都把它自己上几期的预测与真实结果喂回去（自我复盘闭环），形成不间断迭代；
 //  3) AI 的号码进入 arena_rounds（strategy='ai'），与随机对照组同台结算——它是否有信号由数据说话。
 import { type Draw } from './analysis'
-import { STRATEGIES, ARENA_N, type PerfMap } from './arena'
+import { STRATEGIES, ARENA_N, type PerfMap, type ExtraPlan } from './arena'
+import { normalizeRule, describeRule, simulateRule, listAiPlans, saveAiPlans, retirePlans, type PlanRule, MAX_ACTIVE_AI_PLANS } from './ai_plans'
 
 export interface AiEnv { OPENAI_API_KEY?: string; OPENAI_BASE_URL?: string; AI_MODEL?: string; AI_EFFORT?: string }
 export const aiEnabled = (env: AiEnv) => !!(env.OPENAI_API_KEY && env.OPENAI_BASE_URL)
@@ -160,7 +161,10 @@ const REPORT_SYSTEM = `你是「HashArena 竞技场」的 AI 分析官。你会�
 ## AI 预测官复盘（命中模式、失误模式、下一阶段调整思路）
 ## 组合最优权重是否合理（给出你建议的权重方向）
 ## 下一阶段投资策略（择时/仓位/止损的具体规则；必须明确说明理论期望为负、样本不足处的不确定性）
-不要编造数据；引用数字时以输入为准。`
+不要编造数据；引用数字时以输入为准。
+输入里的 ai_plans 是你（AI 分析官）之前报告提出、已被系统自动落成可回测方案的规则，含「样本内（提出前回测）」与「样本外（提出后实盘逐期验证）」两段战绩——样本外才是对你建议的真实检验。请在「AI 预测官复盘」之后增加一节：
+## AI 建议回测复盘（逐条评价之前提出的规则在样本外是否成立、为什么；哪些该保留/修改/淘汰）
+在「下一阶段投资策略」中给出 1-3 条**新的、可机械执行**的规则（使用输入 available_metrics 里的指标；每条注明目标策略、条件阈值、仓位、止损），系统会自动把它们变成新的回测方案。`
 
 export async function generateReport(db: D1Database, env: AiEnv, source: string, board: any) {
   const latest = board.periods.at(-1)?.expect || '0'
@@ -171,6 +175,9 @@ export async function generateReport(db: D1Database, env: AiEnv, source: string,
     strategies: board.strategies.map((s: any) => ({ key: s.key, name: s.name, n: s.n, hits: s.hits, rate: s.rate, z: s.z, pnl: s.pnl, roi: s.roi, max_dd: s.max_dd, rolling: s.rolling, verdict: s.verdict, control: !!s.control, meta: !!s.meta, ai: !!s.ai })),
     meta_weights: board.weights, plans: board.plans?.map((p: any) => ({ name: p.name, bets: p.bets, skips: p.skips, rate: p.rate, z: p.z, pnl: p.pnl, roi: p.roi, max_dd: p.max_dd })),
     ai_recent: await aiHistory(db, source, 12),
+    ai_plans: (board.plans || []).filter((p: any) => p.ai).map((p: any) => ({ id: p.plan_id, name: p.name, rule_text: p.desc, proposed_after: p.report_expect, in_sample_plus_forward: { bets: p.bets, skips: p.skips, rate: p.rate, z: p.z, pnl: p.pnl, roi: p.roi, max_dd: p.max_dd }, out_of_sample: p.forward || 'no periods yet' })),
+    ai_plans_retired: (await listAiPlans(db, source, true)).filter(r => r.retired_ms).slice(-5).map(r => ({ name: r.name, reason: r.retire_reason })),
+    available_metrics: RULE_HINT,
     last_30_settlement: board.periods.slice(-30).map((p: any) => ({ expect: p.expect.slice(-4), actual: p.actual, hits: Object.entries(p.hit).filter(([, v]) => v).map(([k]) => k) })),
   }
   const t0 = Date.now(); const model = aiModel(env)
@@ -183,8 +190,45 @@ export async function generateReport(db: D1Database, env: AiEnv, source: string,
   const report = j.choices?.[0]?.message?.content || ''
   await db.prepare('INSERT OR REPLACE INTO ai_reports (source, expect, model, report, prompt_tokens, completion_tokens, latency_ms, created_ms) VALUES (?,?,?,?,?,?,?,?)')
     .bind(source, latest, model, report, j.usage?.prompt_tokens ?? null, j.usage?.completion_tokens ?? null, Date.now() - t0, Date.now()).run()
-  return { report, expect: latest, model, created_ms: Date.now(), latency_ms: Date.now() - t0, cached: false }
+  // 二阶闭环：把报告里的投资规则抽取成结构化 DSL → 落库 → 之后每次战绩榜自动 walk-forward 回测（样本外从 latest 之后开始）
+  let plans_added = 0, plans_error: string | null = null
+  try { const rules = await extractRules(env, report); plans_added = await saveAiPlans(db, source, latest, model, rules) } catch (e: any) { plans_error = String(e.message || e) }
+  return { report, expect: latest, model, created_ms: Date.now(), latency_ms: Date.now() - t0, cached: false, plans_added, plans_error }
 }
+
+// ------------------------------------------------------------ 二阶闭环：报告 → 规则 DSL → 自动回测方案
+const RULE_HINT = {
+  metrics: { roll_z: '某策略近 window 期滚动 z（需 strategy, window 5-100）', roll_rate: '某策略近 window 期命中率 0-1', miss_streak: '某策略当前连续未中期数', hit_streak: '某策略当前连续命中期数', meta_weight: '某基础策略在组合最优里的当前权重 0-1', best_z: '全部基础策略中最高的滚动 z（无 strategy）' },
+  ops: ['>', '>=', '<', '<='],
+  strategies: STRATEGIES.filter(s => !s.ai).map(s => s.key),
+  target_kinds: { fixed: '固定投 strategy', best_z: '投滚动 z 最高的基础策略', worst_z: '投滚动 z 最低（逆向）', best_rate: '投滚动命中率最高' },
+  sizing: '仓位倍数 0.5-2：base + high_if/low_if 条件', risk: 'stop_after_misses(自身连败停投) + pause_periods(停几期) + max_drawdown(累计回撤超过则暂停，单位为「注」：每次下注 500 注、未中亏 500，合理范围 2000-20000；不要写比例)',
+}
+const RULE_SYSTEM = `你是规则编译器。把一份 HashArena 分析报告中「下一阶段投资策略」部分的可执行建议，编译成 1-3 条结构化规则 JSON。只输出 JSON：{"rules":[{"name":"≤16字","rationale":"≤80字依据","target":{"kind":"fixed|best_z|worst_z|best_rate","strategy":"仅fixed","window":40,"min_n":10,"fallback":"策略key或null(观望)"},"conditions":[{"metric":"roll_z","strategy":"cold","window":40,"op":">","value":0.5}],"any_conditions":[],"sizing":{"base":1,"high":1.5,"low":0.5,"high_if":[...],"low_if":[...]},"risk":{"stop_after_misses":3,"pause_periods":10,"max_drawdown":10000}}]}
+约束：只能使用给定 metrics/ops/strategies/target_kinds；条件必须能在「该期之前的已结算数据」上计算；sizing/risk 可省略；不要输出解释。`
+export async function extractRules(env: AiEnv, report: string): Promise<PlanRule[]> {
+  const res = await fetch(`${env.OPENAI_BASE_URL!.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
+    body: JSON.stringify({ model: aiModel(env), reasoning_effort: 'low', response_format: { type: 'json_object' }, max_completion_tokens: 3000,
+      messages: [{ role: 'system', content: RULE_SYSTEM }, { role: 'user', content: JSON.stringify({ schema_hint: RULE_HINT, report }) }] }),
+  })
+  const j: any = await res.json()
+  if (!res.ok || j.error) throw new Error(j.error?.message || `HTTP ${res.status}`)
+  const o = JSON.parse(j.choices?.[0]?.message?.content || '{}')
+  return (Array.isArray(o.rules) ? o.rules : []).map(normalizeRule).filter(Boolean).slice(0, 3) as PlanRule[]
+}
+/** 供 arenaBoard 使用：把库中活跃的 AI 方案包装为 ExtraPlan（同一序列上 walk-forward，样本外从 report_expect 之后算起） */
+export async function aiExtraPlans(db: D1Database, source: string): Promise<ExtraPlan[]> {
+  const rows = await listAiPlans(db, source)
+  return rows.map(r => { let rule: PlanRule | null = null; try { rule = normalizeRule(JSON.parse(r.rule)) } catch {} if (!rule) return null
+    return { key: `ai-plan-${r.id}`, id: r.id, name: `AI·${r.name}`, desc: describeRule(rule), since: r.report_expect, rationale: r.rationale || '', created_ms: r.created_ms, simulate: (periods) => simulateRule(rule!, periods, r.report_expect) } }).filter(Boolean) as ExtraPlan[]
+}
+/** 根据最新战绩榜执行淘汰（样本外显著劣于基线 / 超出活跃上限） */
+export async function aiPlansMaintain(db: D1Database, source: string, board: any) {
+  const ev = (board.plans || []).filter((p: any) => p.ai).map((p: any) => ({ id: p.plan_id, forward: p.forward }))
+  return ev.length ? retirePlans(db, source, ev) : 0
+}
+export { MAX_ACTIVE_AI_PLANS }
 export async function latestReport(db: D1Database, source: string) {
   return db.prepare('SELECT expect, model, report, created_ms, latency_ms FROM ai_reports WHERE source=? ORDER BY expect DESC LIMIT 1').bind(source).first<any>()
 }

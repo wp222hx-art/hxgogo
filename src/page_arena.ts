@@ -17,6 +17,8 @@ export const arenaPage = () => `<!DOCTYPE html>
 .board td { padding:7px 8px; background:#0f172a; white-space:nowrap; } .board tr td:first-child { border-radius:8px 0 0 8px; } .board tr td:last-child { border-radius:0 8px 8px 0; }
 .board tr.best td { background:#14532d33; box-shadow: inset 0 0 0 1px #22c55e66; }
 .board tr.ctrl td { background:#1e293b66; }
+.board tr.aiplan td { background:#83184322; box-shadow: inset 0 0 0 1px #f472b644; }
+.plan-card { background:#0f172a; border:1px solid #f472b633; border-radius:12px; padding:12px; } .plan-card .kv { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; font-size:11px; } .plan-card .kv div b { display:block; font-size:13px; }
 .mono { font-family: ui-monospace, monospace; }
 .wbar { height:8px; border-radius:4px; background:#1e293b; overflow:hidden; } .wbar > div { height:100%; border-radius:4px; }
 .strat-card { background:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:10px; cursor:pointer; transition:.15s; } .strat-card:hover, .strat-card.active { border-color:#22c55e; }
@@ -134,14 +136,25 @@ textarea.nums { width:100%; height:110px; background:#fff; color:#111; border-ra
   <!-- 投资策略模拟 -->
   <section class="card">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
-      <h2 class="font-bold"><i class="fas fa-chess mr-2 text-pink-400"></i>投资策略模拟 <span class="text-xs text-slate-500 font-normal ml-2">「选哪套 × 何时下注」的完整方案，每期决策只用之前已结算数据 · 每次 500 注 · 观望期不投</span></h2>
+      <h2 class="font-bold"><i class="fas fa-chess mr-2 text-pink-400"></i>投资策略模拟 <span class="text-xs text-slate-500 font-normal ml-2">「选哪套 × 何时下注」的完整方案，每期决策只用之前已结算数据 · 每次 500 注 · 观望期不投 · <span class="text-pink-300">粉色 = AI 分析官提出、系统自动落成的规则</span></span></h2>
     </div>
     <div class="grid lg:grid-cols-5 gap-4">
       <div class="lg:col-span-3 overflow-x-auto"><table class="board" id="plans"><thead><tr>
-        <th>#</th><th>方案</th><th>下注期</th><th>观望期</th><th>命中</th><th>命中率</th><th>z</th><th>累计盈亏</th><th>ROI</th><th>最大回撤</th><th>实际跟投</th>
+        <th>#</th><th>方案</th><th>下注期</th><th>观望期</th><th>命中</th><th>命中率</th><th>z</th><th>累计盈亏</th><th>ROI</th><th>最大回撤</th><th title="AI 方案：规则提出之后的实盘逐期验证（不含提出前的样本内回测）">样本外</th><th>实际跟投</th>
       </tr></thead><tbody></tbody></table></div>
       <div class="lg:col-span-2"><div id="ch-plans" class="kchart"></div></div>
     </div>
+  </section>
+
+  <!-- AI 建议回测（二阶闭环） -->
+  <section class="card" id="ai-plans-section">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+      <h2 class="font-bold"><i class="fas fa-rotate mr-2 text-pink-400"></i>AI 建议自动回测 · 二阶闭环 <span class="text-xs text-slate-500 font-normal ml-2" id="ai-plans-meta"></span></h2>
+      <span class="text-xs text-slate-500" id="ai-plans-cadence"></span>
+    </div>
+    <p class="text-xs text-slate-400 mb-3 leading-relaxed">AI 分析官每份报告里「下一阶段投资策略」的择时 / 切换 / 仓位 / 止损建议，会被<b class="text-slate-200">规则编译器</b>翻译成受限 DSL（只允许用该期之前已结算数据可算的指标），自动成为一套新的投资策略模拟：<b class="text-slate-200">样本内</b> = 提出前的历史回测（AI 看过这些数据，仅供参考）；<b class="text-pink-300">样本外</b> = 提出之后的实盘逐期验证（真正的检验）。样本外 ≥30 次下注且 z&lt;−1 的方案自动退役；活跃方案最多 4 套。下一份报告会收到这些样本外战绩——AI 提建议 → 系统验证 → 反馈给 AI。</p>
+    <div id="ai-plans" class="grid md:grid-cols-2 gap-3"></div>
+    <details class="mt-3" id="ai-plans-retired-wrap"><summary class="text-xs text-slate-500 cursor-pointer">已退役方案 <span id="ai-plans-retired-n"></span></summary><div id="ai-plans-retired" class="mt-2 space-y-1.5 text-xs"></div></details>
   </section>
 
   <!-- 当前期 500 注 -->

@@ -30,7 +30,7 @@ export const STRATEGIES: StrategyDef[] = [
   { key: 'vote', name: '多策略共识投票', short: '共识投票', desc: '按被多少个基础策略同时选中排序（并列以组合最优概率决胜），取 Top 500', color: '#84cc16', meta: true },
   { key: 'ai', name: 'AI 预测官 · 大模型推理', short: 'AI 预测', desc: '大模型阅读全部统计信号 + 各策略滚动战绩 + 自己近期预测复盘 → 输出每位权重/策略融合/加减号 → Top 500（仅实盘，每期自动调用）', color: '#f472b6', ai: true },
 ]
-const BASE_KEYS = STRATEGIES.filter(s => !s.control && !s.meta && !s.ai).map(s => s.key)
+export const BASE_KEYS = STRATEGIES.filter(s => !s.control && !s.meta && !s.ai).map(s => s.key)
 /** 回放时不包含 AI（避免大量模型调用；且 AI 只在真实开奖前预测才有意义） */
 const REPLAY_KEYS = STRATEGIES.filter(s => !s.ai).map(s => s.key)
 
@@ -255,7 +255,8 @@ export async function replayArena(db: D1Database, source: string, draws: Draw[],
 }
 
 // ------------------------------------------------------------ 战绩榜
-export async function arenaBoard(db: D1Database, source: string, opt: { mode?: 'all' | 'live' | 'replay'; limit?: number }) {
+export interface ExtraPlan { key: string; id: number; name: string; desc: string; since: string; rationale: string; created_ms: number; simulate: (periods: { expect: string; hit: Record<string, number>; pnl: Record<string, number>; weight: Record<string, number> }[]) => any }
+export async function arenaBoard(db: D1Database, source: string, opt: { mode?: 'all' | 'live' | 'replay'; limit?: number; extraPlans?: ExtraPlan[] }) {
   await settleArena(db, source)
   const mode = opt.mode && opt.mode !== 'all' ? opt.mode : null
   const limit = Math.max(20, Math.min(600, opt.limit ?? 200))
@@ -319,7 +320,7 @@ export async function arenaBoard(db: D1Database, source: string, opt: { mode?: '
     { key: 'meta-stoploss', name: '组合最优 · 连败止损', desc: '组合最优连续 2 期未中后暂停，直到它（虚拟）命中一期再恢复', pick: (i) => missRun('meta', i) >= 2 ? null : 'meta' },
     { key: 'contrarian', name: '逆向 · 跟最弱（对照）', desc: '投滚动 40 期 z 最低的基础策略，检验“均值回归”是否存在', pick: (i) => extremeBy(i, 40, 10, -1).key || 'meta', control: true },
   ]
-  const plans = PLANS.map(pl => {
+  const plans: any[] = PLANS.map(pl => {
     let bets = 0, skips = 0, hits = 0, cum = 0, peak = 0, dd = 0; const curve: number[] = []; const picks: Record<string, number> = {}
     periods.forEach((p, i) => {
       const k = pl.pick(i)
@@ -329,6 +330,11 @@ export async function arenaBoard(db: D1Database, source: string, opt: { mode?: '
     const pBar = ARENA_N / SPACE
     return { key: pl.key, name: pl.name, desc: pl.desc, control: !!pl.control, bets, skips, hits, rate: bets ? r4(hits / bets) : null, z: bets ? r3((hits - bets * pBar) / Math.sqrt(bets * pBar * (1 - pBar))) : 0, pnl: cum, roi: bets ? r4(cum / (bets * ARENA_N)) : null, max_dd: dd, curve, picks }
   })
+  // 外部（AI 建议）方案：由调用方传入已规范化的规则，同一序列上 walk-forward 模拟，并区分样本内/样本外
+  if (opt.extraPlans?.length) for (const ep of opt.extraPlans) {
+    const sim = ep.simulate(periods.map(p => ({ expect: p.expect, hit: p.hit, pnl: p.pnl, weight: p.weight })))
+    plans.push({ key: ep.key, name: ep.name, desc: ep.desc, control: false, ...sim, ai: true, plan_id: ep.id, report_expect: ep.since, rationale: ep.rationale, created_ms: ep.created_ms } as any)
+  }
   const planBest = [...plans].filter(p => !p.control && p.bets >= 20).sort((a, b) => b.pnl - a.pnl)[0] || null
   // 投资策略建议（诚实版）
   const ranked = strategies.filter(s => !s.control).sort((a, b) => (b.rolling.z - a.rolling.z) || (b.z - a.z))

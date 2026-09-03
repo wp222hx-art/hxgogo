@@ -37,9 +37,9 @@ async function init() {
 
 async function load() {
   $('board-meta').textContent = '计算中…'
-  const [meta, r] = await Promise.all([api.get('/sources'), api.get('/arena/board', { params: { source: S.source, mode: S.mode, limit: 300 } })])
+  const [meta, r] = await Promise.all([api.get('/sources'), api.get('/arena/board', { params: { source: S.source, mode: S.mode, limit: 300 } }), loadRetired()])
   S.sources = meta.data.sources; S.data = r.data
-  renderKpis(); renderBoard(); renderCharts(); renderWeights(); renderPlans(); renderAi(); renderCurrent(); renderHist()
+  renderKpis(); renderBoard(); renderCharts(); renderWeights(); renderPlans(); renderAiPlans(); renderAi(); renderCurrent(); renderHist()
   $('disclaimer').innerHTML = '<i class="fas fa-triangle-exclamation mr-1"></i>' + r.data.disclaimer
   $('odds-1').textContent = r.data.odds; $('meta-k').textContent = r.data.meta_k
   $('board-meta').textContent = `已结算 ${r.data.n_periods} 期 · 待开 ${r.data.pending} 期 · 计算 ${r.data.compute_ms}ms`
@@ -116,15 +116,16 @@ function renderWeights() {
 function renderPlans() {
   const d = S.data; if (!d.plans) return
   const rows = [...d.plans].sort((a, b) => b.pnl - a.pnl)
-  $('plans').querySelector('tbody').innerHTML = rows.map((p, i) => `<tr class="${p.key === d.plan_best ? 'best' : ''} ${p.control ? 'ctrl' : ''}">
+  $('plans').querySelector('tbody').innerHTML = rows.map((p, i) => `<tr class="${p.key === d.plan_best ? 'best' : ''} ${p.control ? 'ctrl' : ''} ${p.ai ? 'aiplan' : ''}">
     <td class="mono text-slate-500">${i + 1}</td>
-    <td><b>${p.name}</b>${p.control ? ' <span class="text-[10px] text-slate-500">对照</span>' : ''}<div class="text-[10px] text-slate-500 font-normal">${p.desc}</div></td>
+    <td><b>${p.name}</b>${p.control ? ' <span class="text-[10px] text-slate-500">对照</span>' : ''}${p.ai ? ` <span class="text-[10px] text-pink-300"><i class="fas fa-brain"></i> AI 建议 · ${p.report_expect.slice(-4)} 期后为样本外</span>` : ''}<div class="text-[10px] text-slate-500 font-normal max-w-[360px] whitespace-normal">${p.desc}</div></td>
     <td class="mono">${p.bets}</td><td class="mono text-slate-400">${p.skips}</td><td class="mono">${p.hits}</td>
     <td class="mono font-bold ${p.rate > 0.5 ? 'text-emerald-300' : 'text-slate-300'}">${pct(p.rate)}</td>
     <td class="mono ${p.z > 1.96 ? 'text-emerald-400 font-bold' : p.z < -1.96 ? 'text-red-400 font-bold' : 'text-slate-400'}">${p.z}</td>
     <td class="mono font-bold ${p.pnl > 0 ? 'text-emerald-400' : p.pnl < 0 ? 'text-red-400' : ''}">${sgn(p.pnl)}</td>
     <td class="mono ${p.roi > 0 ? 'text-emerald-400' : 'text-red-400'}">${pct(p.roi, 2)}</td>
     <td class="mono text-slate-400">${p.max_dd}</td>
+    <td class="mono text-[11px]">${p.ai ? (p.forward && p.forward.bets ? `<span class="${p.forward.pnl > 0 ? 'text-emerald-400' : p.forward.pnl < 0 ? 'text-red-400' : 'text-slate-300'} font-bold">${sgn(p.forward.pnl)}</span><span class="text-slate-500"> / ${p.forward.bets}投 ${pct(p.forward.rate, 0)} z${p.forward.z}</span>` : '<span class="text-slate-500">尚无</span>') : '<span class="text-slate-600">—</span>'}</td>
     <td class="text-[10px] text-slate-400">${Object.entries(p.picks).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => `<span style="color:${defOf(k).color}">${defOf(k).short}</span>×${n}`).join(' ')}</td>
   </tr>`).join('')
   const x = d.periods.map(p => p.expect.slice(-4))
@@ -136,10 +137,31 @@ function renderPlans() {
     grid: { left: 48, right: 12, top: 32, bottom: 24 },
     xAxis: { type: 'category', data: x, ...AX, axisLabel: { ...AX.axisLabel, interval: Math.max(0, Math.floor(x.length / 10)) } },
     yAxis: { type: 'value', ...AX },
-    series: d.plans.map((p, i) => ({ name: p.name, type: 'line', showSymbol: false, data: p.curve, lineStyle: { width: p.key === d.plan_best ? 3 : 1.2, type: p.control ? 'dashed' : 'solid' }, itemStyle: { color: PC[i % PC.length] }, emphasis: { focus: 'series' } })),
+    series: d.plans.map((p, i) => ({ name: p.name, type: 'line', showSymbol: false, data: p.curve, lineStyle: { width: p.key === d.plan_best ? 3 : 1.2, type: p.control ? 'dashed' : p.ai ? 'dotted' : 'solid' }, itemStyle: { color: p.ai ? ['#f472b6', '#e879f9', '#c084fc', '#fb7185'][i % 4] : PC[i % PC.length] }, emphasis: { focus: 'series' },
+      markLine: p.ai && p.since_index !== undefined ? { silent: true, symbol: 'none', label: { show: false }, lineStyle: { color: '#f472b6', type: 'dashed', width: 1 }, data: [{ xAxis: p.since_index }] } : undefined })),
     graphic: x.length ? undefined : { type: 'text', left: 'center', top: 'middle', style: { text: '暂无数据', fill: '#64748b', fontSize: 12 } },
   }, true)
 }
+
+function renderAiPlans() {
+  const d = S.data, plans = (d.plans || []).filter(p => p.ai), ai = d.ai || {}
+  $('ai-plans-meta').textContent = plans.length ? `活跃 ${plans.length} 套 · 样本外合计 ${sgn(plans.reduce((a, p) => a + (p.forward ? p.forward.pnl : 0), 0))}` : (ai.enabled ? '尚无 AI 方案 —— 生成一份 AI 分析报告即会自动落成' : 'AI 未配置')
+  $('ai-plans-cadence').textContent = ai.enabled && ai.report_every ? `自动节奏：实盘每 ${ai.report_every} 期结算后自动生成报告并落成新规则` : ''
+  const stat = (f) => f && f.bets ? `<div class="kv mt-2"><div><span class="text-slate-500">下注/观望</span><b class="mono">${f.bets}/${f.skips}</b></div><div><span class="text-slate-500">命中率</span><b class="mono ${f.rate > 0.5 ? 'text-emerald-300' : ''}">${pct(f.rate)}</b></div><div><span class="text-slate-500">z</span><b class="mono ${f.z > 1.96 ? 'text-emerald-400' : f.z < -1.96 ? 'text-red-400' : ''}">${f.z}</b></div><div><span class="text-slate-500">盈亏 / 回撤</span><b class="mono ${f.pnl > 0 ? 'text-emerald-400' : f.pnl < 0 ? 'text-red-400' : ''}">${sgn(f.pnl)} <span class="text-slate-500 font-normal text-[10px]">/ ${f.max_dd}</span></b></div></div>` : '<div class="text-[11px] text-slate-500 mt-2">尚无样本外下注（等待条件触发）</div>'
+  $('ai-plans').innerHTML = plans.map(p => `<div class="plan-card">
+    <div class="flex items-start justify-between gap-2"><div><div class="font-bold text-sm text-pink-200"><i class="fas fa-brain mr-1 text-pink-400"></i>${p.name}</div><div class="text-[10px] text-slate-500 mt-0.5">提出于第 ${p.report_expect} 期结算后 · ${fmtT(p.created_ms)}</div></div>
+      <button class="text-[10px] text-slate-500 hover:text-red-300" onclick="retirePlan(${p.plan_id})" title="手动退役"><i class="fas fa-ban"></i></button></div>
+    <div class="text-xs text-slate-300 mt-2 leading-relaxed"><span class="text-slate-500">规则</span> ${p.desc}</div>
+    ${p.rationale ? `<div class="text-[11px] text-slate-400 mt-1 leading-relaxed"><span class="text-slate-500">AI 依据</span> ${p.rationale}</div>` : ''}
+    <div class="mt-2 text-[10px] text-slate-500 uppercase tracking-wide">样本内 + 样本外（全序列）</div>${stat(p)}
+    <div class="mt-2 text-[10px] text-pink-300 uppercase tracking-wide">样本外（提出后实盘，真正的检验）</div>${stat(p.forward)}
+  </div>`).join('') || ''
+  const ret = S.retired || []
+  $('ai-plans-retired-n').textContent = ret.length ? `(${ret.length})` : ''
+  $('ai-plans-retired').innerHTML = ret.length ? ret.map(r => `<div class="bg-slate-900/60 rounded-lg px-3 py-2"><b class="text-slate-300">${r.name}</b> <span class="text-slate-500">· 提出于 ${r.report_expect.slice(-6)} · 退役 ${fmtT(r.retired_ms)}</span><div class="text-slate-400 mt-0.5">${r.retire_reason || ''}</div></div>`).join('') : '<div class="text-slate-600">无</div>'
+}
+async function loadRetired() { try { S.retired = (await api.get('/arena/plans', { params: { source: S.source } })).data.retired } catch { S.retired = [] } }
+async function retirePlan(id) { if (!confirm('手动退役该 AI 方案？（不再参与后续模拟，可在已退役列表查看）')) return; await api.post(`/arena/plans/${id}/retire`); await loadRetired(); load() }
 
 // ---------- AI 预测官 ----------
 function md(t) {  // 极简 Markdown → HTML（标题/列表/加粗/段落）
@@ -194,7 +216,7 @@ function showReport(r) {
 }
 async function aiReport() {
   const btn = $('ai-report-btn'); btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>AI 分析中（约 20-60 秒）…'
-  try { const r = (await api.post('/arena/report', null, { params: { source: S.source } })).data; showReport(r); $('ai-report').scrollIntoView({ behavior: 'smooth', block: 'start' }) }
+  try { const r = (await api.post('/arena/report', null, { params: { source: S.source } })).data; showReport(r); if (r.plans_added) { await load() } $('ai-report').scrollIntoView({ behavior: 'smooth', block: 'start' }) }
   catch (e) { alert('报告生成失败：' + (e.response?.data?.error || e.message)) }
   btn.disabled = false; btn.innerHTML = '<i class="fas fa-file-lines mr-1"></i>生成 AI 分析报告'
 }
