@@ -474,7 +474,7 @@ app.get('/api/analysis/overview', async (c) => {
 app.get('/api/analysis/pick', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
-  const count = Math.max(10, Math.min(2000, Number(c.req.query('count') || 500)))
+  const count = Math.max(10, Math.min(1000, Number(c.req.query('count') || 500)))  // 前三位空间 1000
   const steps = Math.max(20, Math.min(150, Number(c.req.query('steps') || 60)))
   const bt = Math.max(0, Math.min(60, Number(c.req.query('bt') ?? 20)))
   const wParity = Math.max(0, Math.min(1, Number(c.req.query('wp') ?? 0.6)))

@@ -172,11 +172,11 @@ async function loadPick(silent) {
   if (cnt !== PICK.count) return // 期间用户又改了数量
   const isNew = PICK.latest && d.latest_expect !== PICK.latest; PICK.latest = d.latest_expect; PICK.data = d
   // 覆盖率
-  $('pick-cov').innerHTML = `<div class="text-xs text-slate-400">量化覆盖率（Top-${d.count} 倾向概率合计）</div>
+  $('pick-cov').innerHTML = `<div class="text-xs text-slate-400">量化覆盖率（前三位 Top-${d.count} 倾向概率合计）</div>
     <div class="v text-amber-300 ${isNew ? 'flash' : ''}">${pct(d.coverage.p, 2)}</div>
     <div class="text-xs text-slate-400">理论基线 ${pct(d.coverage.baseline, 2)} · 倾向倍数 <b class="text-slate-200">${d.coverage.lift}×</b></div>
     <div class="mt-2 text-[10px] text-slate-500">层级：核心 ${d.tiers.core} · 主力 ${d.tiers.main} · 外围 ${d.tiers.edge} · 计算 ${d.compute_ms}ms</div>
-    <div class="mt-1 text-[10px] text-slate-500">分散度：${d.diversity.map(v => `${['万', '千', '百', '十', '个'][v.pos]}${v.distinct}种/首数${v.topDigit}占${pct(v.topShare, 0)}`).join(' · ')}</div>`
+    <div class="mt-1 text-[10px] text-slate-500">分散度：${d.diversity.map(v => `${['万', '千', '百'][v.pos]}${v.distinct}种/首数${v.topDigit}占${pct(v.topShare, 0)}`).join(' · ')}</div>`
   // 每位分布
   const maxP = Math.max(...d.positions.flatMap(p => p.dist))
   $('pick-pos').innerHTML = `<div class="text-xs text-slate-400 mb-2"><i class="fas fa-layer-group mr-1"></i>每位 0-9 倾向分布（首选 <span class="text-amber-300">金</span> · 次选 <span class="text-sky-300">蓝</span>）</div>` +
@@ -187,12 +187,12 @@ async function loadPick(silent) {
   // 复式
   const dp = d.duplex
   $('pick-duplex').innerHTML = `<div class="flex flex-wrap items-center gap-3"><div class="text-xs text-slate-400"><i class="fas fa-table-cells mr-1"></i>等价复式方案（每位选号 → 自动组合 ${dp.count} 注，覆盖 ${pct(dp.coverage, 2)} vs 基线 ${pct(dp.baseline, 2)} · ${dp.lift}×）</div>
-    <div class="flex flex-wrap gap-2 font-mono text-sm">${dp.sets.map((s, i) => `<span class="px-2 py-1 rounded bg-slate-800 border border-slate-700"><span class="text-slate-400 text-xs mr-1">${['万', '千', '百', '十', '个'][i]}</span><b class="text-amber-300">${s.join('')}</b></span>`).join('')}</div>
+    <div class="flex flex-wrap gap-2 font-mono text-sm">${dp.sets.map((s, i) => `<span class="px-2 py-1 rounded bg-slate-800 border border-slate-700"><span class="text-slate-400 text-xs mr-1">${['万', '千', '百'][i]}</span><b class="text-amber-300">${s.join('')}</b></span>`).join('')}</div>
     <button class="tab active ml-auto" id="pick-copy-duplex"><i class="fas fa-copy mr-1"></i>复制复式</button></div>`
   $('pick-copy-duplex').onclick = () => copyText(dp.text)
   // 回测
   const bt = d.backtest
-  $('pick-bt').innerHTML = `<div class="text-xs text-slate-400 mb-1"><i class="fas fa-vial mr-1 text-cyan-400"></i>诚实回测：最近 ${bt.n} 期，用「当期之前的数据」生成 Top-${d.count}，真实开奖号是否落入</div>
+  $('pick-bt').innerHTML = `<div class="text-xs text-slate-400 mb-1"><i class="fas fa-vial mr-1 text-cyan-400"></i>诚实回测：最近 ${bt.n} 期，用「当期之前的数据」生成 Top-${d.count}，真实开奖号「前三位」是否落入</div>
     <div class="flex flex-wrap items-end gap-4"><div><div class="v ${bt.hit > bt.expected_hits ? 'text-emerald-400' : 'text-slate-200'}">${bt.hit}/${bt.n}</div><div class="text-[10px] text-slate-500">命中 / 期数</div></div>
     <div><div class="v text-slate-300">${bt.rate == null ? '—' : pct(bt.rate, 1)}</div><div class="text-[10px] text-slate-500">实际覆盖率</div></div>
     <div><div class="v text-slate-500">${pct(bt.baseline, 2)}</div><div class="text-[10px] text-slate-500">理论基线</div></div>
@@ -205,7 +205,7 @@ async function loadPick(silent) {
 }
 function bindPick() {
   const setCount = (n, from) => {
-    n = Math.max(10, Math.min(2000, Math.round(n / 10) * 10)); PICK.count = n
+    n = Math.max(10, Math.min(1000, Math.round(n / 10) * 10)); PICK.count = n
     if (from !== 'range') $('pick-range').value = n
     if (from !== 'num') $('pick-count').value = n
     document.querySelectorAll('#pick-presets .tab').forEach(b => b.classList.toggle('active', Number(b.dataset.n) === n))

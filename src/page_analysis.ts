@@ -96,19 +96,19 @@ export const analysisPage = () => `<!DOCTYPE html>
   <section class="card" id="pick-section">
     <header class="flex flex-wrap items-center gap-3 mb-3">
       <h2 class="font-bold text-lg"><i class="fas fa-wand-magic-sparkles text-amber-400 mr-2"></i>量化选号器 <span id="pick-title" class="text-slate-400 text-sm font-normal ml-1"></span></h2>
-      <span class="text-xs text-slate-500">五位定位胆联合概率 Top-N · 机制集成 × 单双 BOLL/MACD/KDJ × 大小 × 总和/龙虎/形态</span>
+      <span class="text-xs text-slate-500">前三位（万·千·百）联合概率 Top-N · 机制集成 × 单双 BOLL/MACD/KDJ × 大小 × 前三和/龙虎/形态</span>
       <span id="pick-live" class="text-xs text-slate-500 ml-auto"></span>
     </header>
     <div class="grid lg:grid-cols-3 gap-3 mb-3">
       <div class="kpi lg:col-span-2">
-        <div class="flex items-center justify-between text-xs text-slate-400 mb-1"><span><i class="fas fa-sliders mr-1"></i>号码数量（拖动设定）</span><span class="text-slate-500">10 ～ 2000 注 · 理论覆盖率 = N / 100000</span></div>
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1"><span><i class="fas fa-sliders mr-1"></i>号码数量（拖动设定）</span><span class="text-slate-500">10 ～ 1000 注 · 理论覆盖率 = N / 1000（前三位共 1000 种）</span></div>
         <div class="flex items-center gap-3">
-          <input id="pick-range" type="range" min="10" max="2000" step="10" value="500" class="flex-1 accent-amber-400">
-          <input id="pick-count" type="number" min="10" max="2000" step="10" value="500" class="w-24 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm font-mono text-right">
+          <input id="pick-range" type="range" min="10" max="1000" step="10" value="500" class="flex-1 accent-amber-400">
+          <input id="pick-count" type="number" min="10" max="1000" step="10" value="500" class="w-24 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm font-mono text-right">
           <span class="text-xs text-slate-400">注</span>
         </div>
         <div class="flex flex-wrap gap-1 mt-2 text-[11px]" id="pick-presets">
-          <button data-n="100" class="tab">100</button><button data-n="200" class="tab">200</button><button data-n="300" class="tab">300</button><button data-n="400" class="tab">400</button><button data-n="500" class="tab active">500</button><button data-n="800" class="tab">800</button><button data-n="1000" class="tab">1000</button>
+          <button data-n="100" class="tab">100</button><button data-n="200" class="tab">200</button><button data-n="300" class="tab">300</button><button data-n="400" class="tab">400</button><button data-n="500" class="tab active">500</button><button data-n="600" class="tab">600</button><button data-n="800" class="tab">800</button>
           <span class="flex items-center gap-1 text-slate-400 ml-2">分散度 <select id="pick-temp" class="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-[11px]"><option value="1">集中（纯信号）</option><option value="1.5" selected>均衡</option><option value="2.2">分散</option></select></span>
           <span class="ml-auto flex items-center gap-2 text-slate-400">显示层级
             <select id="pick-tier" class="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-[11px]"><option value="all">全部</option><option value="core">核心 (前 10%)</option><option value="main">核心+主力 (前 50%)</option></select>
