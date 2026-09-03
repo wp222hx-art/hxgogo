@@ -76,7 +76,7 @@ async function poll() {
     if (d.last && d.last.round_no !== state.lastSettledNo) {
       const first = state.lastSettledNo === null
       state.lastSettledNo = d.last.round_no; state.last = d.last; renderLast(d.last, !first)
-      if (!first) { loadHistory(); loadLeaderboard() }
+      if (!first) { loadHistory(); loadLeaderboard(); if (state.room === 'five') loadRecStrip() }
     }
     renderRound(); renderMyBets()
   } catch (e) { console.error(e) }
@@ -254,7 +254,26 @@ function switchRoom(room) {
   document.querySelectorAll('#trend-type .five-only').forEach(o => o.hidden = !five)
   document.querySelectorAll('#trend-type option:not(.five-only)').forEach(o => o.hidden = five)
   state.trendType = five ? 'sumSize' : 'parity'; $('trend-type').value = state.trendType
-  poll(); loadHistory()
+  poll(); loadHistory(); if (five) loadRecStrip()
+}
+
+// ---------- 五位厅：本期推荐条 ----------
+async function loadRecStrip() {
+  try {
+    // 本厅归档不足 200 期时，退回同规则的 qkltj 1 分钟厅历史作为统计样本
+    const srcs = (await api.get('/sources')).data.sources
+    const local = srcs.find(s => s.key === 'local:five')
+    const source = local && local.count >= 200 ? 'local:five' : 'qkltj:6001'
+    const d = (await api.get('/analysis/recommend', { params: { source } })).data
+    if (state.room !== 'five') return
+    $('rec-src').textContent = `样本：${source === 'local:five' ? '本厅' : '哈希分分彩(同规则)'} ${d.n} 期`
+    const lvC = { strong: 'border-emerald-500/50 text-emerald-300 bg-emerald-500/10', mild: 'border-amber-500/50 text-amber-300 bg-amber-500/10', neutral: 'border-slate-700 text-slate-400 bg-slate-800/50' }
+    const groups = d.plays.flatMap(p => p.groups.map(g => ({ ...g, play: p.play }))).sort((a, b) => (b.tilt * (1 + b.consensus / 100)) - (a.tilt * (1 + a.consensus / 100)))
+    const sel = (g) => { const c = g.candidates[0]; if (g.play === 'pos') return ['pos', `${g.key.split('-')[2]}-${c.key}`]; if (g.play === 'pos2') return ['pos2', `${g.key.split('-')[2]}-${c.key}`]; if (g.play === 'sum') return ['sum', c.key]; if (g.play === 'dragon') return ['dragon', c.key]; return ['shape', c.key] }
+    $('rec-chips').innerHTML = groups.slice(0, 8).map(g => { const c = g.candidates[0]; const [t, s] = sel(g); return `<button class="px-2 py-1 rounded-lg border ${lvC[g.level]} hover:brightness-125" data-t="${t}" data-s="${s}" title="${g.advice}">${g.name} → <b>${c.label}</b> <span class="font-mono">${(c.p * 100).toFixed(1)}%</span> <span class="opacity-60">倾向${g.tilt}</span></button>` }).join('')
+    document.querySelectorAll('#rec-chips button').forEach(b => b.onclick = () => placeBet(b.dataset.t, b.dataset.s))
+    $('rec-lucky').innerHTML = `<span class="text-slate-400">幸运数字榜：</span>` + d.digitBoard.slice(0, 5).map(x => `<span class="px-2 py-0.5 rounded bg-slate-800 border border-slate-700"><b class="text-amber-300 font-mono text-sm">${x.digit}</b> <span class="text-slate-500">${(x.pAny * 100).toFixed(0)}% · 最可能${x.bestPosName}位</span></span>`).join('') + `<span class="text-slate-600 ml-auto">统计展示，哈希不可预测</span>`
+  } catch (e) { $('rec-chips').innerHTML = '<span class="text-slate-500">推荐暂不可用</span>'; console.error(e) }
 }
 
 // ---------- 事件绑定 ----------

@@ -1,7 +1,7 @@
 // ================= HashQuant 分析中心 =================
 const $ = (id) => document.getElementById(id)
 const api = axios.create({ baseURL: '/api' })
-const S = { source: new URLSearchParams(location.search).get('source') || 'qkltj:6001', market: 'sum-size', markets: [], charts: {}, sources: [] }
+const S = { source: new URLSearchParams(location.search).get('source') || 'qkltj:6001', market: 'sum-size', markets: [], charts: {}, sources: [], digit: 7, pos: 'any', play: 'pos', ec: {} }
 const COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#eab308', '#a855f7', '#06b6d4', '#f97316', '#ec4899', '#84cc16', '#64748b']
 Chart.defaults.color = '#94a3b8'; Chart.defaults.borderColor = '#1e293b'; Chart.defaults.font.size = 11
 
@@ -24,7 +24,7 @@ async function init() {
   $('sync-btn').onclick = async () => { $('sync-btn').innerHTML = '<i class="fas fa-rotate fa-spin mr-1"></i>同步中'; await api.post('/sync?force=1&source=' + S.source); $('sync-btn').innerHTML = '<i class="fas fa-rotate mr-1"></i>同步'; loadAll() }
   loadAll()
 }
-async function loadAll() { renderKpis(); await Promise.all([loadOverview(), loadPredict(), loadStats()]) }
+async function loadAll() { renderKpis(); await Promise.all([loadRecommend(), loadKline(), loadOverview(), loadPredict(), loadStats()]) }
 
 async function renderKpis() {
   const meta = (await api.get('/sources')).data.sources; S.sources = meta
@@ -99,6 +99,121 @@ async function loadStats() {
   const L = { big: '大', small: '小', odd: '单', even: '双', dragon: '龙', tiger: '虎', tie: '和' }
   $('streaks').innerHTML = Object.entries(d.maxStreak).map(([k, v]) => { const m = S.markets.find(x => x.key === k); const c = d.currentStreak[k]; return `<div class="kpi !p-2"><div class="text-slate-500 truncate">${m?.name || k}</div><div class="flex justify-between items-end"><span>最长 <b class="font-mono text-amber-400 text-base">${v}</b></span><span class="text-slate-400">当前 ${L[c.v]}×<b class="text-slate-200">${c.len}</b></span></div></div>` }).join('')
 }
+// =====================================================================
+// K 线模块（ECharts）
+// =====================================================================
+const UP = '#ef4444', DOWN = '#22c55e'   // 中式：红涨绿跌
+ function ec(id) { const el = $(id); if (!el) return null; if (!S.ec[id]) { S.ec[id] = echarts.init(el, null, { renderer: 'canvas' }) } return S.ec[id] }
+window.addEventListener('resize', () => Object.values(S.ec).forEach(c => c.resize()))
+
+/** 通用蜡烛图 option */
+function candleOption(candles, opt = {}) {
+  const { base, title, ma5, ma20, yFmt = v => pct(v, 0), volume = true, yMin, yMax, evLine = true } = opt
+  const x = candles.map(c => c.expect.slice(-4))
+  const series = [{ name: title || '频率', type: 'candlestick', data: candles.map(c => [c.o, c.c, c.l, c.h]), itemStyle: { color: UP, color0: DOWN, borderColor: UP, borderColor0: DOWN }, xAxisIndex: 0, yAxisIndex: 0,
+    markLine: base !== undefined && evLine ? { symbol: 'none', silent: true, lineStyle: { color: '#fbbf24', type: 'dashed', width: 1 }, label: { show: true, position: 'end', formatter: '理论 ' + yFmt(base), color: '#fbbf24', fontSize: 10 }, data: [{ yAxis: base }] } : undefined }]
+  if (ma5) series.push({ name: 'MA5', type: 'line', data: ma5, smooth: true, showSymbol: false, lineStyle: { width: 1.2, color: '#f59e0b' }, xAxisIndex: 0, yAxisIndex: 0 })
+  if (ma20) series.push({ name: 'MA20', type: 'line', data: ma20, smooth: true, showSymbol: false, lineStyle: { width: 1.2, color: '#06b6d4' }, xAxisIndex: 0, yAxisIndex: 0 })
+  if (volume) series.push({ name: '命中次数', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: candles.map(c => ({ value: c.v, itemStyle: { color: c.c >= c.o ? UP + '99' : DOWN + '99' } })) })
+  return {
+    backgroundColor: 'transparent', animation: false,
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e2e8f0', fontSize: 11 }, formatter: (ps) => { const c = candles[ps[0].dataIndex]; if (!c) return ''; return `<b>${c.from} → ${c.to}</b><br/>开 ${yFmt(c.o)} 收 <b style="color:${c.c >= c.o ? UP : DOWN}">${yFmt(c.c)}</b><br/>高 ${yFmt(c.h)} 低 ${yFmt(c.l)}<br/>命中 ${c.v} 次 / 期望 ${c.ev}` + (ma5 ? `<br/>MA5 ${ma5[ps[0].dataIndex] == null ? '—' : yFmt(ma5[ps[0].dataIndex])} · MA20 ${ma20?.[ps[0].dataIndex] == null ? '—' : yFmt(ma20[ps[0].dataIndex])}` : '') } },
+    legend: ma5 ? { data: ['MA5', 'MA20'], top: 0, right: 10, textStyle: { color: '#94a3b8', fontSize: 10 }, itemWidth: 14 } : undefined,
+    grid: volume ? [{ left: 44, right: 56, top: 22, height: '58%' }, { left: 44, right: 56, top: '76%', height: '16%' }] : [{ left: 44, right: 56, top: 14, bottom: 26 }],
+    xAxis: [{ type: 'category', data: x, gridIndex: 0, axisLine: { lineStyle: { color: '#334155' } }, axisLabel: { color: '#64748b', fontSize: 9, show: !volume }, axisTick: { show: false }, boundaryGap: true }, ...(volume ? [{ type: 'category', data: x, gridIndex: 1, axisLine: { lineStyle: { color: '#334155' } }, axisLabel: { color: '#64748b', fontSize: 9 }, axisTick: { show: false } }] : [])],
+    yAxis: [{ scale: true, gridIndex: 0, min: yMin, max: yMax, splitLine: { lineStyle: { color: '#1e293b' } }, axisLabel: { color: '#64748b', fontSize: 9, formatter: yFmt } }, ...(volume ? [{ gridIndex: 1, splitNumber: 2, splitLine: { show: false }, axisLabel: { color: '#64748b', fontSize: 9 } }] : [])],
+    dataZoom: [{ type: 'inside', xAxisIndex: volume ? [0, 1] : [0], start: Math.max(0, 100 - 6000 / Math.max(1, candles.length)), end: 100 }],
+    series,
+  }
+}
+
+async function loadKline() {
+  const d = (await api.get('/analysis/kline', { params: { source: S.source, digit: S.digit, pos: S.pos, bucket: $('bucket-sel').value, window: $('window-sel').value } })).data
+  S.kl = d
+  $('kl-title').textContent = `数字 ${d.digit} · ${d.posName} · ${d.n} 期`
+  // 位置 tab
+  $('pos-tabs').innerHTML = [['any', '任意位'], [0, '万'], [1, '千'], [2, '百'], [3, '十'], [4, '个']].map(([k, l]) => `<button class="tab ${String(S.pos) === String(k) ? 'active' : ''}" data-p="${k}">${l}</button>`).join('')
+  document.querySelectorAll('#pos-tabs .tab').forEach(b => b.onclick = () => { S.pos = b.dataset.p === 'any' ? 'any' : Number(b.dataset.p); loadKline() })
+  // 数字选择器（带冷热标记）
+  $('digit-sel').innerHTML = d.profile.map(p => `<button class="digit-btn ${p.digit === d.digit ? 'active' : ''} ${p.heat > 0.3 ? 'hot' : p.heat < -0.3 ? 'cold' : ''}" data-d="${p.digit}" title="全量 ${pct(p.freq)} · 近30 ${pct(p.freq30)} · 遗漏 ${p.gap}">${p.digit}<small>${pct(p.freq30, 0)} · 遗${p.gap}</small></button>`).join('')
+  document.querySelectorAll('.digit-btn').forEach(b => b.onclick = () => { S.digit = Number(b.dataset.d); loadKline() })
+  // 主 K 线
+  ec('k-main').setOption(candleOption(d.candles, { base: d.base, title: `数字 ${d.digit} 频率`, ma5: d.ma5, ma20: d.ma20 }), true)
+  // KPI
+  const st = d.stats
+  const k = (l, v, c = 'text-cyan-300') => `<div class="kpi !p-2"><div class="text-[10px] text-slate-500">${l}</div><div class="font-mono font-bold ${c}">${v}</div></div>`
+  $('kl-kpis').innerHTML = k('实际 / 期望', `${st.total} / ${st.expected}`) + k('出现率', pct(st.rate), st.rate > d.base ? 'text-red-400' : 'text-emerald-400') + k('z 分数', (st.z > 0 ? '+' : '') + st.z, Math.abs(st.z) > 2 ? 'text-amber-400' : 'text-slate-300') + k('当前遗漏', st.gapNow, st.gapNow > st.avgGap * 2 ? 'text-blue-400' : 'text-slate-300') + k('平均 / 最大遗漏', `${st.avgGap} / ${st.maxGap}`) + k('最长连出', st.maxRun) + k('阳线 / 阴线', `${st.upCount} / ${st.downCount}`) + k('趋势', st.trend === 'up' ? '升温 ↗' : st.trend === 'down' ? '降温 ↘' : '震荡 →', st.trend === 'up' ? 'text-red-400' : st.trend === 'down' ? 'text-emerald-400' : 'text-slate-300')
+  $('kl-tl').innerHTML = d.timeline.map(h => `<i class="${h ? 'on' : ''}"></i>`).join('')
+  ec('k-gap').setOption({ backgroundColor: 'transparent', animation: false, grid: { left: 28, right: 6, top: 6, bottom: 18 }, tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e2e8f0', fontSize: 11 } }, xAxis: { type: 'category', data: st.gapHist.map((_, i) => i === 20 ? '20+' : i), axisLabel: { color: '#64748b', fontSize: 8, interval: 3 } }, yAxis: { type: 'value', axisLabel: { color: '#64748b', fontSize: 8 }, splitLine: { lineStyle: { color: '#1e293b' } } }, series: [{ type: 'bar', data: st.gapHist, itemStyle: { color: '#3b82f6' } }, { type: 'line', showSymbol: false, lineStyle: { color: '#fbbf24', width: 1 }, data: st.gapHist.map((_, i) => { const p = d.per * d.base; const tot = st.gapHist.reduce((a, b) => a + b, 0); return i < 20 ? tot * p * (1 - p) ** i : tot * (1 - p) ** 20 }) }] }, true)
+  // 文字解读
+  const r = []
+  r.push(`数字 <b class="text-amber-400">${d.digit}</b> 在${d.posName}共出现 ${st.total} 次（期望 ${st.expected}），z=${st.z}：${Math.abs(st.z) < 1 ? '完全在随机波动范围内' : Math.abs(st.z) < 2 ? '轻微偏离，仍属正常' : '偏离较大（|z|>2），属 5% 小概率事件——但 50 个数字×位置中总会有几个'}。`)
+  r.push(`当前遗漏 ${st.gapNow} 期（平均 ${st.avgGap}，历史最大 ${st.maxGap}），${st.gapNow > st.avgGap * 2 ? '处于“冷号”区间，追冷派会关注' : st.gapNow === 0 ? '上一期刚刚开出，热号派会跟' : '处于正常区间'}。`)
+  r.push(`K 线：最新收盘 ${pct(st.lastClose)}，MA5 ${st.m5 == null ? '—' : pct(st.m5)}，MA20 ${st.m20 == null ? '—' : pct(st.m20)} → ${st.trend === 'up' ? '多头排列，短期“升温”' : st.trend === 'down' ? '空头排列，短期“降温”' : '均线纠绕，震荡'}。记住：频率均值回归到 10% 是数学必然，趋势不具预测力。`)
+  $('kl-read').innerHTML = r.join('<br/>')
+  // 市场 K 线
+  const mk = d.markets
+  ec('k-sum').setOption(candleOption(mk.sum, { base: 22.5, title: '总和', yFmt: v => Number(v).toFixed(1), volume: false, yMin: 0, yMax: 45 }), true)
+  ec('k-big').setOption(candleOption(mk.big, { base: .5, title: '大率', volume: false, yMin: .2, yMax: .8 }), true)
+  ec('k-odd').setOption(candleOption(mk.odd, { base: .5, title: '单率', volume: false, yMin: .2, yMax: .8 }), true)
+  ec('k-dragon').setOption(candleOption(mk.dragon, { base: .45, title: '龙率', volume: false, yMin: .15, yMax: .75 }), true)
+}
+$('bucket-sel').onchange = loadKline; $('window-sel').onchange = loadKline
+
+// =====================================================================
+// 本期推荐模块
+// =====================================================================
+const PLAY_ICON = { pos: 'fa-crosshairs', pos2: 'fa-arrows-left-right', sum: 'fa-plus-minus', dragon: 'fa-dragon', shape: 'fa-shapes' }
+const LVL = { strong: '强共识', mild: '温和', neutral: '中性' }
+function candRow(c, prior, top) {
+  const w = Math.min(100, c.p / (prior * 2.2) * 100)          // 以 2.2×先验 为满格
+  const bx = Math.min(100, 100 / 2.2)
+  const col = c.p > prior * 1.08 ? UP : c.p < prior * 0.92 ? DOWN : '#64748b'
+  return `<div class="cand ${top ? 'top1' : ''}" title="投票 ${c.votes} · 遗漏 ${c.gap} · EV ${c.ev >= 0 ? '+' : ''}${c.ev}">
+    <span class="lb" style="color:${top ? '#fbbf24' : '#e2e8f0'}">${c.label}</span>
+    <span class="pb"><i style="width:${w}%;background:${col}"></i><b style="left:${bx}%"></b></span>
+    <span class="font-mono w-12 text-right">${pct(c.p)}</span>
+    <span class="text-[10px] text-slate-500 w-10 text-right">×${c.odds}</span>
+    <span class="text-[10px] ${c.ev > 0 ? 'text-emerald-400' : 'text-slate-600'} w-12 text-right">EV ${c.ev >= 0 ? '+' : ''}${(c.ev * 100).toFixed(0)}%</span>
+    <span class="text-amber-400 text-[9px] w-10">${'★'.repeat(c.star)}</span></div>`
+}
+function renderPlay() {
+  const d = S.rec; if (!d) return
+  const play = d.plays.find(p => p.play === S.play)
+  $('play-tabs').innerHTML = d.plays.map(p => { const best = [...p.groups].sort((a, b) => b.tilt - a.tilt)[0]; return `<button class="tab ${p.play === S.play ? 'active' : ''}" data-p="${p.play}"><i class="fas ${PLAY_ICON[p.play]} mr-1"></i>${p.name.split('（')[0]} <span class="text-[10px] opacity-70">最高倾向 ${best.tilt}</span></button>` }).join('')
+  document.querySelectorAll('#play-tabs .tab').forEach(b => b.onclick = () => { S.play = b.dataset.p; renderPlay() })
+  const cols = play.groups.length === 1 ? 'xl:grid-cols-1 md:grid-cols-1' : play.groups.length === 2 ? 'xl:grid-cols-2' : 'xl:grid-cols-5'
+  $('play-body').className = 'grid md:grid-cols-2 gap-3 ' + cols
+  $('play-body').innerHTML = play.groups.map(g => {
+    const top = g.candidates[0]
+    return `<div class="play-card">
+      <div class="flex justify-between items-start mb-1"><div><div class="text-xs text-slate-400">${g.name}</div><div class="text-2xl font-black" style="color:${g.level === 'strong' ? '#22c55e' : g.level === 'mild' ? '#eab308' : '#94a3b8'}">${top.label} <span class="text-sm font-mono text-amber-400">${pct(top.p)}</span></div></div>
+        <div class="text-right text-[10px]"><div class="lvl-${g.level} font-bold">${LVL[g.level]}</div><div class="text-slate-500">倾向 ${g.tilt} · 共识 ${g.consensus}%</div>${g.streak.len >= 3 ? `<div class="text-orange-400"><i class="fas fa-fire"></i> ${g.streak.label}连${g.streak.len}</div>` : ''}</div></div>
+      <div class="space-y-0.5 mt-2">${g.candidates.map((c, i) => candRow(c, c.prior, i === 0)).join('')}</div>
+      <div class="text-[11px] text-slate-400 mt-2 leading-relaxed border-t border-slate-800 pt-2"><i class="fas fa-lightbulb text-amber-400 mr-1"></i>${g.advice}</div>
+    </div>`
+  }).join('')
+}
+async function loadRecommend() {
+  const d = (await api.get('/analysis/recommend', { params: { source: S.source } })).data
+  S.rec = d
+  $('rec-next').textContent = `下一期 ${d.next_expect || '—'}`
+  $('rec-regime').textContent = d.strategy.regimeText; $('rec-regime').className = 'px-2 py-1 rounded-lg text-[11px] ' + (d.strategy.regime === 'pattern' ? 'bg-emerald-500/15 text-emerald-300' : d.strategy.regime === 'anti' ? 'bg-red-500/15 text-red-300' : 'bg-slate-700 text-slate-300')
+  $('rec-steps').innerHTML = d.strategy.steps.map(s => `<div class="step-li">${s}</div>`).join('')
+  const chip = (x, cls) => `<span class="px-2 py-1 rounded-lg text-[11px] ${cls}">${x.market} → <b>${x.pick}</b> ${pct(x.p)}</span>`
+  $('rec-focus').innerHTML = d.strategy.focus.map(x => chip(x, 'bg-emerald-500/15 text-emerald-300 border border-emerald-700/40')).join('') + d.strategy.secondary.map(x => chip(x, 'bg-amber-500/10 text-amber-300 border border-amber-700/40')).join('') + d.strategy.streakWatch.map(x => `<span class="px-2 py-1 rounded-lg text-[11px] bg-orange-500/10 text-orange-300 border border-orange-700/40"><i class="fas fa-fire"></i> ${x.market} ${x.label}连${x.len}</span>`).join('')
+  $('rec-board').innerHTML = d.digitBoard.map(x => `<div class="cand ${x.rank <= 3 ? 'top1' : ''} cursor-pointer" data-d="${x.digit}" title="最可能位置：${x.bestPosName}位 ${pct(x.perPos[x.bestPos])} · 近 30 期出现 ${x.cnt30} 次（期望 15）">
+      <span class="text-slate-500 w-4 text-[10px]">${x.rank}</span><span class="lb text-lg" style="color:${x.rank <= 3 ? '#fbbf24' : '#e2e8f0'}">${x.digit}</span>
+      <span class="pb"><i style="width:${Math.min(100, x.pAny / 0.6 * 100)}%;background:${x.pAny > x.priorAny ? UP : DOWN}"></i><b style="left:${x.priorAny / 0.6 * 100}%"></b></span>
+      <span class="font-mono w-12 text-right">${pct(x.pAny)}</span><span class="text-[10px] w-14 text-right ${x.heat > 0.3 ? 'text-red-400' : x.heat < -0.3 ? 'text-blue-400' : 'text-slate-500'}">热 ${x.heat > 0 ? '+' : ''}${(x.heat * 100).toFixed(0)}%</span><span class="text-[10px] text-slate-500 w-10 text-right">遗 ${x.gapAny}</span></div>`).join('')
+  document.querySelectorAll('#rec-board .cand').forEach(el => el.onclick = () => { S.digit = Number(el.dataset.d); S.pos = 'any'; loadKline(); $('kline-section').scrollIntoView({ behavior: 'smooth', block: 'start' }) })
+  $('rec-disc').textContent = d.disclaimer
+  renderPlay()
+  // 倒计时：下一期开奖大致时间 = 最新一期时间 + 间隔
+  const src = S.sources.find(s => s.key === S.source)
+  if (src?.latest && d.interval_ms) { S.nextAt = src.latest + d.interval_ms; if (!S.cdTimer) S.cdTimer = setInterval(() => { const left = S.nextAt - Date.now(); if (left < -3000 && !S.refreshing) { S.refreshing = true; loadAll().finally(() => { S.refreshing = false; if (S.nextAt - Date.now() < 0) S.nextAt = Date.now() + 15000 }) } $('rec-countdown').textContent = left > 0 ? `距下期开奖 ≈ ${Math.floor(left / 60000)}:${String(Math.floor(left % 60000 / 1000)).padStart(2, '0')}` : '等待开奖数据…' }, 1000) }
+}
+
 init()
 window.addEventListener('unhandledrejection', e => console.error('UNHANDLED:', e.reason?.stack || e.reason))
 window.addEventListener('error', e => console.error('ERR:', e.error?.stack || e.message))

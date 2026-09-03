@@ -7,6 +7,7 @@ export const analysisPage = () => `<!DOCTYPE html>
 <script src="https://cdn.tailwindcss.com"></script>
 <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <link href="/static/style.css" rel="stylesheet">
 <style>
 .kpi { background:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:12px; }
@@ -22,6 +23,16 @@ export const analysisPage = () => `<!DOCTYPE html>
 .gauge { position:relative; width:120px; height:60px; overflow:hidden; margin:auto; } .gauge:before { content:''; position:absolute; inset:0; border-radius:120px 120px 0 0; background:conic-gradient(from 270deg, #22c55e 0deg, #eab308 90deg, #ef4444 180deg, transparent 180deg); }
 .gauge:after { content:''; position:absolute; left:15px; right:15px; bottom:0; top:15px; background:#111827; border-radius:120px 120px 0 0; }
 .needle { position:absolute; left:50%; bottom:0; width:2px; height:52px; background:#fff; transform-origin:bottom center; z-index:2; }
+.digit-btn { position:relative; height:52px; border-radius:10px; border:1px solid #1e293b; background:#0f172a; font-family: ui-monospace, monospace; font-weight:800; font-size:20px; cursor:pointer; transition:.15s; display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1; }
+.digit-btn small { font-size:9px; font-weight:400; color:#64748b; margin-top:3px; } .digit-btn:hover { border-color:#06b6d4; } .digit-btn.active { border-color:#f59e0b; background:#f59e0b22; box-shadow:0 0 0 2px #f59e0b55; }
+.digit-btn.hot:before, .digit-btn.cold:before { content:''; position:absolute; top:5px; right:5px; width:6px; height:6px; border-radius:50%; } .digit-btn.hot:before { background:#ef4444; } .digit-btn.cold:before { background:#3b82f6; }
+.cand { display:flex; align-items:center; gap:6px; padding:4px 6px; border-radius:6px; font-size:12px; } .cand:nth-child(odd) { background:#0f172a; } .cand.top1 { background:#f59e0b1a; border:1px solid #f59e0b55; }
+.cand .lb { width:44px; font-weight:800; font-family: ui-monospace, monospace; } .cand .pb { flex:1; height:8px; background:#1e293b; border-radius:4px; overflow:hidden; position:relative; } .cand .pb > i { position:absolute; left:0; top:0; height:100%; border-radius:4px; } .cand .pb > b { position:absolute; top:-2px; width:2px; height:12px; background:#fbbf24; }
+.lvl-strong { color:#22c55e; } .lvl-mild { color:#eab308; } .lvl-neutral { color:#64748b; }
+.play-card { background:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:12px; }
+.tl { display:grid; grid-template-columns: repeat(50, 1fr); gap:2px; } .tl i { height:10px; border-radius:2px; background:#1e293b; } .tl i.on { background:#f59e0b; }
+.step-li { padding:6px 10px; border-left:3px solid #06b6d4; background:#0f172a; border-radius:0 8px 8px 0; font-size:12px; }
+.kchart { width:100%; height:320px; } .kchart.sm { height:200px; }
 </style>
 </head>
 <body class="bg-[#0b0f1a] text-slate-200 min-h-screen">
@@ -42,6 +53,54 @@ export const analysisPage = () => `<!DOCTYPE html>
 <main class="max-w-7xl mx-auto px-4 py-5 space-y-5">
   <!-- 数据源 KPI -->
   <section id="kpis" class="grid grid-cols-2 md:grid-cols-6 gap-3"></section>
+
+  <!-- 本期推荐 -->
+  <section class="card" id="rec-section">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+      <h2 class="font-bold"><i class="fas fa-bullseye mr-2 text-amber-400"></i>本期推荐 · <span id="rec-next" class="text-amber-300 font-mono"></span> <span class="text-xs text-slate-500 font-normal ml-2">20 机制集成 · 每个玩法全部候选的概率都写出来</span></h2>
+      <div class="flex items-center gap-2 text-xs"><span id="rec-countdown" class="font-mono text-slate-400"></span><span id="rec-regime" class="px-2 py-1 rounded-lg"></span></div>
+    </div>
+    <!-- 策略卡 -->
+    <div class="grid lg:grid-cols-3 gap-4 mb-4">
+      <div class="lg:col-span-2 space-y-2">
+        <div class="text-xs text-slate-400 font-bold"><i class="fas fa-chess mr-1 text-cyan-400"></i>预见性策略（规则引擎自动生成）</div>
+        <div id="rec-steps" class="space-y-1.5"></div>
+        <div id="rec-focus" class="flex flex-wrap gap-2 pt-1"></div>
+      </div>
+      <div class="play-card">
+        <div class="text-xs text-slate-400 font-bold mb-2"><i class="fas fa-star mr-1 text-amber-400"></i>幸运数字综合榜（任意位至少出现一次）</div>
+        <div id="rec-board" class="space-y-1"></div>
+        <div class="text-[10px] text-slate-500 mt-2">理论值 1−0.9⁵ = 41.0%；点击数字可切换下方 K 线</div>
+      </div>
+    </div>
+    <!-- 玩法 Tab -->
+    <div id="play-tabs" class="flex flex-wrap gap-1 mb-3"></div>
+    <div id="play-body" class="grid md:grid-cols-2 xl:grid-cols-5 gap-3"></div>
+    <div class="text-[11px] text-slate-500 mt-3"><i class="fas fa-circle-info mr-1"></i><span id="rec-disc"></span></div>
+  </section>
+
+  <!-- 幸运数字 K 线 -->
+  <section class="card" id="kline-section">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+      <h2 class="font-bold"><i class="fas fa-chart-simple mr-2 text-emerald-400"></i>幸运数字 K 线 · <span id="kl-title" class="text-emerald-300"></span></h2>
+      <div class="flex flex-wrap gap-2 items-center text-xs">
+        <div id="pos-tabs" class="flex gap-1"></div>
+        <label class="text-slate-400">K 线粒度 <select id="bucket-sel" class="bg-slate-800 rounded px-2 py-1 border border-slate-700"><option value="1">1 期</option><option value="3">3 期</option><option value="5" selected>5 期</option><option value="10">10 期</option><option value="20">20 期</option></select></label>
+        <label class="text-slate-400">频率窗口 <select id="window-sel" class="bg-slate-800 rounded px-2 py-1 border border-slate-700"><option value="10">10</option><option value="20" selected>20</option><option value="30">30</option><option value="50">50</option><option value="100">100</option></select></label>
+      </div>
+    </div>
+    <div id="digit-sel" class="grid grid-cols-5 sm:grid-cols-10 gap-2 mb-3"></div>
+    <div class="grid lg:grid-cols-4 gap-4">
+      <div class="lg:col-span-3"><div id="k-main" class="kchart" style="height:380px"></div></div>
+      <div class="space-y-2">
+        <div id="kl-kpis" class="grid grid-cols-2 gap-2"></div>
+        <div class="kpi"><div class="text-xs text-slate-400 mb-1">近 100 期命中点阵（右=最新）</div><div id="kl-tl" class="tl"></div></div>
+        <div class="kpi"><div class="text-xs text-slate-400 mb-1">遗漏长度分布</div><div id="k-gap" class="kchart" style="height:120px"></div></div>
+        <div id="kl-read" class="kpi text-xs leading-relaxed"></div>
+      </div>
+    </div>
+    <div class="text-[11px] text-slate-500 mt-2">K 线读法：“价格” = 该数字在滚动窗口内的出现频率；阳线(红)=升温，阴线(绿)=降温；黄色虚线 = 理论频率 10%；下方柱子 = 该根 K 线内实际命中次数（成交量）。</div>
+  </section>
 
   <!-- 全市场倾向总览 -->
   <section class="card">
@@ -94,8 +153,12 @@ export const analysisPage = () => `<!DOCTYPE html>
   <section class="grid md:grid-cols-2 gap-5">
     <article class="card"><h3 class="font-bold text-sm mb-3"><i class="fas fa-table-cells mr-2 text-amber-400"></i>五位 × 数字 频率热力图</h3><div id="heat" class="heat"></div><div class="text-xs text-slate-500 mt-2">颜色越亮出现越多；理论期望 = 样本/10</div></article>
     <article class="card"><h3 class="font-bold text-sm mb-3"><i class="fas fa-snowflake mr-2 text-cyan-400"></i>五位 × 数字 当前遗漏</h3><div id="gaps" class="heat"></div><div class="text-xs text-slate-500 mt-2">数字 = 距上次出现的期数；越红越久未出</div></article>
+    <article class="card"><h3 class="font-bold text-sm mb-3"><i class="fas fa-chart-line mr-2 text-violet-400"></i>总和 K 线（价格 = 每期总和，黄线 22.5 中轴）</h3><div id="k-sum" class="kchart sm"></div></article>
+    <article class="card"><h3 class="font-bold text-sm mb-3"><i class="fas fa-wave-square mr-2 text-emerald-400"></i>总和大率 K 线（滚动窗口，50% 中轴）</h3><div id="k-big" class="kchart sm"></div></article>
+    <article class="card"><h3 class="font-bold text-sm mb-3"><i class="fas fa-wave-square mr-2 text-fuchsia-400"></i>总和单率 K 线</h3><div id="k-odd" class="kchart sm"></div></article>
+    <article class="card"><h3 class="font-bold text-sm mb-3"><i class="fas fa-dragon mr-2 text-red-400"></i>龙率 K 线（理论 45%）</h3><div id="k-dragon" class="kchart sm"></div></article>
     <article class="card"><h3 class="font-bold text-sm mb-3"><i class="fas fa-chart-column mr-2 text-violet-400"></i>总和分布 (0-45)</h3><canvas id="ch-sum" height="180"></canvas></article>
-    <article class="card"><h3 class="font-bold text-sm mb-3"><i class="fas fa-wave-square mr-2 text-emerald-400"></i>滚动 30 期 大/单 比率</h3><canvas id="ch-roll" height="180"></canvas></article>
+    <article class="card"><h3 class="font-bold text-sm mb-3"><i class="fas fa-wave-square mr-2 text-emerald-400"></i>滚动 30 期 大/单 比率（折线）</h3><canvas id="ch-roll" height="180"></canvas></article>
     <article class="card"><h3 class="font-bold text-sm mb-3"><i class="fas fa-clock mr-2 text-orange-400"></i>24 小时 时段分布（大率 / 单率 · UTC+8）</h3><canvas id="ch-hour" height="180"></canvas></article>
     <article class="card"><h3 class="font-bold text-sm mb-3"><i class="fas fa-shapes mr-2 text-pink-400"></i>形态 & 龙虎 分布 vs 理论</h3><div class="grid grid-cols-2 gap-3"><div style="height:200px"><canvas id="ch-shape"></canvas></div><div style="height:200px"><canvas id="ch-dragon"></canvas></div></div></article>
     <article class="card md:col-span-2"><h3 class="font-bold text-sm mb-3"><i class="fas fa-fire mr-2 text-red-400"></i>各市场最长连开（历史）与当前连开</h3><div id="streaks" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 text-xs"></div></article>

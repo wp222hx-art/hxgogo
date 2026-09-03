@@ -81,6 +81,11 @@ export const page = () => `<!DOCTYPE html>
         </div>
       </div>
       <div id="bet-grid-five" class="hidden space-y-3">
+        <div id="rec-strip" class="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-2"><span class="font-bold text-amber-300"><i class="fas fa-bullseye mr-1"></i>本期推荐（20 机制集成 · 本厅历史）</span><span class="flex items-center gap-2"><span id="rec-src" class="text-slate-500"></span><a href="/analysis?source=local:five" class="text-cyan-400 hover:underline">完整 K 线 & 策略 →</a></span></div>
+          <div id="rec-chips" class="flex flex-wrap gap-1.5"><span class="text-slate-500">计算中…</span></div>
+          <div id="rec-lucky" class="mt-2 flex flex-wrap items-center gap-1.5"></div>
+        </div>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div class="bet-group"><div class="bet-group-title">总和 大小（≥23 大）</div>
             <button class="bet-btn red" data-t="sum" data-s="big">大 <em>1.95</em></button><button class="bet-btn blue" data-t="sum" data-s="small">小 <em>1.95</em></button></div>

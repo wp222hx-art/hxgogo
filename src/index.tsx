@@ -7,6 +7,8 @@ import { analysisPage } from './page_analysis'
 import { computeOutcomes5, judge5, isBet5Type, ODDS5, type Bet5Type } from './engine5'
 import { SOURCES, isSource, syncSource, loadDraws } from './sync'
 import { MARKETS, marketByKey, buildSeries, backtest, ensemble, stats as drawStats, MECHANISMS } from './analysis'
+import { kline, marketKlines } from './kline'
+import { recommend } from './recommend'
 
 type Bindings = { DB: D1Database }
 const app = new Hono<{ Bindings: Bindings }>()
@@ -373,6 +375,41 @@ app.get('/api/analysis/overview', async (c) => {
     return { key: m.key, name: m.name, labels: m.labels, p: en.p, top: en.top, top_label: m.labels[en.top], tilt: en.tilt, consensus: en.consensus, streak: en.streak, best_mech: { name: best.name, acc: best.acc }, baseline: bt.baseline, avg_acc: bt.res.reduce((x, r) => x + r.acc, 0) / bt.res.length }
   })
   const v = { ok: true, source, sample: rows.length, latest_expect: latest, markets: out }
+  analysisCache.set(ck, { t: now(), v })
+  return c.json(v)
+})
+
+/** K 线：幸运数字出现频率 OHLC（用户自选数字 + 位置 + K 线粒度 + 滚动窗口） */
+app.get('/api/analysis/kline', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const digit = Math.max(0, Math.min(9, Number(c.req.query('digit') ?? 7)))
+  const posQ = c.req.query('pos') ?? 'any'
+  const pos: number | 'any' = posQ === 'any' ? 'any' : Math.max(0, Math.min(4, Number(posQ)))
+  const bucket = Math.max(1, Math.min(50, Number(c.req.query('bucket') || 5)))
+  const window = Math.max(5, Math.min(200, Number(c.req.query('window') || 20)))
+  const limit = Math.min(1000, Number(c.req.query('limit') || 1000))
+  const rows = await drawsFor(c.env.DB, source, limit)
+  const latest = rows[0]?.expect || ''
+  const ck = `kl|${source}|${digit}|${pos}|${bucket}|${window}|${limit}|${latest}`
+  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) return c.json(hit.v)
+  const v = { ok: true, source, latest_expect: latest, ...kline(rows as any, { digit, pos, bucket, window }), markets: marketKlines(rows as any, bucket, window) }
+  analysisCache.set(ck, { t: now(), v })
+  return c.json(v)
+})
+
+/** 本期推荐：每个玩法全部候选的集成概率 + 幸运数字综合榜 + 预见性策略 */
+app.get('/api/analysis/recommend', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const steps = Math.min(150, Number(c.req.query('steps') || 60))
+  const rows = await drawsFor(c.env.DB, source, 600)
+  const latest = rows[0]?.expect || ''
+  const ck = `rc|${source}|${steps}|${latest}`
+  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) return c.json(hit.v)
+  const src = SOURCES[source as keyof typeof SOURCES]
+  const nextExpect = latest && /^\d+$/.test(latest) ? String(BigInt(latest) + 1n) : ''
+  const v = { ok: true, source, latest_expect: latest, next_expect: nextExpect, interval_ms: src.intervalMs, ...recommend(rows as any, steps) }
   analysisCache.set(ck, { t: now(), v })
   return c.json(v)
 })
