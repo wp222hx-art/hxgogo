@@ -10,6 +10,7 @@ import { MARKETS, marketByKey, buildSeries, backtest, ensemble, stats as drawSta
 import { kline, marketKlines } from './kline'
 import { recommend } from './recommend'
 import { parityKline } from './parity_kline'
+import { pick } from './picker'
 
 type Bindings = { DB: D1Database }
 const app = new Hono<{ Bindings: Bindings }>()
@@ -469,6 +470,29 @@ app.get('/api/analysis/overview', async (c) => {
 
 /** K 线：幸运数字出现频率 OHLC（用户自选数字 + 位置 + K 线粒度 + 滚动窗口） */
 /** 单双 K 线 + BOLL/MACD/KDJ 预判（默认万位，最近 500 期） */
+/** 量化选号器：Top-N 五位号码（可自定义数量）+ 复式方案 + 诚实回测 */
+app.get('/api/analysis/pick', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const count = Math.max(10, Math.min(2000, Number(c.req.query('count') || 500)))
+  const steps = Math.max(20, Math.min(150, Number(c.req.query('steps') || 60)))
+  const bt = Math.max(0, Math.min(60, Number(c.req.query('bt') ?? 20)))
+  const wParity = Math.max(0, Math.min(1, Number(c.req.query('wp') ?? 0.6)))
+  const wSize = Math.max(0, Math.min(1, Number(c.req.query('ws') ?? 0.4)))
+  const wCombo = Math.max(0, Math.min(1, Number(c.req.query('wc') ?? 0.35)))
+  const temp = Math.max(0.5, Math.min(3, Number(c.req.query('temp') ?? 1)))
+  const rows = await drawsFor(c.env.DB, source, 600)
+  const latest = rows[0]?.expect || ''
+  const ck = `pick|${source}|${count}|${steps}|${bt}|${wParity}|${wSize}|${wCombo}|${temp}|${latest}|v${dataVersion(source)}`
+  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) { c.header('X-Cache', 'HIT'); return c.json({ ...hit.v, cached: true, cached_ms: hit.t, cache_age_ms: now() - hit.t }) }
+  const src = SOURCES[source as keyof typeof SOURCES]
+  const t0 = now()
+  const v = { ok: true, source, interval_ms: src.intervalMs, ...pick(rows as any, { count, steps, btSteps: bt, wParity, wSize, wCombo, temp }), compute_ms: 0 }
+  v.compute_ms = now() - t0
+  analysisCache.set(ck, { t: now(), v })
+  return c.json(v)
+})
+
 app.get('/api/analysis/parity', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')

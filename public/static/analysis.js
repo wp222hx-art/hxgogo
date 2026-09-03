@@ -22,13 +22,14 @@ async function init() {
   $('market-sel').onchange = e => { S.market = e.target.value; loadPredict() }
   $('steps-sel').onchange = loadPredict; $('limit-sel').onchange = loadPredict
   $('pk-bucket').onchange = () => loadParity(); $('pk-limit').onchange = () => loadParity()
+  bindPick()
   $('sync-btn').onclick = () => SyncBar.force()
   // 拦截所有分析接口响应：命中服务端缓存时显示「缓存」徽标（点击即可强制同步）
   api.interceptors.response.use(r => { if (r.data && r.data.cached) SyncBar.noteCache(r.data); return r })
   SyncBar.mount('sync-bar', { getSource: () => S.source, onNewData: () => loadAll(), onForced: () => loadAll() })
   loadAll()
 }
-async function loadAll() { renderKpis(); await Promise.all([loadRecommend(), loadParity(), loadKline(), loadOverview(), loadPredict(), loadStats()]) }
+async function loadAll() { renderKpis(); await Promise.all([loadRecommend(), loadPick(), loadParity(), loadKline(), loadOverview(), loadPredict(), loadStats()]) }
 
 async function renderKpis() {
   const meta = (await api.get('/sources')).data.sources; S.sources = meta
@@ -134,6 +135,90 @@ function candleOption(candles, opt = {}) {
 // =====================================================================
 // 单双 K 线 + BOLL / MACD / KDJ
 // =====================================================================
+// ================= 量化选号器 =================
+const PICK = { count: 500, data: null, timer: null, latest: '', fmt: 'space', debounce: null }
+function pickVisible() {
+  const d = PICK.data; if (!d) return []
+  const tier = $('pick-tier').value
+  let arr = d.numbers.filter(x => tier === 'all' || x.tier === 'core' || (tier === 'main' && x.tier === 'main'))
+  if ($('pick-sort').checked) arr = [...arr].sort((a, b) => a.no.localeCompare(b.no))
+  return arr
+}
+function pickText(fmt) {
+  const d = PICK.data; if (!d) return ''
+  if (fmt === 'duplex') return d.duplex.text
+  const arr = fmt === 'core' ? d.numbers.filter(x => x.tier === 'core') : pickVisible()
+  const nos = arr.map(x => x.no)
+  return fmt === 'comma' ? nos.join(',') : fmt === 'line' ? nos.join('\n') : nos.join(' ')
+}
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t) } catch (e) { const ta = $('pick-text'); ta.value = t; ta.select(); document.execCommand('copy') }
+  const el = $('pick-copied'); el.classList.remove('hidden'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.add('hidden'), 1800)
+}
+function renderPickGrid() {
+  const d = PICK.data; if (!d) return
+  const arr = pickVisible()
+  $('pick-grid').innerHTML = arr.map(x => `<div class="pick-no pk-${x.tier}" data-no="${x.no}" title="#${x.rank} · 倾向 ${x.lift}× 基线${x.tags.length ? ' · ' + x.tags.join('/') : ''}"><span class="r">${x.rank}</span>${x.no}</div>`).join('')
+  $('pick-grid').querySelectorAll('.pick-no').forEach(el => el.onclick = () => copyText(el.dataset.no))
+  $('pick-text').value = pickText(PICK.fmt)
+  $('pick-title').textContent = `下一期 ${d.next_expect} · 共 ${d.count} 注 · 当前显示 ${arr.length} 注`
+}
+async function loadPick(silent) {
+  const cnt = PICK.count
+  $('pick-live').innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>计算中…'
+  let d
+  try { d = (await api.get('/analysis/pick', { params: { source: S.source, count: cnt, bt: 20, temp: $('pick-temp').value } })).data }
+  catch (e) { $('pick-live').innerHTML = `<i class="fas fa-triangle-exclamation text-red-400 mr-1"></i>加载失败`; clearTimeout(PICK.timer); PICK.timer = setTimeout(() => loadPick(true), 15000); return }
+  if (cnt !== PICK.count) return // 期间用户又改了数量
+  const isNew = PICK.latest && d.latest_expect !== PICK.latest; PICK.latest = d.latest_expect; PICK.data = d
+  // 覆盖率
+  $('pick-cov').innerHTML = `<div class="text-xs text-slate-400">量化覆盖率（Top-${d.count} 倾向概率合计）</div>
+    <div class="v text-amber-300 ${isNew ? 'flash' : ''}">${pct(d.coverage.p, 2)}</div>
+    <div class="text-xs text-slate-400">理论基线 ${pct(d.coverage.baseline, 2)} · 倾向倍数 <b class="text-slate-200">${d.coverage.lift}×</b></div>
+    <div class="mt-2 text-[10px] text-slate-500">层级：核心 ${d.tiers.core} · 主力 ${d.tiers.main} · 外围 ${d.tiers.edge} · 计算 ${d.compute_ms}ms</div>
+    <div class="mt-1 text-[10px] text-slate-500">分散度：${d.diversity.map(v => `${['万', '千', '百', '十', '个'][v.pos]}${v.distinct}种/首数${v.topDigit}占${pct(v.topShare, 0)}`).join(' · ')}</div>`
+  // 每位分布
+  const maxP = Math.max(...d.positions.flatMap(p => p.dist))
+  $('pick-pos').innerHTML = `<div class="text-xs text-slate-400 mb-2"><i class="fas fa-layer-group mr-1"></i>每位 0-9 倾向分布（首选 <span class="text-amber-300">金</span> · 次选 <span class="text-sky-300">蓝</span>）</div>` +
+    `<div class="pick-dist mb-1"><span></span>${'0123456789'.split('').map(c => `<span class="text-center text-slate-500">${c}</span>`).join('')}</div>` +
+    d.positions.map(p => `<div class="pick-dist mb-1"><span class="text-slate-300 font-bold">${p.posName}</span>${p.dist.map((v, dg) => { const rank = p.order.indexOf(dg); const col = rank === 0 ? '#fbbf24' : rank < 3 ? '#38bdf8' : '#334155'; return `<div title="${p.posName} ${dg}: ${pct(v, 1)}"><div class="bar" style="height:${Math.max(3, v / maxP * 34)}px;background:${col}"></div><div class="text-center ${rank === 0 ? 'text-amber-300 font-bold' : 'text-slate-500'}">${pct(v, 0)}</div></div>` }).join('')}</div>`).join('') +
+    `<div class="text-[10px] text-slate-500 mt-2 flex flex-wrap gap-x-3">${d.positions.map(p => `<span>${p.posName}: 单双→<b class="${p.parity.side === 'odd' ? 'text-red-300' : p.parity.side === 'even' ? 'text-sky-300' : 'text-slate-400'}">${p.parity.side === 'odd' ? '单' : p.parity.side === 'even' ? '双' : '中性'}</b> ${pct(p.parity.pOdd, 0)}单 · 大 ${pct(p.size.pBig, 0)} · 热 ${p.hot.join('') || '—'} 冷 ${p.cold.join('') || '—'}</span>`).join('')}</div>`
+  $('pick-signals').innerHTML = `<div class="text-xs text-slate-400 mb-1"><i class="fas fa-satellite mr-1"></i>组合级信号（用于重排）</div><ul class="text-sm text-slate-200 space-y-1">${d.signals.map(s => `<li><i class="fas fa-angle-right text-amber-400 mr-1"></i>${s}</li>`).join('')}</ul><div class="text-[10px] text-slate-500 mt-2">权重：单双 ${d.params.wParity} · 大小 ${d.params.wSize} · 组合 ${d.params.wCombo} · 机制回测 ${d.params.steps} 期</div>`
+  // 复式
+  const dp = d.duplex
+  $('pick-duplex').innerHTML = `<div class="flex flex-wrap items-center gap-3"><div class="text-xs text-slate-400"><i class="fas fa-table-cells mr-1"></i>等价复式方案（每位选号 → 自动组合 ${dp.count} 注，覆盖 ${pct(dp.coverage, 2)} vs 基线 ${pct(dp.baseline, 2)} · ${dp.lift}×）</div>
+    <div class="flex flex-wrap gap-2 font-mono text-sm">${dp.sets.map((s, i) => `<span class="px-2 py-1 rounded bg-slate-800 border border-slate-700"><span class="text-slate-400 text-xs mr-1">${['万', '千', '百', '十', '个'][i]}</span><b class="text-amber-300">${s.join('')}</b></span>`).join('')}</div>
+    <button class="tab active ml-auto" id="pick-copy-duplex"><i class="fas fa-copy mr-1"></i>复制复式</button></div>`
+  $('pick-copy-duplex').onclick = () => copyText(dp.text)
+  // 回测
+  const bt = d.backtest
+  $('pick-bt').innerHTML = `<div class="text-xs text-slate-400 mb-1"><i class="fas fa-vial mr-1 text-cyan-400"></i>诚实回测：最近 ${bt.n} 期，用「当期之前的数据」生成 Top-${d.count}，真实开奖号是否落入</div>
+    <div class="flex flex-wrap items-end gap-4"><div><div class="v ${bt.hit > bt.expected_hits ? 'text-emerald-400' : 'text-slate-200'}">${bt.hit}/${bt.n}</div><div class="text-[10px] text-slate-500">命中 / 期数</div></div>
+    <div><div class="v text-slate-300">${bt.rate == null ? '—' : pct(bt.rate, 1)}</div><div class="text-[10px] text-slate-500">实际覆盖率</div></div>
+    <div><div class="v text-slate-500">${pct(bt.baseline, 2)}</div><div class="text-[10px] text-slate-500">理论基线</div></div>
+    <div><div class="v text-slate-500">${bt.expected_hits}</div><div class="text-[10px] text-slate-500">理论期望命中</div></div></div>
+    <div class="flex flex-wrap gap-1 mt-2">${bt.recent.map(r => `<span title="${r.expect} 实开 ${r.actual}${r.rank ? ' · 榜内 #' + r.rank : ' · 榜外'}" class="px-1.5 py-0.5 rounded text-[10px] font-mono ${r.hit ? 'bg-emerald-500/70 text-black' : 'bg-slate-800 text-slate-400'}">${r.actual}${r.hit ? ' ✓' : ''}</span>`).join('')}</div>`
+  $('pick-disc').innerHTML = '<i class="fas fa-triangle-exclamation mr-1 text-amber-400"></i>' + d.disclaimer
+  renderPickGrid()
+  $('pick-live').innerHTML = `<i class="fas fa-circle text-emerald-400 mr-1" style="font-size:8px"></i>基于 ${d.latest_expect} · ${new Date().toLocaleTimeString()}`
+  clearTimeout(PICK.timer); PICK.timer = setTimeout(() => loadPick(true), Math.max(15000, Math.min(60000, d.interval_ms / 3)))
+}
+function bindPick() {
+  const setCount = (n, from) => {
+    n = Math.max(10, Math.min(2000, Math.round(n / 10) * 10)); PICK.count = n
+    if (from !== 'range') $('pick-range').value = n
+    if (from !== 'num') $('pick-count').value = n
+    document.querySelectorAll('#pick-presets .tab').forEach(b => b.classList.toggle('active', Number(b.dataset.n) === n))
+    $('pick-title').textContent = `即将生成 ${n} 注…`
+    clearTimeout(PICK.debounce); PICK.debounce = setTimeout(() => loadPick(), 350)
+  }
+  $('pick-range').oninput = e => setCount(Number(e.target.value), 'range')
+  $('pick-count').onchange = e => setCount(Number(e.target.value), 'num')
+  document.querySelectorAll('#pick-presets .tab').forEach(b => b.onclick = () => setCount(Number(b.dataset.n)))
+  $('pick-tier').onchange = renderPickGrid; $('pick-sort').onchange = renderPickGrid; $('pick-temp').onchange = () => loadPick()
+  document.querySelectorAll('.pick-copy').forEach(b => b.onclick = () => { document.querySelectorAll('.pick-copy').forEach(x => x.classList.remove('active')); b.classList.add('active'); PICK.fmt = b.dataset.fmt; $('pick-text').value = pickText(PICK.fmt); copyText(pickText(PICK.fmt)) })
+}
+
 const PK = { pos: 0, timer: null, latest: '' }
 function techOption(a, accent) {
   const c = a.candles, x = c.map(k => k.expect.slice(-4))

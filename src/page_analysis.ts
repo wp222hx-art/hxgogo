@@ -29,6 +29,13 @@ export const analysisPage = () => `<!DOCTYPE html>
 .cand { display:flex; align-items:center; gap:6px; padding:4px 6px; border-radius:6px; font-size:12px; } .cand:nth-child(odd) { background:#0f172a; } .cand.top1 { background:#f59e0b1a; border:1px solid #f59e0b55; }
 .cand .lb { width:44px; font-weight:800; font-family: ui-monospace, monospace; } .cand .pb { flex:1; height:8px; background:#1e293b; border-radius:4px; overflow:hidden; position:relative; } .cand .pb > i { position:absolute; left:0; top:0; height:100%; border-radius:4px; } .cand .pb > b { position:absolute; top:-2px; width:2px; height:12px; background:#fbbf24; }
 .lvl-strong { color:#22c55e; } .lvl-mild { color:#eab308; } .lvl-neutral { color:#64748b; }
+.pick-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap:4px; max-height: 420px; overflow:auto; padding:4px; background:#020617; border:1px solid #1e293b; border-radius:10px; }
+.pick-no { font-family: ui-monospace, monospace; font-size:13px; font-weight:700; letter-spacing:1px; text-align:center; padding:5px 0; border-radius:6px; cursor:pointer; border:1px solid transparent; position:relative; }
+.pick-no:hover { filter:brightness(1.25); border-color:#94a3b8; }
+.pick-no .r { position:absolute; top:1px; left:3px; font-size:8px; color:#64748b; font-weight:400; }
+.pk-core { background:rgba(251,191,36,.22); color:#fde68a; } .pk-main { background:rgba(56,189,248,.16); color:#bae6fd; } .pk-edge { background:rgba(148,163,184,.10); color:#cbd5e1; }
+.pick-dist { display:grid; grid-template-columns: 36px repeat(10, 1fr); gap:3px; align-items:end; font-size:10px; }
+.pick-dist .bar { background:linear-gradient(180deg,#fbbf24,#f59e0b); border-radius:3px 3px 0 0; min-height:2px; }
 @keyframes pkflash { 0% { box-shadow:0 0 0 0 rgba(217,70,239,.7); } 100% { box-shadow:0 0 0 14px rgba(217,70,239,0); } }
 .flash { animation: pkflash 1.2s ease-out 2; }
 .play-card { background:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:12px; }
@@ -85,6 +92,55 @@ export const analysisPage = () => `<!DOCTYPE html>
 
   <!-- 幸运数字 K 线 -->
   <!-- 单双 K 线 + BOLL / MACD / KDJ -->
+  <!-- 量化选号器 -->
+  <section class="card" id="pick-section">
+    <header class="flex flex-wrap items-center gap-3 mb-3">
+      <h2 class="font-bold text-lg"><i class="fas fa-wand-magic-sparkles text-amber-400 mr-2"></i>量化选号器 <span id="pick-title" class="text-slate-400 text-sm font-normal ml-1"></span></h2>
+      <span class="text-xs text-slate-500">五位定位胆联合概率 Top-N · 机制集成 × 单双 BOLL/MACD/KDJ × 大小 × 总和/龙虎/形态</span>
+      <span id="pick-live" class="text-xs text-slate-500 ml-auto"></span>
+    </header>
+    <div class="grid lg:grid-cols-3 gap-3 mb-3">
+      <div class="kpi lg:col-span-2">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1"><span><i class="fas fa-sliders mr-1"></i>号码数量（拖动设定）</span><span class="text-slate-500">10 ～ 2000 注 · 理论覆盖率 = N / 100000</span></div>
+        <div class="flex items-center gap-3">
+          <input id="pick-range" type="range" min="10" max="2000" step="10" value="500" class="flex-1 accent-amber-400">
+          <input id="pick-count" type="number" min="10" max="2000" step="10" value="500" class="w-24 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm font-mono text-right">
+          <span class="text-xs text-slate-400">注</span>
+        </div>
+        <div class="flex flex-wrap gap-1 mt-2 text-[11px]" id="pick-presets">
+          <button data-n="100" class="tab">100</button><button data-n="200" class="tab">200</button><button data-n="300" class="tab">300</button><button data-n="400" class="tab">400</button><button data-n="500" class="tab active">500</button><button data-n="800" class="tab">800</button><button data-n="1000" class="tab">1000</button>
+          <span class="flex items-center gap-1 text-slate-400 ml-2">分散度 <select id="pick-temp" class="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-[11px]"><option value="1">集中（纯信号）</option><option value="1.5" selected>均衡</option><option value="2.2">分散</option></select></span>
+          <span class="ml-auto flex items-center gap-2 text-slate-400">显示层级
+            <select id="pick-tier" class="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-[11px]"><option value="all">全部</option><option value="core">核心 (前 10%)</option><option value="main">核心+主力 (前 50%)</option></select>
+            <label class="flex items-center gap-1"><input id="pick-sort" type="checkbox" class="accent-amber-400">按号码排序</label>
+          </span>
+        </div>
+      </div>
+      <div class="kpi" id="pick-cov"></div>
+    </div>
+    <div class="grid lg:grid-cols-3 gap-3 mb-3">
+      <div class="kpi lg:col-span-2" id="pick-pos"></div>
+      <div class="kpi" id="pick-signals"></div>
+    </div>
+    <div class="kpi mb-3" id="pick-duplex"></div>
+    <div class="flex flex-wrap items-center gap-2 mb-2">
+      <span class="text-xs text-slate-400"><i class="fas fa-copy mr-1"></i>一键复制</span>
+      <button class="pick-copy tab active" data-fmt="space">空格分隔</button>
+      <button class="pick-copy tab" data-fmt="comma">逗号分隔</button>
+      <button class="pick-copy tab" data-fmt="line">每行一个</button>
+      <button class="pick-copy tab" data-fmt="core">仅核心层</button>
+      <button class="pick-copy tab" data-fmt="duplex">复式方案</button>
+      <span id="pick-copied" class="text-xs text-emerald-400 hidden"><i class="fas fa-check mr-1"></i>已复制到剪贴板</span>
+      <span class="text-[10px] text-slate-500 ml-auto">图例：<span class="pk-core px-1 rounded">核心</span> <span class="pk-main px-1 rounded">主力</span> <span class="pk-edge px-1 rounded">外围</span>（点击任一号码可单独复制）</span>
+    </div>
+    <div id="pick-grid" class="pick-grid"></div>
+    <textarea id="pick-text" class="w-full mt-2 bg-slate-950 border border-slate-800 rounded p-2 text-[11px] font-mono text-slate-300 h-20" readonly></textarea>
+    <div class="grid lg:grid-cols-3 gap-3 mt-3">
+      <div class="kpi lg:col-span-2" id="pick-bt"></div>
+      <div class="kpi text-[11px] text-slate-400" id="pick-disc"></div>
+    </div>
+  </section>
+
   <section class="card" id="parity-section">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
       <h2 class="font-bold"><i class="fas fa-chart-line mr-2 text-fuchsia-400"></i>单双 K 线 · <span id="pk-title" class="text-fuchsia-300"></span> <span class="text-xs text-slate-500 font-normal ml-2">单指数 / 双指数 = 每期 +1/−1 累加路径 · BOLL(20,2) · MACD(12,26,9) · KDJ(9,3,3)</span></h2>
