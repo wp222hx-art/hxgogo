@@ -26,6 +26,16 @@ async function getUser(c: any) {
 }
 
 // ------------------------------------------------------------------ round lifecycle
+/** qkltj 哈希分分彩：官方固定取每分钟 03 秒的 TRON 区块（实测 60/60 期区块时间戳秒位=03） */
+const FIVE_BLOCK_OFFSET_MS = 3_000
+function fmtUtc8(ms: number) { return new Date(ms + 8 * 3600_000).toISOString().slice(0, 19).replace('T', ' ') }
+/** 官方期号格式：YYYYMMDD + 当日分钟序号(4位, UTC+8)，如 202609030670 = 09-03 11:10 */
+function officialExpect(minuteMs: number) {
+  const d = new Date(minuteMs + 8 * 3600_000)
+  const ymd = d.toISOString().slice(0, 10).replace(/-/g, '')
+  return ymd + String(d.getUTCHours() * 60 + d.getUTCMinutes()).padStart(4, '0')
+}
+
 function roundWindow(room: Room, t: number) {
   const { roundMs, closeBeforeMs } = ROOMS[room]
   const no = Math.floor(t / roundMs)
@@ -73,8 +83,10 @@ async function settleRound(db: D1Database, r: any, head: TronBlock | null): Prom
 
   let resultHash: string, blockNumber: number | null = null, blockTs: number | null = null
   if (r.room === 'tron' || r.room === 'five') {
+    // 五位厅对齐 qkltj 官方口径：取每分钟 03 秒的区块（官方“固定采用每分钟 03 秒区块，如 03 秒没有区块则取下一个”）
+    const target = r.room === 'five' ? r.end_ms + FIVE_BLOCK_OFFSET_MS : r.end_ms
     // 超过 10 分钟仍取不到区块 -> 作废退款
-    const blk = await findFirstBlockAtOrAfter(r.end_ms, head ?? undefined)
+    const blk = await findFirstBlockAtOrAfter(target, head ?? undefined)
     if (!blk) {
       if (now() - r.end_ms > 10 * 60_000) return await voidRound(db, r, bets)
       return false
@@ -105,8 +117,13 @@ async function settleRound(db: D1Database, r: any, head: TronBlock | null): Prom
   for (const [uid, d] of userDelta) stmts.push(db.prepare('UPDATE users SET balance=balance+?, total_win=total_win+? WHERE id=?').bind(d.pay, d.win, uid))
   stmts.push(db.prepare(`UPDATE rounds SET status='settled', bets_hash=?, block_number=?, block_ts=?, result_hash=?, digit1=?, digit2=?, outcomes=?, payout_total=?, settled_ms=? WHERE id=?`)
     .bind(betsHash, blockNumber, blockTs, resultHash, o.digit1, o.digit2, JSON.stringify(isFive ? o5 : o), payoutTotal, now(), r.id))
-  if (isFive && o5) stmts.push(db.prepare('INSERT OR IGNORE INTO draws (source, expect, block, hash, n1,n2,n3,n4,n5, open_ms) VALUES (?,?,?,?,?,?,?,?,?,?)')
-    .bind('local:five', String(r.round_no), blockNumber, resultHash, ...o5.nums, r.end_ms))
+  if (isFive && o5) {
+    // 期号采用官方同样的 YYYYMMDD+当日分钟序号(UTC+8) 格式，便于与 qkltj:6001 逐期对照
+    const expect = officialExpect(r.end_ms)
+    stmts.push(db.prepare(`INSERT INTO draws (source, expect, block, hash, n1,n2,n3,n4,n5, open_ms, opennumber, lotto_type, lotto_type_cn, open_time, mismatch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+      ON CONFLICT(source, expect) DO UPDATE SET block=excluded.block, hash=excluded.hash, n1=excluded.n1, n2=excluded.n2, n3=excluded.n3, n4=excluded.n4, n5=excluded.n5, open_ms=excluded.open_ms, opennumber=excluded.opennumber, open_time=excluded.open_time`)
+      .bind('local:five', expect, blockNumber, resultHash, ...o5.nums, blockTs ?? r.end_ms, o5.nums.join(','), 'trxbhffc', 'HashPlay 五位厅', fmtUtc8(blockTs ?? r.end_ms)))
+  }
   await db.batch(stmts)
   return true
 }
@@ -267,7 +284,10 @@ app.get('/api/verify/:room/:no', async (c) => {
   const steps: any[] = []
   let recomputedHash = r.result_hash, seedOk: boolean | null = null
   if (room === 'tron' || room === 'five') {
-    steps.push({ step: 1, title: '确定开奖区块', detail: `本局截止时间 end_ms=${r.end_ms}（${new Date(r.end_ms).toISOString()}），取「区块时间戳 ≥ end_ms 的第一个 TRON 区块」`, value: `#${r.block_number} @ ${r.block_ts}` })
+    const tgt = room === 'five' ? r.end_ms + FIVE_BLOCK_OFFSET_MS : r.end_ms
+    steps.push({ step: 1, title: '确定开奖区块', detail: room === 'five'
+      ? `官方口径（qkltj 哈希分分彩）：期号 ${officialExpect(r.end_ms)}，取「本分钟 03 秒」的 TRON 区块，即区块时间戳 ≥ ${fmtUtc8(tgt)} (UTC+8) 的第一个区块；如 03 秒无区块则取下一个`
+      : `本局截止时间 end_ms=${r.end_ms}（${new Date(r.end_ms).toISOString()}），取「区块时间戳 ≥ end_ms 的第一个 TRON 区块」`, value: `#${r.block_number} @ ${r.block_ts}${r.block_ts ? ' (' + fmtUtc8(r.block_ts) + ' UTC+8)' : ''}` })
     steps.push({ step: 2, title: '读取区块哈希', detail: '可在 Tronscan 独立核对', value: r.result_hash, link: `https://tronscan.org/#/block/${r.block_number}` })
   } else {
     seedOk = (await sha256(r.server_seed)) === r.commitment
@@ -344,6 +364,22 @@ app.get('/api/qkltj/table', async (c) => {
       mismatch: d.mismatch || 0, highlight: hashDigitIdx(d.hash),
     })),
   })
+})
+
+/** 对账：本地五位厅 vs 官方 6001 逐期比对（同期号→同区块→同结果） */
+app.get('/api/qkltj/reconcile', async (c) => {
+  const limit = Math.min(200, Number(c.req.query('limit') || 30))
+  const off = await drawsFor(c.env.DB, 'qkltj:6001', limit + 5)
+  const loc = (await c.env.DB.prepare('SELECT * FROM draws WHERE source=? ORDER BY open_ms DESC LIMIT ?').bind('local:five', limit + 5).all<any>()).results
+  const lm = new Map(loc.map((d: any) => [d.expect, d]))
+  const rows = off.slice(0, limit).map((o: any) => {
+    const l = lm.get(o.expect)
+    return { expect: o.expect, official: { block: o.block, opennumber: o.opennumber, openTime: o.open_time }, local: l ? { block: l.block, opennumber: l.opennumber || [l.n1, l.n2, l.n3, l.n4, l.n5].join(','), openTime: l.open_time } : null,
+      match: l ? (l.block === o.block && l.hash === o.hash ? 'exact' : 'diff') : 'missing' }
+  })
+  const compared = rows.filter(r => r.local)
+  return c.json({ ok: true, rule: '官方哈希分分彩：每分钟取 03 秒的 TRON 区块（区块时间戳秒位=03，相邻期区块号差=20），openTime 为该区块时间 +10~12s 的统计入库时间；hash=blockID；运算结果=去 a-f 后末 5 位',
+    total: rows.length, compared: compared.length, exact: compared.filter(r => r.match === 'exact').length, rows })
 })
 
 /** 严格直通：原样转发 qkltj 接口（用于逐期一致性核对） */

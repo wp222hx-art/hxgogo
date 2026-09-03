@@ -175,6 +175,26 @@ export const page = () => `<!DOCTYPE html>
         <tbody id="qk-body"><tr><td colspan="5" class="text-center text-slate-500 py-6"><i class="fas fa-spinner fa-spin mr-1"></i>加载中…</td></tr></tbody>
       </table>
     </div>
+    <!-- 口径说明 + 本地对账 -->
+    <div class="grid md:grid-cols-2 gap-3 mt-4">
+      <div id="qk-rule" class="rounded-lg border border-slate-700/60 bg-slate-800/40 p-3 text-xs leading-relaxed">
+        <h3 class="font-bold text-slate-200 mb-1"><i class="fas fa-link text-sky-400 mr-1"></i>「统计时间 ↔ 区块」对应口径（链上逐期验证）</h3>
+        <ul class="list-disc pl-4 space-y-0.5 text-slate-400">
+          <li><b class="text-slate-200">取块规则</b>：哈希分分彩固定取每分钟 <b class="text-amber-300">03 秒</b> 的 TRON 区块（03 秒无块则取下一个）；三分/五分/十分彩同理取对应分钟 03 秒；ETH 分分彩取每分钟 11 秒的区块。</li>
+          <li><b class="text-slate-200">奖期 expect</b> = <code>YYYYMMDD</code> + 当日分钟序号（UTC+8，4 位）。例：<code>…0670</code> = 11:10 这一分钟。</li>
+          <li><b class="text-slate-200">区块 block</b>：该分钟 03 秒出块的区块号；相邻两期区块号恒差 20（TRON 3s/块）。<b class="text-slate-200">hash</b> = 该区块 blockID（Tronscan 可查）。</li>
+          <li><b class="text-slate-200">统计时间 openTime</b> = 官方系统抓到区块并入库的时间，恒为区块时间 <b class="text-amber-300">+10~12 秒</b>（如区块 11:10:03 → 统计 11:10:14），<u>不是</u>区块本身的时间。</li>
+          <li><b class="text-slate-200">运算结果</b> = 区块哈希去掉 a–f 后从左到右的最后 5 位数字（红色高亮）。本站五位厅已按同一口径取块，可逐期对账 →</li>
+        </ul>
+      </div>
+      <div id="qk-recon" class="rounded-lg border border-slate-700/60 bg-slate-800/40 p-3 text-xs">
+        <h3 class="font-bold text-slate-200 mb-2 flex items-center gap-2"><i class="fas fa-scale-balanced text-emerald-400 mr-1"></i>本站五位厅 vs 官方 6001 逐期对账 <span id="qk-recon-sum" class="ml-auto font-mono text-slate-400">…</span></h3>
+        <div class="overflow-x-auto"><table class="w-full qk-table text-[11px]">
+          <thead><tr class="text-slate-400"><th class="text-left">奖期</th><th class="text-left">官方区块 / 结果</th><th class="text-left">本站区块 / 结果</th><th class="text-right">状态</th></tr></thead>
+          <tbody id="qk-recon-body"><tr><td colspan="4" class="text-center text-slate-500 py-3">加载中…</td></tr></tbody>
+        </table></div>
+      </div>
+    </div>
     <p class="text-[11px] text-slate-500 mt-2"><i class="fas fa-circle-info mr-1"></i>运算结果 = 接口 <code>opennumber</code> 原值；哈希中<span class="text-red-400 font-bold">红色</span>为官方取用的最后 5 个数字字符（去除 a-f 后倒数 5 位）。若官方值与本地推算不一致会以 <i class="fas fa-triangle-exclamation text-amber-400"></i> 标注。</p>
   </article>
 </section>

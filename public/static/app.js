@@ -329,14 +329,27 @@ async function loadQkltjTable() {
     $('qk-status').innerHTML = `<i class="fas fa-triangle-exclamation mr-1 text-red-400"></i>刷新失败：${e.response?.data?.error || e.message}`
   }
 }
+async function loadReconcile() {
+  const body = $('qk-recon-body'); if (!body) return
+  try {
+    const d = (await api.get('/qkltj/reconcile', { params: { limit: 12 } })).data
+    $('qk-recon-sum').textContent = d.compared ? `已比对 ${d.compared} 期 · 完全一致 ${d.exact} 期 (${Math.round(d.exact / d.compared * 100)}%)` : '等待本站开奖后对账'
+    body.innerHTML = d.rows.map(r => `<tr>
+      <td class="font-mono">${r.expect.slice(-4)}</td>
+      <td class="font-mono"><span class="text-sky-400">${r.official.block}</span> <span class="text-amber-300">${r.official.opennumber}</span></td>
+      <td class="font-mono">${r.local ? `<span class="text-sky-400">${r.local.block}</span> <span class="text-amber-300">${r.local.opennumber}</span>` : '<span class="text-slate-600">—</span>'}</td>
+      <td class="text-right">${r.match === 'exact' ? '<span class="text-emerald-400"><i class="fas fa-check"></i> 一致</span>' : r.match === 'diff' ? '<span class="text-red-400"><i class="fas fa-xmark"></i> 不一致</span>' : '<span class="text-slate-500">本站无记录</span>'}</td>
+    </tr>`).join('')
+  } catch (e) { body.innerHTML = `<tr><td colspan="4" class="text-red-400">${e.message}</td></tr>` }
+}
 function bindQkltj() {
   document.querySelectorAll('.qk-tab').forEach(b => b.onclick = () => {
     document.querySelectorAll('.qk-tab').forEach(x => x.classList.remove('active')); b.classList.add('active')
     qk.code = b.dataset.code; qk.lastExpect = null; loadQkltjTable()
   })
   $('qk-limit').onchange = (e) => { qk.limit = Number(e.target.value); loadQkltjTable() }
-  loadQkltjTable()
-  qk.timer = setInterval(loadQkltjTable, 20000)
+  loadQkltjTable(); loadReconcile()
+  qk.timer = setInterval(() => { loadQkltjTable(); loadReconcile() }, 20000)
 }
 
 // ---------- 启动 ----------
