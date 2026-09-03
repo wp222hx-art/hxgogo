@@ -37,7 +37,7 @@ async function load() {
   $('board-meta').textContent = '计算中…'
   const [meta, r] = await Promise.all([api.get('/sources'), api.get('/arena/board', { params: { source: S.source, mode: S.mode, limit: 300 } })])
   S.sources = meta.data.sources; S.data = r.data
-  renderKpis(); renderBoard(); renderCharts(); renderWeights(); renderCurrent(); renderHist()
+  renderKpis(); renderBoard(); renderCharts(); renderWeights(); renderPlans(); renderCurrent(); renderHist()
   $('disclaimer').innerHTML = '<i class="fas fa-triangle-exclamation mr-1"></i>' + r.data.disclaimer
   $('odds-1').textContent = r.data.odds; $('meta-k').textContent = r.data.meta_k
   $('board-meta').textContent = `已结算 ${r.data.n_periods} 期 · 待开 ${r.data.pending} 期 · 计算 ${r.data.compute_ms}ms`
@@ -45,7 +45,7 @@ async function load() {
 
 function renderKpis() {
   const d = S.data, s = S.sources.find(x => x.key === S.source)
-  const meta = d.strategies.find(x => x.meta), best = d.strategies.find(x => x.key === d.best), ctrl = d.strategies.find(x => x.control)
+  const meta = d.strategies.find(x => x.key === 'meta'), best = d.strategies.find(x => x.key === d.best), ctrl = d.strategies.find(x => x.control)
   const k = (l, v, sub = '', cls = 'text-emerald-300') => `<div class="kpi"><div class="text-xs text-slate-500">${l}</div><div class="v ${cls}">${v}</div>${sub ? `<div class="text-[10px] text-slate-500">${sub}</div>` : ''}</div>`
   $('kpis').innerHTML =
     k('数据源', s.name, `${s.count} 期 · ${s.interval_ms ? s.interval_ms / 60000 : s.intervalMs / 60000} 分钟/期`) +
@@ -109,6 +109,34 @@ function renderWeights() {
     <div class="wbar mt-1"><div style="width:${w.w / max * 100}%;background:${s.color}"></div></div></div>` }).join('') +
     `<div class="text-[10px] text-slate-500 pt-1">权重 = 信任度·exp(0.6·clamp(z,−2,2)) + (1−信任度)，信任度 = n/(n+20)；样本不足时自动趋向等权。</div>`
   $('advice').innerHTML = d.advice.map(a => `<li>${a}</li>`).join('')
+}
+
+function renderPlans() {
+  const d = S.data; if (!d.plans) return
+  const rows = [...d.plans].sort((a, b) => b.pnl - a.pnl)
+  $('plans').querySelector('tbody').innerHTML = rows.map((p, i) => `<tr class="${p.key === d.plan_best ? 'best' : ''} ${p.control ? 'ctrl' : ''}">
+    <td class="mono text-slate-500">${i + 1}</td>
+    <td><b>${p.name}</b>${p.control ? ' <span class="text-[10px] text-slate-500">对照</span>' : ''}<div class="text-[10px] text-slate-500 font-normal">${p.desc}</div></td>
+    <td class="mono">${p.bets}</td><td class="mono text-slate-400">${p.skips}</td><td class="mono">${p.hits}</td>
+    <td class="mono font-bold ${p.rate > 0.5 ? 'text-emerald-300' : 'text-slate-300'}">${pct(p.rate)}</td>
+    <td class="mono ${p.z > 1.96 ? 'text-emerald-400 font-bold' : p.z < -1.96 ? 'text-red-400 font-bold' : 'text-slate-400'}">${p.z}</td>
+    <td class="mono font-bold ${p.pnl > 0 ? 'text-emerald-400' : p.pnl < 0 ? 'text-red-400' : ''}">${sgn(p.pnl)}</td>
+    <td class="mono ${p.roi > 0 ? 'text-emerald-400' : 'text-red-400'}">${pct(p.roi, 2)}</td>
+    <td class="mono text-slate-400">${p.max_dd}</td>
+    <td class="text-[10px] text-slate-400">${Object.entries(p.picks).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => `<span style="color:${defOf(k).color}">${defOf(k).short}</span>×${n}`).join(' ')}</td>
+  </tr>`).join('')
+  const x = d.periods.map(p => p.expect.slice(-4))
+  const PC = ['#22c55e', '#ec4899', '#06b6d4', '#f97316', '#eab308', '#64748b']
+  ec('ch-plans').setOption({
+    backgroundColor: 'transparent', animation: false,
+    tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e2e8f0', fontSize: 11 }, valueFormatter: v => (v > 0 ? '+' : '') + Math.round(v) },
+    legend: { textStyle: { color: '#94a3b8', fontSize: 10 }, top: 0, type: 'scroll' },
+    grid: { left: 48, right: 12, top: 32, bottom: 24 },
+    xAxis: { type: 'category', data: x, ...AX, axisLabel: { ...AX.axisLabel, interval: Math.max(0, Math.floor(x.length / 10)) } },
+    yAxis: { type: 'value', ...AX },
+    series: d.plans.map((p, i) => ({ name: p.name, type: 'line', showSymbol: false, data: p.curve, lineStyle: { width: p.key === d.plan_best ? 3 : 1.2, type: p.control ? 'dashed' : 'solid' }, itemStyle: { color: PC[i % PC.length] }, emphasis: { focus: 'series' } })),
+    graphic: x.length ? undefined : { type: 'text', left: 'center', top: 'middle', style: { text: '暂无数据', fill: '#64748b', fontSize: 12 } },
+  }, true)
 }
 
 function curNums() { const c = S.data.current; if (!c) return null; const s = c.strategies.find(x => x.strategy === S.strat); return s ? s.numbers.split(' ') : null }

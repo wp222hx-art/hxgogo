@@ -102,6 +102,19 @@ textarea.nums { width:100%; height:110px; background:#fff; color:#111; border-ra
     </div>
   </section>
 
+  <!-- 投资策略模拟 -->
+  <section class="card">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+      <h2 class="font-bold"><i class="fas fa-chess mr-2 text-pink-400"></i>投资策略模拟 <span class="text-xs text-slate-500 font-normal ml-2">「选哪套 × 何时下注」的完整方案，每期决策只用之前已结算数据 · 每次 500 注 · 观望期不投</span></h2>
+    </div>
+    <div class="grid lg:grid-cols-5 gap-4">
+      <div class="lg:col-span-3 overflow-x-auto"><table class="board" id="plans"><thead><tr>
+        <th>#</th><th>方案</th><th>下注期</th><th>观望期</th><th>命中</th><th>命中率</th><th>z</th><th>累计盈亏</th><th>ROI</th><th>最大回撤</th><th>实际跟投</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="lg:col-span-2"><div id="ch-plans" class="kchart"></div></div>
+    </div>
+  </section>
+
   <!-- 当前期 500 注 -->
   <section class="card" id="current-section">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
@@ -113,7 +126,7 @@ textarea.nums { width:100%; height:110px; background:#fff; color:#111; border-ra
         <span id="cur-copied" class="hidden text-emerald-400"><i class="fas fa-check mr-1"></i>已复制</span>
       </div>
     </div>
-    <div id="strat-cards" class="grid grid-cols-3 md:grid-cols-9 gap-2 mb-3"></div>
+    <div id="strat-cards" class="grid grid-cols-3 md:grid-cols-6 lg:grid-cols-11 gap-2 mb-3"></div>
     <textarea id="cur-text" class="nums" readonly spellcheck="false"></textarea>
     <div class="num-grid mt-2" id="cur-grid"></div>
   </section>

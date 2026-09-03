@@ -26,6 +26,8 @@ export const STRATEGIES: StrategyDef[] = [
   { key: 'markov', name: '马尔可夫转移', short: '马尔可夫', desc: '各位一阶转移矩阵：上期数字 → 本期数字条件频率（近 300 期）', color: '#f97316' },
   { key: 'random', name: '随机对照组', short: '随机对照', desc: '以期号为种子随机取 500 注，理论命中率 50%，用于对照所有策略', color: '#64748b', control: true },
   { key: 'meta', name: '组合最优 · 自适应加权', short: '组合最优', desc: '只用「目标期之前」已结算战绩，按滚动 z 分数给各策略加权，融合概率后取 Top 500', color: '#22c55e', meta: true },
+  { key: 'follow', name: '跟随最强 · 动态切换', short: '跟最强', desc: '每期整份复制「之前」滚动 40 期 z 最高的基础策略（样本 <10 期时退化为组合最优）', color: '#ec4899', meta: true },
+  { key: 'vote', name: '多策略共识投票', short: '共识投票', desc: '按被多少个基础策略同时选中排序（并列以组合最优概率决胜），取 Top 500', color: '#84cc16', meta: true },
 ]
 const BASE_KEYS = STRATEGIES.filter(s => !s.control && !s.meta).map(s => s.key)
 
@@ -132,6 +134,17 @@ export function generateRound(hist: Draw[], seed: string, perf: PerfMap, W?: Ret
   for (const k of BASE_KEYS) { const w = weights[k].w; const v = vec[k]; for (let i = 0; i < SPACE; i++) meta[i] += w * v[i] }
   const mi = topN(meta, ARENA_N)
   rounds.push({ strategy: 'meta', numbers: mi, coverage: r4(mi.reduce((a, i) => a + meta[i], 0)), weight: 1 })
+  // 跟随最强：只看之前滚动战绩，整份复制 z 最高的基础策略
+  let bestK: string | null = null, bestZ = -Infinity
+  for (const k of BASE_KEYS) { const w = weights[k]; if (w.n >= 10 && w.z > bestZ) { bestZ = w.z; bestK = k } }
+  const src = rounds.find(r => r.strategy === (bestK || 'meta'))!
+  rounds.push({ strategy: 'follow', numbers: [...src.numbers], coverage: src.coverage, weight: bestK ? weights[bestK].w : 1 })
+  // 共识投票：被几个基础策略选中 + 组合最优概率决胜
+  const votes = new Array<number>(SPACE).fill(0)
+  for (const k of BASE_KEYS) for (const i of rounds.find(r => r.strategy === k)!.numbers) votes[i]++
+  const vscore = votes.map((v, i) => v + meta[i] / (Math.max(...meta) || 1))
+  const vi = topN(vscore, ARENA_N)
+  rounds.push({ strategy: 'vote', numbers: vi, coverage: r4(vi.reduce((a, i) => a + meta[i], 0)), weight: 1 })
   return { rounds, weights }
 }
 
@@ -187,8 +200,8 @@ export async function autoArena(db: D1Database, source: string, draws: Draw[], b
   const latest = draws[0].expect; const next = nextOf(latest)
   let generated = false
   if (next && arenaDone.get(source) !== next) {
-    const exists = await db.prepare('SELECT 1 FROM arena_rounds WHERE source=? AND expect=? AND strategy=?').bind(source, next, 'meta').first()
-    if (!exists) {
+    const have = (await db.prepare('SELECT COUNT(*) n FROM arena_rounds WHERE source=? AND expect=?').bind(source, next).first<any>())?.n || 0
+    if (have < STRATEGIES.length) {   // 新增策略时也能为本期补齐（INSERT OR IGNORE 保留已有）
       const perf = await loadPerf(db, source, next)
       const { rounds } = generateRound(draws, `${source}|${next}`, perf)
       await insertRounds(db, source, next, latest, 'live', rounds)
@@ -206,8 +219,8 @@ export async function replayArena(db: D1Database, source: string, draws: Draw[],
   const maxIdx = Math.min(lookback, draws.length - ARENA_MIN_HIST - 1)
   if (maxIdx < 0) return 0
   const cand = draws.slice(0, maxIdx + 1).map(d => d.expect)
-  const have = new Set((await db.prepare(`SELECT expect FROM arena_rounds WHERE source=? AND strategy='meta' AND expect>=? AND expect<=?`)
-    .bind(source, cand[cand.length - 1], cand[0]).all<any>()).results.map(r => r.expect))
+  const have = new Set((await db.prepare(`SELECT expect FROM arena_rounds WHERE source=? AND expect>=? AND expect<=? GROUP BY expect HAVING COUNT(*) >= ?`)
+    .bind(source, cand[cand.length - 1], cand[0], STRATEGIES.length).all<any>()).results.map(r => r.expect))
   const targets: number[] = []
   for (let k = maxIdx; k >= 0 && targets.length < maxPeriods; k--) if (!have.has(draws[k].expect)) targets.push(k)   // 旧 → 新
   if (!targets.length) return 0
@@ -277,6 +290,29 @@ export async function arenaBoard(db: D1Database, source: string, opt: { mode?: '
   // 当前权重（用于下一期）
   const perf = await loadPerf(db, source, curExpect || '99999999999999')
   const weights = metaWeights(perf)
+  // ---- 投资策略模拟：选哪套 × 何时下注，每期决策只用之前已结算数据（walk-forward）
+  const rollZ = (key: string, i: number, k: number) => { const rows = periods.slice(Math.max(0, i - k), i).map(p => p.hit[key]).filter(h => h !== undefined) as number[]; const n = rows.length; if (!n) return { z: 0, n: 0 }; const h = rows.reduce((a, b) => a + b, 0); return { z: (h - n * 0.5) / Math.sqrt(n * 0.25), n } }
+  const extremeBy = (i: number, k: number, min: number, sign: 1 | -1) => { let key: string | null = null, best = -Infinity; for (const b of BASE_KEYS) { const r = rollZ(b, i, k); if (r.n >= min && sign * r.z > best) { best = sign * r.z; key = b } } return { key, z: sign * best } }
+  const missRun = (key: string, i: number) => { let m = 0; for (let j = i - 1; j >= 0; j--) { const h = periods[j].hit[key]; if (h === undefined) continue; if (h) break; m++ } return m }
+  const PLANS: { key: string; name: string; desc: string; pick: (i: number) => string | null; control?: boolean }[] = [
+    { key: 'meta-always', name: '组合最优 · 每期必投', desc: '基准：每期投组合最优 500 注', pick: () => 'meta' },
+    { key: 'follow-always', name: '跟随最强 · 每期必投', desc: '每期投滚动 40 期 z 最高的基础策略', pick: (i) => extremeBy(i, 40, 10, 1).key || 'meta' },
+    { key: 'meta-timing', name: '组合最优 · 择时', desc: '仅当组合最优近 20 期滚动 z > 0.5 时下注，否则观望', pick: (i) => { const r = rollZ('meta', i, 20); return r.n >= 10 && r.z > 0.5 ? 'meta' : null } },
+    { key: 'follow-timing', name: '跟随最强 · 择时', desc: '仅当最强基础策略近 20 期滚动 z > 1 时跟投，否则观望', pick: (i) => { const b = extremeBy(i, 20, 10, 1); return b.key && b.z > 1 ? b.key : null } },
+    { key: 'meta-stoploss', name: '组合最优 · 连败止损', desc: '组合最优连续 2 期未中后暂停，直到它（虚拟）命中一期再恢复', pick: (i) => missRun('meta', i) >= 2 ? null : 'meta' },
+    { key: 'contrarian', name: '逆向 · 跟最弱（对照）', desc: '投滚动 40 期 z 最低的基础策略，检验“均值回归”是否存在', pick: (i) => extremeBy(i, 40, 10, -1).key || 'meta', control: true },
+  ]
+  const plans = PLANS.map(pl => {
+    let bets = 0, skips = 0, hits = 0, cum = 0, peak = 0, dd = 0; const curve: number[] = []; const picks: Record<string, number> = {}
+    periods.forEach((p, i) => {
+      const k = pl.pick(i)
+      if (k && p.hit[k] !== undefined) { bets++; hits += p.hit[k]; cum += p.pnl[k]; picks[k] = (picks[k] || 0) + 1 } else skips++
+      peak = Math.max(peak, cum); dd = Math.max(dd, peak - cum); curve.push(cum)
+    })
+    const pBar = ARENA_N / SPACE
+    return { key: pl.key, name: pl.name, desc: pl.desc, control: !!pl.control, bets, skips, hits, rate: bets ? r4(hits / bets) : null, z: bets ? r3((hits - bets * pBar) / Math.sqrt(bets * pBar * (1 - pBar))) : 0, pnl: cum, roi: bets ? r4(cum / (bets * ARENA_N)) : null, max_dd: dd, curve, picks }
+  })
+  const planBest = [...plans].filter(p => !p.control && p.bets >= 20).sort((a, b) => b.pnl - a.pnl)[0] || null
   // 投资策略建议（诚实版）
   const ranked = strategies.filter(s => !s.control).sort((a, b) => (b.rolling.z - a.rolling.z) || (b.z - a.z))
   const best = ranked[0]; const ctrl = strategies.find(s => s.control)!
@@ -286,8 +322,9 @@ export async function arenaBoard(db: D1Database, source: string, opt: { mode?: '
   else {
     advice.push(`滚动 ${META_K} 期表现最好：「${best.name}」命中率 ${((best.rolling.rate || 0) * 100).toFixed(1)}%（z=${best.rolling.z}），累计 ${best.n} 期 ${((best.rate || 0) * 100).toFixed(1)}% vs 基线 ${(best.baseline * 100).toFixed(0)}%，累计盈亏 ${best.pnl >= 0 ? '+' : ''}${best.pnl}。`)
     advice.push(`随机对照组 ${ctrl.n} 期命中率 ${((ctrl.rate || 0) * 100).toFixed(1)}%（盈亏 ${ctrl.pnl}）。任何策略必须长期显著跑赢对照组（z>1.96）才算有信号。`)
-    const meta = strategies.find(s => s.meta)!
+    const meta = strategies.find(s => s.key === 'meta')!
     advice.push(`组合最优（自适应加权）：${meta.n} 期命中率 ${((meta.rate || 0) * 100).toFixed(1)}%，z=${meta.z}，最大回撤 ${meta.max_dd}，${meta.verdict}。`)
+    if (planBest) { const ctrlPlan = plans.find(p => p.control)!; advice.push(`投资策略模拟（全部 walk-forward）盈亏最好：「${planBest.name}」下注 ${planBest.bets} 期 / 观望 ${planBest.skips} 期，命中率 ${((planBest.rate || 0) * 100).toFixed(1)}%，盈亏 ${planBest.pnl >= 0 ? '+' : ''}${planBest.pnl}，ROI ${((planBest.roi || 0) * 100).toFixed(2)}%，最大回撤 ${planBest.max_dd}；逆向对照方案盈亏 ${ctrlPlan.pnl}。择时/切换在独立序列上没有理论优势，多方案中挑最好的一套本身就带有选择偏差，需要它在后续实盘持续领先才算成立。`) }
     const sig = ranked.filter(s => s.n >= 30 && s.z > 1.96)
     advice.push(sig.length ? `目前统计显著跑赢基线的策略：${sig.map(s => s.name).join('、')}。` : `目前没有任何策略在统计上显著跑赢 50% 基线——这与「哈希逐期独立」的理论一致。`)
   }
@@ -295,7 +332,7 @@ export async function arenaBoard(db: D1Database, source: string, opt: { mode?: '
   return {
     n_periods: periods.length, pending, odds: ARENA_ODDS, per_strategy_count: ARENA_N, break_even_rate: breakEven, meta_k: META_K,
     strategies, periods: periods.map(p => ({ expect: p.expect, actual: p.actual, mode: p.mode, hit: p.hit, pnl: p.pnl, rank: p.rank })),
-    current, weights, best: best?.key || null, advice,
+    current, weights, best: best?.key || null, advice, plans, plan_best: planBest?.key || null,
     disclaimer: '区块哈希逐期独立，任意三位号概率恒为 1/1000；竞技场是对各类选号思路的统计验证，不是预测。',
   }
 }

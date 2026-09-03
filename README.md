@@ -96,12 +96,13 @@
 - **诚实原则**：快照写入时目标期尚未开奖，评分只比对名单，无任何可调参数——这是对「量化选号器是否优于随机」最直接的长期检验
 
 ### 策略竞技场 · 自动战绩榜（独立页面 `/arena`，表 `arena_rounds`）
-- **赛制**：9 个策略并行，每期开奖前各自自动锁定 **500 注三位号（万/千/百）**，`INSERT OR IGNORE` 首次为准；开奖后自动结算命中 / 名次 / 盈亏（每注 1 单位，参考赔率 950×，保本命中率 52.6%）
-- **策略池**：量化集成·均衡（temp 1.5）/ 量化集成·聚焦（temp 1.0）/ 热号追击 / 冷号回补 / 单双大小倾向 / 贝叶斯衰减后验（半衰期 30）/ 马尔可夫一阶转移 / **随机对照组**（期号种子，理论 50%）/ **组合最优·自适应加权**
+- **赛制**：11 个策略并行，每期开奖前各自自动锁定 **500 注三位号（万/千/百）**，`INSERT OR IGNORE` 首次为准；开奖后自动结算命中 / 名次 / 盈亏（每注 1 单位，参考赔率 950×，保本命中率 52.6%）
+- **策略池**：量化集成·均衡（temp 1.5）/ 量化集成·聚焦（temp 1.0）/ 热号追击 / 冷号回补 / 单双大小倾向 / 贝叶斯衰减后验（半衰期 30）/ 马尔可夫一阶转移 / **随机对照组**（期号种子，理论 50%）/ **组合最优·自适应加权** / **跟随最强·动态切换**（整份复制之前滚动 40 期 z 最高的基础策略）/ **多策略共识投票**（按被几个基础策略同时选中排序）
 - **向前滚动优化（walk-forward）**：「组合最优」只用目标期之前已结算的滚动 40 期战绩计算各基础策略 z 分数 → `w = 信任度·exp(0.6·clamp(z,−2,2)) + (1−信任度)`（信任度 n/(n+20)，样本不足自动趋向等权）→ 加权融合 1000 维概率 → Top 500；每期自动重算权重，即「以向前数据为依托，在下一期生成时做优化」
 - **自动化**：心跳 `GET /api/sync/status?tick=1` → 同步开奖 → 结算已开奖期 → 为下一期生成全部策略 → 顺带补齐最近漏掉的期（每 tick ≤2 期）；页面无需常开
 - **回放补齐**：`POST /api/arena/replay` 对历史已开奖期按时间正序、严格只用该期之前的数据生成并即时结算（标记 `mode='replay'`，与 `live` 可分开查看），首日即可积累 300 期样本（≈1 秒/30 期）
 - **页面**：KPI（组合最优命中率/盈亏、当前最强、随机对照）· 战绩榜（已结算/命中/命中率/基线/提升/z/滚动命中率/滚动 z/累计盈亏/ROI/最大回撤/连续未中/下期权重/结论）· 累计盈亏 & 累计命中率曲线（ECharts，组合最优加粗、对照组虚线、50% 基线）· 组合最优下期权重条 · 自动生成的投资策略分析（诚实版）· 本期待开 9 策略 × 500 注（策略卡切换、三种格式、一键复制）· 逐期结算矩阵（点击期号弹窗查看该期各策略全部号码并高亮命中）
+- **投资策略模拟**：6 套「选哪套 × 何时下注」完整方案（组合最优每期必投 / 跟随最强每期必投 / 组合最优择时 z>0.5 / 跟随最强择时 z>1 / 连败 2 期止损 / 逆向跟最弱对照），每期决策只用之前已结算数据，输出下注期/观望期/命中率/z/累计盈亏/ROI/最大回撤/实际跟投分布 + 累计盈亏曲线；结论文案明示「多方案挑最好带有选择偏差」
 - **诚实原则**：任何策略必须长期显著跑赢随机对照组（z>1.96）才算有信号；页面明示 500 注每期期望 −25（950× 赔率），仅做统计验证，不构成投资建议
 
 ### 首页「统计结果」逐期数据表（严格对齐 qkltj 接口）
@@ -160,7 +161,7 @@
 | GET | `/api/analysis/kline?source=&digit=0-9&pos=any\|0-4&bucket=1-50&window=5-200` | **幸运数字频率 K 线**（OHLC/MA/遗漏/z 分数/10 数字概况）+ 总和/大率/单率/龙率 K 线 |
 | GET | `/api/analysis/pick?source=&count=10-1000&steps=20-150&bt=0-60&wp=&ws=&wc=&temp=0.5-3` | **量化选号器**：下一期 Top-N 前三位号（万千百，`digits:3, space:1000`；含 rank/tier/p/lift/tags）+ 每位倾向分布 + 组合信号 + 分层统计 + 分散度 + 等价复式方案 + 覆盖率倍数 + 诚实回测 |
 | GET | `/api/analysis/pick/track?source=&count=&temp=&all=0\|1&limit=` | **选号器实盘战绩**：n/hits/rate/baseline/expected_hits/z/quant_avg/pending/tier_hits/by_config/verdict + 累计曲线 series + recent |
-| GET | `/api/arena/board?source=&mode=all\|live\|replay&limit=` | **策略竞技场战绩榜**：strategies[]（n/hits/rate/baseline/lift/z/pnl/roi/max_dd/streak_miss/rolling/cum_pnl/cum_rate/verdict）+ periods[] 逐期结算 + current 本期各策略 500 注 + weights 下期权重 + best + advice[] |
+| GET | `/api/arena/board?source=&mode=all\|live\|replay&limit=` | **策略竞技场战绩榜**：strategies[]（n/hits/rate/baseline/lift/z/pnl/roi/max_dd/streak_miss/rolling/cum_pnl/cum_rate/verdict）+ periods[] 逐期结算 + current 本期各策略 500 注 + weights 下期权重 + best + advice[] + plans[]（投资策略模拟）+ plan_best |
 | GET | `/api/arena/strategies` | 策略定义（key/name/desc/color/control/meta）+ 每策略注数 + 赔率 |
 | GET | `/api/arena/round?source=&expect=&strategy=` | 单期单策略详情（numbers[] / actual / hit / rank / pnl） |
 | POST | `/api/arena/replay?source=&n=1-30&lookback=` | 回放补齐历史（严格 walk-forward，返回 replayed / remaining） |
