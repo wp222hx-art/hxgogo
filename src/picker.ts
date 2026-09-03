@@ -35,15 +35,15 @@ export interface PickNumber { no: string; digits: number[]; p: number; lift: num
 
 type Weights = Record<string, ReturnType<typeof backtest>['res']>
 /** 机制权重（回测一次，后续历史步复用，避免 O(steps²)） */
-function weightsFor(draws: Draw[], steps: number, keys: string[]): Weights {
+export function weightsFor(draws: Draw[], steps: number, keys: string[]): Weights {
   const w: Weights = {}
   for (const key of keys) { const m = MARKETS.find(x => x.key === key)!; w[key] = backtest(buildSeries(draws, m), m, steps).res }
   return w
 }
-const ALL_KEYS = [...POSN.flatMap(i => [`pos-digit-${i}`, `pos-size-${i}`]), 'shape']
+export const ALL_KEYS = [...POSN.flatMap(i => [`pos-digit-${i}`, `pos-size-${i}`]), 'shape']
 
 /** 每位 0-9 分布：机制集成 × 单双预判 × 大小倾向 */
-function positionDists(draws: Draw[], opt: PickOpts, W: Weights) {
+export function positionDists(draws: Draw[], opt: PickOpts, W: Weights) {
   const out: { pos: number; posName: string; base: number[]; parity: { pOdd: number; side: string; level: string }; size: { pBig: number; tilt: number }; dist: number[]; order: number[]; hot: number[]; cold: number[]; gaps: number[] }[] = []
   for (const i of POSN) {
     const mD = MARKETS.find(m => m.key === `pos-digit-${i}`)!, mS = MARKETS.find(m => m.key === `pos-size-${i}`)!
@@ -64,7 +64,7 @@ function positionDists(draws: Draw[], opt: PickOpts, W: Weights) {
 }
 
 /** 组合级信号：前三和值大小/单双（近 60 期经验频率）、前三形态（机制集成）→ 对候选号做温和再加权 */
-function comboSignals(draws: Draw[], W: Weights) {
+export function comboSignals(draws: Draw[], W: Weights) {
   const mSh = MARKETS.find(x => x.key === 'shape')!; const sh = ensemble(buildSeries(draws, mSh), mSh, W['shape'])
   const sum3 = (n: number[]) => n[0] + n[1] + n[2]
   const sumBig = recentRate(draws, n => sum3(n) >= 14)      // 0~27，≥14 为大
@@ -77,7 +77,7 @@ function comboSignals(draws: Draw[], W: Weights) {
   }
 }
 
-function comboFactor(d: number[], sig: ReturnType<typeof comboSignals>, w: number) {
+export function comboFactor(d: number[], sig: ReturnType<typeof comboSignals>, w: number) {
   const [a, b, c] = d; const sum = a + b + c
   let f = 1
   f *= 1 + w * ((sum >= 14 ? sig.sumBig : 1 - sig.sumBig) * 2 - 1)

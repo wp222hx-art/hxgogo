@@ -12,6 +12,8 @@ import { recommend } from './recommend'
 import { parityKline } from './parity_kline'
 import { pick } from './picker'
 import { recordPick, pickTrack } from './pick_track'
+import { autoArena, arenaBoard, arenaRound, replayArena, settleArena, STRATEGIES, ARENA_N, ARENA_ODDS, ARENA_MIN_HIST } from './arena'
+import { arenaPage } from './page_arena'
 
 type Bindings = { DB: D1Database }
 const app = new Hono<{ Bindings: Bindings }>()
@@ -351,7 +353,7 @@ app.post('/api/sync', async (c) => {
 app.get('/api/sync/status', async (c) => {
   const source = c.req.query('source')
   const targets = source && isSource(source) ? [source] : Object.keys(SOURCES).filter(s => s.startsWith('qkltj:'))
-  if (c.req.query('tick') === '1') for (const s of targets) { await syncSource(c.env.DB, s); await autoTrack(c.env.DB, s) } // 顺带触发到点同步 + 战绩快照
+  if (c.req.query('tick') === '1') for (const s of targets) { await syncSource(c.env.DB, s); await autoTrack(c.env.DB, s); await arenaTick(c.env.DB, s) } // 顺带触发到点同步 + 战绩快照 + 竞技场生成/结算
   const status: any = {}
   for (const s of targets) status[s] = await syncStatus(c.env.DB, s)
   return c.json({ ok: true, status })
@@ -519,6 +521,50 @@ async function autoTrack(db: D1Database, source: string) {
   }
 }
 
+/** 策略竞技场每期自动：结算已开奖 → 为下一期生成全部策略 500 注 → 顺带补齐最近漏掉的期（每 tick 最多 2 期，避免拖慢心跳） */
+const arenaBusy = new Set<string>()
+async function arenaTick(db: D1Database, source: string) {
+  if (arenaBusy.has(source)) return
+  arenaBusy.add(source)
+  try { const rows = await loadDraws(db, source, 800); await autoArena(db, source, rows as any, 2) }
+  catch (e) { console.error('arena tick', e) }
+  finally { arenaBusy.delete(source) }
+}
+
+// ---- 策略竞技场 API
+app.get('/api/arena/board', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const mode = (c.req.query('mode') || 'all') as 'all' | 'live' | 'replay'
+  const limit = Number(c.req.query('limit') || 200)
+  if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)
+  await arenaTick(c.env.DB, source)      // 保证当前期已生成、已开奖期已结算
+  const t0 = now()
+  const r = await arenaBoard(c.env.DB, source, { mode, limit })
+  return c.json({ ok: true, source, mode, ...r, compute_ms: now() - t0 })
+})
+app.get('/api/arena/strategies', (c) => c.json({ ok: true, count: ARENA_N, odds: ARENA_ODDS, min_hist: ARENA_MIN_HIST, strategies: STRATEGIES }))
+app.get('/api/arena/round', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001', expect = c.req.query('expect') || '', strategy = c.req.query('strategy') || 'meta'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const r = await arenaRound(c.env.DB, source, expect, strategy)
+  if (!r) return bad(c, 'round not found', 404)
+  return c.json({ ok: true, ...r, numbers: (r.numbers as string).split(' ') })
+})
+/** 回放补齐：把最近 n 期没有记录的已开奖期按时间正序生成并结算（严格 walk-forward），每次最多 30 期 */
+app.post('/api/arena/replay', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const n = Math.max(1, Math.min(30, Number(c.req.query('n') || 20)))
+  const lookback = Math.max(n, Math.min(600, Number(c.req.query('lookback') || 300)))
+  const t0 = now()
+  const rows = await loadDraws(c.env.DB, source, lookback + ARENA_MIN_HIST + 5)
+  await settleArena(c.env.DB, source)
+  const replayed = await replayArena(c.env.DB, source, rows as any, n, lookback)
+  const remaining = (await c.env.DB.prepare(`SELECT COUNT(*) n FROM draws d WHERE d.source=? AND NOT EXISTS (SELECT 1 FROM arena_rounds a WHERE a.source=d.source AND a.expect=d.expect AND a.strategy='meta') AND d.open_ms >= (SELECT MIN(open_ms) FROM (SELECT open_ms FROM draws WHERE source=? ORDER BY open_ms DESC LIMIT ?))`).bind(source, source, Math.min(lookback, rows.length - ARENA_MIN_HIST)).first<any>())?.n || 0
+  return c.json({ ok: true, source, replayed, remaining: Math.max(0, remaining), compute_ms: now() - t0 })
+})
+
 // 选号器战绩：累计命中率 vs 理论基线（快照在开奖前锁定，开奖后自动评分）
 app.get('/api/analysis/pick/track', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
@@ -586,5 +632,6 @@ app.get('/api/analysis/recommend', async (c) => {
 // ------------------------------------------------------------------ 页面
 app.get('/', (c) => c.html(page()))
 app.get('/analysis', (c) => c.html(analysisPage()))
+app.get('/arena', (c) => c.html(arenaPage()))
 
 export default app
