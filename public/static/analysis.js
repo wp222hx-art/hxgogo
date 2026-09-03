@@ -218,6 +218,43 @@ async function loadPick(silent) {
   renderPickGrid()
   $('pick-live').innerHTML = `<i class="fas fa-circle text-emerald-400 mr-1" style="font-size:8px"></i>基于 ${d.latest_expect} · ${new Date().toLocaleTimeString()}`
   clearTimeout(PICK.timer); PICK.timer = setTimeout(() => loadPick(true), Math.max(15000, Math.min(60000, d.interval_ms / 3)))
+  loadPickTrack()
+}
+async function loadPickTrack() {
+  const all = $('pick-track-all').checked
+  let d
+  try { d = (await api.get('/analysis/pick/track', { params: { source: S.source, count: PICK.count, temp: $('pick-temp').value, all: all ? 1 : 0 } })).data }
+  catch (e) { $('pick-track-live').textContent = '加载失败'; return }
+  PICK.track = d
+  const tempName = { '1': '集中', '1.5': '均衡', '2.2': '分散' }[String(d.temp)] || d.temp
+  $('pick-track-live').textContent = all ? `全部配置 · ${d.n} 期已评分 · ${d.pending} 期待开奖` : `${d.count} 注 · ${tempName} · ${d.n} 期已评分 · ${d.pending} 期待开奖`
+  const edge = d.n ? d.rate - d.baseline : 0
+  $('pick-track-kpi').innerHTML = `
+    <div><div class="v ${d.n && Math.abs(d.z) >= 1.96 ? (d.z > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-200'}">${d.n ? pct(d.rate, 1) : '—'}</div><div class="text-[10px] text-slate-500">累计命中率（${d.hits}/${d.n}）</div></div>
+    <div><div class="v text-slate-500">${d.n ? pct(d.baseline, 1) : '—'}</div><div class="text-[10px] text-slate-500">理论基线 · 期望 ${d.expected_hits} 中</div></div>
+    <div><div class="v ${edge > 0 ? 'text-emerald-300' : edge < 0 ? 'text-red-300' : 'text-slate-300'}" style="font-size:16px">${d.n ? (edge >= 0 ? '+' : '') + (edge * 100).toFixed(1) + ' pp' : '—'} <span class="text-slate-500 text-xs">z=${d.z}</span></div><div class="text-[10px] text-slate-500">相对基线 · 量化覆盖均值 ${d.quant_avg == null ? '—' : pct(d.quant_avg, 1)}</div></div>
+    <div class="text-[10px] text-slate-500">命中落点：核心 ${d.tier_hits.core} · 主力 ${d.tier_hits.main} · 外围 ${d.tier_hits.edge}</div>
+    ${all && d.by_config.length ? `<div class="text-[10px] text-slate-500">${d.by_config.map(c => `${c.count}注/${{ '1': '集中', '1.5': '均衡', '2.2': '分散' }[String(c.temp)] || c.temp}: ${c.hits}/${c.n} (${pct(c.rate, 0)} vs ${pct(c.baseline, 0)})`).join('<br>')}</div>` : ''}`
+  const ch = ec('pick-track-chart'); if (ch) {
+    const x = d.series.map(s => s.expect.slice(-4))
+    ch.setOption({
+      backgroundColor: 'transparent', animation: false,
+      tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e2e8f0', fontSize: 11 }, formatter: ps => { const i = ps[0].dataIndex, s = d.series[i]; return `期 ${s.expect}<br>实开 <b>${s.actual}</b> ${s.hit ? '<span style="color:#34d399">✓ 榜内 #' + s.rank + '</span>' : '<span style="color:#94a3b8">榜外</span>'}<br>累计命中 ${pct(s.rate, 1)} · 基线 ${pct(s.baseline, 1)} · 量化 ${pct(s.quant, 1)}` } },
+      legend: { data: ['累计命中率', '理论基线', '量化覆盖率(均值)'], textStyle: { color: '#94a3b8', fontSize: 10 }, top: 0 },
+      grid: { left: 44, right: 12, top: 26, bottom: 22 },
+      xAxis: { type: 'category', data: x, axisLabel: { color: '#64748b', fontSize: 9 }, axisLine: { lineStyle: { color: '#334155' } } },
+      yAxis: { type: 'value', min: 0, max: 1, axisLabel: { color: '#64748b', fontSize: 9, formatter: v => (v * 100) + '%' }, splitLine: { lineStyle: { color: '#1e293b' } } },
+      series: [
+        { name: '累计命中率', type: 'line', data: d.series.map(s => s.rate), showSymbol: false, lineStyle: { width: 2, color: '#34d399' }, areaStyle: { color: 'rgba(52,211,153,0.08)' } },
+        { name: '理论基线', type: 'line', data: d.series.map(s => s.baseline), showSymbol: false, lineStyle: { width: 1.5, color: '#94a3b8', type: 'dashed' } },
+        { name: '量化覆盖率(均值)', type: 'line', data: d.series.map(s => s.quant), showSymbol: false, lineStyle: { width: 1, color: '#fbbf24', type: 'dotted' } },
+        { name: '命中', type: 'scatter', data: d.series.map((s, i) => s.hit ? [i, s.rate] : null).filter(Boolean), symbolSize: 6, itemStyle: { color: '#34d399' }, tooltip: { show: false } },
+      ],
+      graphic: d.n ? [] : [{ type: 'text', left: 'center', top: 'middle', style: { text: d.pending ? `已锁定 ${d.pending} 期快照，等待开奖评分…` : '尚无战绩数据，快照将在下一期自动锁定', fill: '#64748b', fontSize: 12 } }],
+    }, true)
+  }
+  $('pick-track-recent').innerHTML = d.recent.length ? `<span class="text-[10px] text-slate-500 mr-1 self-center">最近（左=最新）：</span>` + d.recent.map(r => `<span title="${r.expect} 实开 ${r.actual}${r.rank ? ' · 榜内 #' + r.rank + '/' + r.count : ' · 榜外'}" class="px-1.5 py-0.5 rounded text-[10px] font-mono ${r.hit ? 'bg-emerald-500/70 text-black' : 'bg-slate-800 text-slate-400'}">${r.actual}${r.hit ? ' ✓' : ''}</span>`).join('') : ''
+  $('pick-track-verdict').innerHTML = `<i class="fas fa-scale-balanced mr-1 text-slate-500"></i>${d.verdict}`
 }
 function bindPick() {
   const setCount = (n, from) => {
@@ -233,6 +270,7 @@ function bindPick() {
   document.querySelectorAll('#pick-presets .tab').forEach(b => b.onclick = () => setCount(Number(b.dataset.n)))
   $('pick-tier').onchange = renderPickGrid; $('pick-sort').onchange = renderPickGrid; $('pick-temp').onchange = () => loadPick()
   document.querySelectorAll('.pick-copy').forEach(b => b.onclick = () => { document.querySelectorAll('.pick-copy').forEach(x => x.classList.remove('active')); b.classList.add('active'); PICK.fmt = b.dataset.fmt; $('pick-text').value = pickText(PICK.fmt); syncTextBox(); copyText(pickText(PICK.fmt)) })
+  $('pick-track-all').onchange = loadPickTrack
   $('pick-text-copy').onclick = copyTextBox
   $('pick-text-select').onclick = () => { const ta = $('pick-text'); ta.focus(); ta.select() }
   $('pick-text').onclick = e => { if (e.detail === 3) e.target.select() }

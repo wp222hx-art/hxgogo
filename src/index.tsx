@@ -11,6 +11,7 @@ import { kline, marketKlines } from './kline'
 import { recommend } from './recommend'
 import { parityKline } from './parity_kline'
 import { pick } from './picker'
+import { recordPick, pickTrack } from './pick_track'
 
 type Bindings = { DB: D1Database }
 const app = new Hono<{ Bindings: Bindings }>()
@@ -350,7 +351,7 @@ app.post('/api/sync', async (c) => {
 app.get('/api/sync/status', async (c) => {
   const source = c.req.query('source')
   const targets = source && isSource(source) ? [source] : Object.keys(SOURCES).filter(s => s.startsWith('qkltj:'))
-  if (c.req.query('tick') === '1') for (const s of targets) await syncSource(c.env.DB, s) // 顺带触发到点同步
+  if (c.req.query('tick') === '1') for (const s of targets) { await syncSource(c.env.DB, s); await autoTrack(c.env.DB, s) } // 顺带触发到点同步 + 战绩快照
   const status: any = {}
   for (const s of targets) status[s] = await syncStatus(c.env.DB, s)
   return c.json({ ok: true, status })
@@ -487,10 +488,49 @@ app.get('/api/analysis/pick', async (c) => {
   const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) { c.header('X-Cache', 'HIT'); return c.json({ ...hit.v, cached: true, cached_ms: hit.t, cache_age_ms: now() - hit.t }) }
   const src = SOURCES[source as keyof typeof SOURCES]
   const t0 = now()
-  const v = { ok: true, source, interval_ms: src.intervalMs, ...pick(rows as any, { count, steps, btSteps: bt, wParity, wSize, wCombo, temp }), compute_ms: 0 }
+  const v: any = { ok: true, source, interval_ms: src.intervalMs, ...pick(rows as any, { count, steps, btSteps: bt, wParity, wSize, wCombo, temp }), compute_ms: 0 }
   v.compute_ms = now() - t0
+  // 战绩追踪：默认参数下（wp/ws/wc 默认）把下一期 Top-N 快照锁定入库，开奖后自动评分
+  if (wParity === 0.6 && wSize === 0.4 && wCombo === 0.35 && steps === 60) {
+    try { v.tracked = await recordPick(c.env.DB, { source, next_expect: v.next_expect, latest_expect: v.latest_expect, count, temp, numbers: v.numbers.map((x: any) => x.no), coverage: v.coverage.p }) } catch (e: any) { v.track_error = String(e?.message || e) }
+  }
   analysisCache.set(ck, { t: now(), v })
   return c.json(v)
+})
+
+/** 自动战绩快照：每期为固定预设（300/500 注 · 均衡）锁定 Top-N，不依赖有人打开分析页 */
+const AUTO_TRACK = [{ count: 300, temp: 1.5 }, { count: 500, temp: 1.5 }]
+const autoTracked = new Map<string, string>()   // source|count|temp → 已记录的期号（进程内去重，DB 侧还有 INSERT OR IGNORE）
+async function autoTrack(db: D1Database, source: string) {
+  const latest = (await db.prepare('SELECT expect FROM draws WHERE source=? ORDER BY open_ms DESC LIMIT 1').bind(source).first<any>())?.expect
+  if (!latest || !/^\d+$/.test(latest)) return
+  const next = String(BigInt(latest) + 1n)
+  let rows: any[] | null = null
+  for (const cfg of AUTO_TRACK) {
+    const k = `${source}|${cfg.count}|${cfg.temp}`
+    if (autoTracked.get(k) === next) continue
+    const exists = await db.prepare('SELECT 1 FROM pick_log WHERE source=? AND expect=? AND count=? AND temp=?').bind(source, next, cfg.count, cfg.temp).first()
+    if (!exists) {
+      rows ||= await loadDraws(db, source, 600)
+      const r = pick(rows as any, { count: cfg.count, temp: cfg.temp, btSteps: 0 })
+      await recordPick(db, { source, next_expect: r.next_expect, latest_expect: r.latest_expect, count: cfg.count, temp: cfg.temp, numbers: r.numbers.map(x => x.no), coverage: r.coverage.p })
+    }
+    autoTracked.set(k, next)
+  }
+}
+
+// 选号器战绩：累计命中率 vs 理论基线（快照在开奖前锁定，开奖后自动评分）
+app.get('/api/analysis/pick/track', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const count = Math.max(10, Math.min(1000, Number(c.req.query('count') || 500)))
+  const temp = Math.max(0.5, Math.min(3, Number(c.req.query('temp') ?? 1)))
+  const all = c.req.query('all') === '1'
+  const limit = Number(c.req.query('limit') || 500)
+  if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)  // 确保最新开奖已入库再评分
+  const t0 = now()
+  const r = await pickTrack(c.env.DB, source, { count, temp, all, limit })
+  return c.json({ ok: true, source, count, temp, all, ...r, compute_ms: now() - t0 })
 })
 
 app.get('/api/analysis/parity', async (c) => {

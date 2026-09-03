@@ -88,6 +88,12 @@
 - **诚实回测**：最近 20 期用「当期之前的数据」生成 Top-N，统计真实开奖「前三位」是否落入（命中/期数、实际覆盖率、理论基线、理论期望命中）+ 最近 20 期命中序列（含榜内排名）；实测 300 注 8/20（期望 6），差异在随机波动范围内，页面明确标注「有据可循的随机选号器，非预测」
 - **性能**：机制权重仅计算一次并在回测各步复用，bt=20 约 0.8~1.0s；结果 60s 缓存并带 `cached:true` / `X-Cache: HIT`，数据版本变更即失效；页面按开奖间隔/3（15~60s）自动刷新
 
+### 选号器实盘战绩追踪（`#pick-track`，表 `pick_log`）
+- **开奖前锁定**：每期为固定预设（300 / 500 注 · 均衡）自动生成 Top-N 快照并 `INSERT OR IGNORE` 入库（首次为准、不可改写）；由首页/分析页心跳 `GET /api/sync/status?tick=1` 触发，不依赖有人打开分析页；用户在分析页看到的任何默认权重配置（任意 N × 分散度）也会同步锁定
+- **开奖后评分**：懒执行——任何读取战绩的请求先 JOIN `draws` 给未评分快照打分：实开前三位是否在名单内、榜内排名
+- **战绩面板**：累计命中率 vs 理论基线（各期 N/1000 均值）vs 量化覆盖率均值三线图（ECharts）、命中点标记、`+pp` 相对基线与 z 值（|z|≥1.96 才着色）、命中落点分层（核心/主力/外围）、最近 40 期序列、按配置分组汇总（勾选「汇总全部配置」）、自动结论文案（<30 期不下结论）
+- **诚实原则**：快照写入时目标期尚未开奖，评分只比对名单，无任何可调参数——这是对「量化选号器是否优于随机」最直接的长期检验
+
 ### 首页「统计结果」逐期数据表（严格对齐 qkltj 接口）
 - 数据源：`GET https://api.qkltj.com/api/draw-result?code=6001&rows=N`，字段 **原样入库**：`opennumber / lottoType / lottoTypeCn / openTime / id / block / hash / expect`
 - **运算结果以官方 `opennumber` 为准**（n1~n5 直接取自官方值）；本地哈希推算仅做交叉校验，不一致时 `mismatch=1` 并在表格以 ⚠ 标注（当前 6 源 0 条不一致）
@@ -143,6 +149,7 @@
 | GET | `/api/analysis/parity?source=&pos=0-4&bucket=1-20&limit=60-1000` | **单双指数 K 线**（odd/even 各含 candles/BOLL/MACD/KDJ/votes/stats/backtest）+ forecast（side/level/pOdd/reasons/strategy）+ 近 30 期序列 |
 | GET | `/api/analysis/kline?source=&digit=0-9&pos=any\|0-4&bucket=1-50&window=5-200` | **幸运数字频率 K 线**（OHLC/MA/遗漏/z 分数/10 数字概况）+ 总和/大率/单率/龙率 K 线 |
 | GET | `/api/analysis/pick?source=&count=10-1000&steps=20-150&bt=0-60&wp=&ws=&wc=&temp=0.5-3` | **量化选号器**：下一期 Top-N 前三位号（万千百，`digits:3, space:1000`；含 rank/tier/p/lift/tags）+ 每位倾向分布 + 组合信号 + 分层统计 + 分散度 + 等价复式方案 + 覆盖率倍数 + 诚实回测 |
+| GET | `/api/analysis/pick/track?source=&count=&temp=&all=0\|1&limit=` | **选号器实盘战绩**：n/hits/rate/baseline/expected_hits/z/quant_avg/pending/tier_hits/by_config/verdict + 累计曲线 series + recent |
 | GET | `/api/analysis/recommend?source=&steps=` | **本期推荐**：5 玩法 19 组 81 候选概率 + 幸运数字综合榜 + 预见性策略 |
 | GET | `/api/qkltj/table?code=6001&limit=30` | 首页统计结果表：官方字段 + `highlight`（哈希中取用数字下标）+ `mismatch` |
 | GET | `/api/sync/status?source=&tick=1` | 同步状态（latest_expect / lag_ms / expected_publish_ms / audit / fresh / version）；`tick=1` 顺带执行到点同步 |
@@ -170,7 +177,8 @@ pm2 start ecosystem.config.cjs      # http://localhost:3000
 - **最后更新**: 2026-09-03
 
 ## 未实现 / 下一步建议
-- [ ] 选号器/推荐战绩追踪：把每期「Top-N 预选」「本期推荐」快照落库，下一期开奖后自动评分，展示推荐命中率曲线 vs 基线（最直观的随机性证明）
+- [x] 选号器战绩追踪（已完成，见上）
+- [ ] 「本期推荐」5 玩法战绩追踪：同样快照落库 + 开奖评分，展示推荐命中率曲线 vs 基线
 - [ ] 用户下注行为多维分析（按玩法/时段/筹码分布/跟随倾向 vs 命中）
 - [ ] 选号器分散度增强（按位限制单数字占比上限）与权重 wp/ws/wc 前端可调
 - [ ] 机制参数可调（窗口长度、阈值）与自定义组合回测

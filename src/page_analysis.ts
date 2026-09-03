@@ -148,6 +148,20 @@ export const analysisPage = () => `<!DOCTYPE html>
       <div class="kpi lg:col-span-2" id="pick-bt"></div>
       <div class="kpi text-[11px] text-slate-400" id="pick-disc"></div>
     </div>
+    <div class="kpi mt-3" id="pick-track">
+      <div class="flex flex-wrap items-center gap-2 mb-2">
+        <span class="text-sm font-bold text-slate-200"><i class="fas fa-flag-checkered text-emerald-400 mr-1"></i>实盘战绩追踪</span>
+        <span class="text-[10px] text-slate-500">每期开奖前自动锁定 Top-N 快照（不可改写）→ 开奖后自动评分 → 累计命中率 vs 理论基线 N/1000</span>
+        <label class="ml-auto flex items-center gap-1 text-[11px] text-slate-400"><input id="pick-track-all" type="checkbox" class="accent-emerald-400">汇总全部配置</label>
+        <span id="pick-track-live" class="text-[10px] text-slate-500"></span>
+      </div>
+      <div class="grid lg:grid-cols-4 gap-3">
+        <div id="pick-track-kpi" class="space-y-2"></div>
+        <div class="lg:col-span-3"><div id="pick-track-chart" style="height:220px"></div></div>
+      </div>
+      <div id="pick-track-recent" class="flex flex-wrap gap-1 mt-2"></div>
+      <div id="pick-track-verdict" class="text-[11px] text-slate-400 mt-2"></div>
+    </div>
   </section>
 
   <section class="card" id="parity-section">
