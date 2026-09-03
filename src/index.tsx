@@ -9,6 +9,7 @@ import { SOURCES, isSource, syncSource, loadDraws } from './sync'
 import { MARKETS, marketByKey, buildSeries, backtest, ensemble, stats as drawStats, MECHANISMS } from './analysis'
 import { kline, marketKlines } from './kline'
 import { recommend } from './recommend'
+import { parityKline } from './parity_kline'
 
 type Bindings = { DB: D1Database }
 const app = new Hono<{ Bindings: Bindings }>()
@@ -452,6 +453,23 @@ app.get('/api/analysis/overview', async (c) => {
 })
 
 /** K 线：幸运数字出现频率 OHLC（用户自选数字 + 位置 + K 线粒度 + 滚动窗口） */
+/** 单双 K 线 + BOLL/MACD/KDJ 预判（默认万位，最近 500 期） */
+app.get('/api/analysis/parity', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const pos = Math.max(0, Math.min(4, Number(c.req.query('pos') ?? 0)))
+  const bucket = Math.max(1, Math.min(20, Number(c.req.query('bucket') || 1)))
+  const limit = Math.max(60, Math.min(1000, Number(c.req.query('limit') || 500)))
+  const rows = await drawsFor(c.env.DB, source, limit)
+  const latest = rows[0]?.expect || ''
+  const ck = `pk|${source}|${pos}|${bucket}|${limit}|${latest}`
+  const hit = analysisCache.get(ck); if (hit && now() - hit.t < 30_000) return c.json(hit.v)
+  const src = SOURCES[source as keyof typeof SOURCES]
+  const v = { ok: true, source, interval_ms: src.intervalMs, ...parityKline(rows as any, { pos, bucket }) }
+  analysisCache.set(ck, { t: now(), v })
+  return c.json(v)
+})
+
 app.get('/api/analysis/kline', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')

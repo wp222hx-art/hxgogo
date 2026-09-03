@@ -29,6 +29,8 @@ export const analysisPage = () => `<!DOCTYPE html>
 .cand { display:flex; align-items:center; gap:6px; padding:4px 6px; border-radius:6px; font-size:12px; } .cand:nth-child(odd) { background:#0f172a; } .cand.top1 { background:#f59e0b1a; border:1px solid #f59e0b55; }
 .cand .lb { width:44px; font-weight:800; font-family: ui-monospace, monospace; } .cand .pb { flex:1; height:8px; background:#1e293b; border-radius:4px; overflow:hidden; position:relative; } .cand .pb > i { position:absolute; left:0; top:0; height:100%; border-radius:4px; } .cand .pb > b { position:absolute; top:-2px; width:2px; height:12px; background:#fbbf24; }
 .lvl-strong { color:#22c55e; } .lvl-mild { color:#eab308; } .lvl-neutral { color:#64748b; }
+@keyframes pkflash { 0% { box-shadow:0 0 0 0 rgba(217,70,239,.7); } 100% { box-shadow:0 0 0 14px rgba(217,70,239,0); } }
+.flash { animation: pkflash 1.2s ease-out 2; }
 .play-card { background:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:12px; }
 .tl { display:grid; grid-template-columns: repeat(50, 1fr); gap:2px; } .tl i { height:10px; border-radius:2px; background:#1e293b; } .tl i.on { background:#f59e0b; }
 .step-li { padding:6px 10px; border-left:3px solid #06b6d4; background:#0f172a; border-radius:0 8px 8px 0; font-size:12px; }
@@ -80,6 +82,39 @@ export const analysisPage = () => `<!DOCTYPE html>
   </section>
 
   <!-- 幸运数字 K 线 -->
+  <!-- 单双 K 线 + BOLL / MACD / KDJ -->
+  <section class="card" id="parity-section">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+      <h2 class="font-bold"><i class="fas fa-chart-line mr-2 text-fuchsia-400"></i>单双 K 线 · <span id="pk-title" class="text-fuchsia-300"></span> <span class="text-xs text-slate-500 font-normal ml-2">单指数 / 双指数 = 每期 +1/−1 累加路径 · BOLL(20,2) · MACD(12,26,9) · KDJ(9,3,3)</span></h2>
+      <div class="flex flex-wrap gap-2 items-center text-xs">
+        <div id="pk-pos" class="flex gap-1"></div>
+        <label class="text-slate-400">粒度 <select id="pk-bucket" class="bg-slate-800 rounded px-2 py-1 border border-slate-700"><option value="1" selected>1 期</option><option value="3">3 期</option><option value="5">5 期</option></select></label>
+        <label class="text-slate-400">样本 <select id="pk-limit" class="bg-slate-800 rounded px-2 py-1 border border-slate-700"><option value="200">200 注</option><option value="500" selected>500 注</option><option value="1000">1000 注</option></select></label>
+        <span id="pk-live" class="text-slate-500"><i class="fas fa-circle text-emerald-400 mr-1" style="font-size:8px"></i>实时</span>
+      </div>
+    </div>
+    <!-- 预判卡 -->
+    <div id="pk-forecast" class="grid lg:grid-cols-3 gap-3 mb-4"></div>
+    <!-- 两条 K 线 -->
+    <div class="grid lg:grid-cols-2 gap-4">
+      <div>
+        <div class="flex items-center justify-between mb-1"><h3 class="text-sm font-bold text-red-300"><i class="fas fa-1 mr-1"></i>单指数 K 线（万位开单 +1 / 开双 −1）</h3><span id="pk-odd-kpi" class="text-xs font-mono text-slate-400"></span></div>
+        <div id="pk-odd" class="kchart" style="height:520px"></div>
+      </div>
+      <div>
+        <div class="flex items-center justify-between mb-1"><h3 class="text-sm font-bold text-sky-300"><i class="fas fa-2 mr-1"></i>双指数 K 线（万位开双 +1 / 开单 −1）</h3><span id="pk-even-kpi" class="text-xs font-mono text-slate-400"></span></div>
+        <div id="pk-even" class="kchart" style="height:520px"></div>
+      </div>
+    </div>
+    <!-- 指标读数 + 回测 -->
+    <div class="grid lg:grid-cols-3 gap-3 mt-4">
+      <div id="pk-ind" class="kpi text-xs lg:col-span-2"></div>
+      <div id="pk-bt" class="kpi text-xs"></div>
+    </div>
+    <div id="pk-seq" class="mt-3 flex flex-wrap gap-1"></div>
+    <p id="pk-disc" class="text-[11px] text-slate-500 mt-2"></p>
+  </section>
+
   <section class="card" id="kline-section">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
       <h2 class="font-bold"><i class="fas fa-chart-simple mr-2 text-emerald-400"></i>幸运数字 K 线 · <span id="kl-title" class="text-emerald-300"></span></h2>

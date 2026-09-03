@@ -70,6 +70,13 @@
 - 近 100 期命中点阵、遗漏长度分布 vs 几何分布理论曲线、自动文字解读
 - **市场 K 线**: 总和 K 线（价格=每期总和，22.5 中轴）、总和大率 / 单率 / 龙率 K 线（滚动频率）
 
+### 单双 K 线 + BOLL / MACD / KDJ 三指标预判（`/analysis` 中部 `#parity-section`）
+- **两条实时 K 线**：默认万位、500 注。「单指数」= 100 + Σ(开单 +1 / 开双 −1)，「双指数」为其镜像；每期一个 tick，按粒度（1/3/5 期/根）聚合 OHLC，成交量=该根内命中次数；可切换万/千/百/十/个
+- **三指标叠加（三栏图）**：主图蜡烛 + BOLL(20,2) 上中下轨；副图 MACD(12,26,9) DIF/DEA/柱；副图 KDJ(9,3,3)；所有 x 轴联动缩放
+- **预判逻辑**：每个指标输出 [−1,1] 投票（BOLL：%B 位置/触轨反转；MACD：多空+柱体加速/金叉死叉；KDJ：J 极值反转/金叉死叉），按权重 0.3/0.4/0.3 合成；`score=(单分−双分)/2`，`P(单)=0.5+clamp(score×0.25,±0.2)`；|score|<0.08 → 观望，≥0.2 温和，≥0.45 强信号；给出下一期期号、单/双概率条、3 指标同向数、逐条判读与策略文案
+- **实时**：按开奖间隔/4（10~60s）轮询，仅当最新期号变化才重绘并高亮闪烁
+- **诚实回测**：对全样本逐根计算「信号 vs 下一根方向」命中率（BOLL/MACD/KDJ/合成 + 最近 20 次 ✓/✗），基线 50%；实测 6001 万位 ≈ 46~50%，页面明确标注「指标不具预测力，仅供参考」
+
 ### 首页「统计结果」逐期数据表（严格对齐 qkltj 接口）
 - 数据源：`GET https://api.qkltj.com/api/draw-result?code=6001&rows=N`，字段 **原样入库**：`opennumber / lottoType / lottoTypeCn / openTime / id / block / hash / expect`
 - **运算结果以官方 `opennumber` 为准**（n1~n5 直接取自官方值）；本地哈希推算仅做交叉校验，不一致时 `mismatch=1` 并在表格以 ⚠ 标注（当前 6 源 0 条不一致）
@@ -114,6 +121,7 @@
 | GET | `/api/analysis/stats?source=` | 多维统计（热力图/遗漏/总和/时段/连开） |
 | GET | `/api/analysis/predict?source=&market=&steps=&limit=` | **20 机制预测 + 回测 + 集成量化** |
 | GET | `/api/analysis/overview?source=` | 全市场倾向总览 |
+| GET | `/api/analysis/parity?source=&pos=0-4&bucket=1-20&limit=60-1000` | **单双指数 K 线**（odd/even 各含 candles/BOLL/MACD/KDJ/votes/stats/backtest）+ forecast（side/level/pOdd/reasons/strategy）+ 近 30 期序列 |
 | GET | `/api/analysis/kline?source=&digit=0-9&pos=any\|0-4&bucket=1-50&window=5-200` | **幸运数字频率 K 线**（OHLC/MA/遗漏/z 分数/10 数字概况）+ 总和/大率/单率/龙率 K 线 |
 | GET | `/api/analysis/recommend?source=&steps=` | **本期推荐**：5 玩法 19 组 81 候选概率 + 幸运数字综合榜 + 预见性策略 |
 | GET | `/api/qkltj/table?code=6001&limit=30` | 首页统计结果表：官方字段 + `highlight`（哈希中取用数字下标）+ `mismatch` |

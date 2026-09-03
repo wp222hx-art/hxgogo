@@ -21,10 +21,11 @@ async function init() {
   $('source-sel').onchange = e => { S.source = e.target.value; loadAll() }
   $('market-sel').onchange = e => { S.market = e.target.value; loadPredict() }
   $('steps-sel').onchange = loadPredict; $('limit-sel').onchange = loadPredict
+  $('pk-bucket').onchange = () => loadParity(); $('pk-limit').onchange = () => loadParity()
   $('sync-btn').onclick = async () => { $('sync-btn').innerHTML = '<i class="fas fa-rotate fa-spin mr-1"></i>同步中'; await api.post('/sync?force=1&source=' + S.source); $('sync-btn').innerHTML = '<i class="fas fa-rotate mr-1"></i>同步'; loadAll() }
   loadAll()
 }
-async function loadAll() { renderKpis(); await Promise.all([loadRecommend(), loadKline(), loadOverview(), loadPredict(), loadStats()]) }
+async function loadAll() { renderKpis(); await Promise.all([loadRecommend(), loadParity(), loadKline(), loadOverview(), loadPredict(), loadStats()]) }
 
 async function renderKpis() {
   const meta = (await api.get('/sources')).data.sources; S.sources = meta
@@ -125,6 +126,82 @@ function candleOption(candles, opt = {}) {
     dataZoom: [{ type: 'inside', xAxisIndex: volume ? [0, 1] : [0], start: Math.max(0, 100 - 6000 / Math.max(1, candles.length)), end: 100 }],
     series,
   }
+}
+
+// =====================================================================
+// 单双 K 线 + BOLL / MACD / KDJ
+// =====================================================================
+const PK = { pos: 0, timer: null, latest: '' }
+function techOption(a, accent) {
+  const c = a.candles, x = c.map(k => k.expect.slice(-4))
+  const grids = [{ left: 46, right: 50, top: 24, height: '46%' }, { left: 46, right: 50, top: '58%', height: '15%' }, { left: 46, right: 50, top: '78%', height: '15%' }]
+  const ax = (gi, show) => ({ type: 'category', data: x, gridIndex: gi, axisLine: { lineStyle: { color: '#334155' } }, axisLabel: { color: '#64748b', fontSize: 9, show }, axisTick: { show: false }, boundaryGap: true })
+  const ay = (gi, extra = {}) => ({ scale: true, gridIndex: gi, splitNumber: 3, splitLine: { lineStyle: { color: '#1e293b' } }, axisLabel: { color: '#64748b', fontSize: 9 }, ...extra })
+  const ln = (name, data, color, gi, w = 1.1, dash) => ({ name, type: 'line', data, showSymbol: false, smooth: false, lineStyle: { width: w, color, type: dash }, xAxisIndex: gi, yAxisIndex: gi })
+  const series = [
+    { name: a.label + '指数', type: 'candlestick', data: c.map(k => [k.o, k.c, k.l, k.h]), itemStyle: { color: UP, color0: DOWN, borderColor: UP, borderColor0: DOWN }, xAxisIndex: 0, yAxisIndex: 0 },
+    ln('BOLL上', a.boll.up, '#f59e0b', 0, 1, 'dashed'), ln('BOLL中', a.boll.mid, accent, 0, 1.3), ln('BOLL下', a.boll.low, '#f59e0b', 0, 1, 'dashed'),
+    { name: 'MACD', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: a.macd.hist.map(v => ({ value: v, itemStyle: { color: v == null ? 'transparent' : v >= 0 ? UP : DOWN } })) },
+    ln('DIF', a.macd.dif, '#fbbf24', 1), ln('DEA', a.macd.dea, '#38bdf8', 1),
+    ln('K', a.kdj.k, '#fbbf24', 2), ln('D', a.kdj.d, '#38bdf8', 2), ln('J', a.kdj.j, '#e879f9', 2),
+  ]
+  return {
+    backgroundColor: 'transparent', animation: false,
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross', link: [{ xAxisIndex: 'all' }] }, backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e2e8f0', fontSize: 11 }, formatter: ps => { const i = ps[0].dataIndex, k = c[i]; if (!k) return ''; const f = v => v == null ? '—' : v; return `<b>${k.from}${k.from !== k.to ? ' → ' + k.to : ''}</b>　${k.hits}/${k.v} 期开${a.label}<br/>开 ${k.o} 收 <b style="color:${k.c >= k.o ? UP : DOWN}">${k.c}</b> 高 ${k.h} 低 ${k.l}<br/>BOLL 上${f(a.boll.up[i])} 中${f(a.boll.mid[i])} 下${f(a.boll.low[i])} %B=${f(a.boll.pb[i])}<br/>MACD DIF ${f(a.macd.dif[i])} DEA ${f(a.macd.dea[i])} 柱 ${f(a.macd.hist[i])}<br/>KDJ K ${f(a.kdj.k[i])} D ${f(a.kdj.d[i])} J ${f(a.kdj.j[i])}` } },
+    legend: { data: ['BOLL上', 'BOLL中', 'BOLL下', 'DIF', 'DEA', 'K', 'D', 'J'], top: 0, right: 10, textStyle: { color: '#94a3b8', fontSize: 9 }, itemWidth: 12 },
+    axisPointer: { link: [{ xAxisIndex: 'all' }] },
+    grid: grids, xAxis: [ax(0, false), ax(1, false), ax(2, true)], yAxis: [ay(0), ay(1), ay(2, { min: -20, max: 120, scale: false })],
+    dataZoom: [{ type: 'inside', xAxisIndex: [0, 1, 2], start: Math.max(0, 100 - 12000 / Math.max(1, c.length)), end: 100 }],
+    graphic: [{ type: 'text', left: 50, top: '58%', style: { text: 'MACD(12,26,9)', fill: '#64748b', fontSize: 9 } }, { type: 'text', left: 50, top: '78%', style: { text: 'KDJ(9,3,3)', fill: '#64748b', fontSize: 9 } }],
+    series,
+  }
+}
+function voteBadge(v) { const s = v.v; const col = Math.abs(s) < 0.05 ? 'text-slate-400' : s > 0 ? 'text-red-400' : 'text-emerald-400'; return `<span class="font-mono font-bold ${col}">${s > 0 ? '+' : ''}${s.toFixed(2)}</span>` }
+async function loadParity(silent) {
+  let d
+  try {
+    d = (await api.get('/analysis/parity', { params: { source: S.source, pos: PK.pos, bucket: $('pk-bucket').value, limit: $('pk-limit').value } })).data
+  } catch (e) {
+    $('pk-live').innerHTML = `<i class="fas fa-circle text-red-400 mr-1" style="font-size:8px"></i>加载失败，稍后重试`
+    clearTimeout(PK.timer); PK.timer = setTimeout(() => loadParity(true), 15000); return
+  }
+  if (silent && d.latest_expect === PK.latest) { clearTimeout(PK.timer); PK.timer = setTimeout(() => loadParity(true), Math.max(10000, Math.min(60000, d.interval_ms / 4))); return }
+  const isNew = PK.latest && d.latest_expect !== PK.latest; PK.latest = d.latest_expect
+  $('pk-title').textContent = `${d.posName} · ${d.n} 注 · 最新 ${d.latest_expect}`
+  $('pk-pos').innerHTML = ['万', '千', '百', '十', '个'].map((l, i) => `<button class="tab ${PK.pos === i ? 'active' : ''}" data-p="${i}">${l}</button>`).join('')
+  document.querySelectorAll('#pk-pos .tab').forEach(b => b.onclick = () => { PK.pos = Number(b.dataset.p); loadParity() })
+  // 预判卡
+  const f = d.forecast, sideTxt = f.side === 'odd' ? '单' : f.side === 'even' ? '双' : '观望'
+  const sideCol = f.side === 'odd' ? 'text-red-400' : f.side === 'even' ? 'text-sky-400' : 'text-slate-300'
+  const lvl = f.level === 'strong' ? '<span class="lvl-strong">强信号</span>' : f.level === 'mild' ? '<span class="lvl-mild">温和</span>' : '<span class="lvl-neutral">中性</span>'
+  $('pk-forecast').innerHTML = `
+    <div class="kpi ${isNew ? 'flash' : ''}">
+      <div class="text-xs text-slate-400">下一期 <span class="font-mono text-slate-200">${d.next_expect}</span> · ${d.posName}单双预判</div>
+      <div class="flex items-end gap-3 mt-1"><div class="v ${sideCol}" style="font-size:40px">${sideTxt}</div><div class="text-xs text-slate-400 pb-2">${lvl}<br/>${f.consensus}/3 指标同向 · 综合分 <b class="font-mono text-slate-200">${f.score > 0 ? '+' : ''}${f.score}</b></div></div>
+      <div class="mt-2 h-3 rounded-full overflow-hidden flex text-[9px] font-mono"><div class="bg-red-500/80 text-black text-center" style="width:${f.pOdd * 100}%">单 ${pct(f.pOdd, 1)}</div><div class="bg-sky-500/80 text-black text-center" style="width:${f.pEven * 100}%">双 ${pct(f.pEven, 1)}</div></div>
+    </div>
+    <div class="kpi text-xs leading-relaxed lg:col-span-2">
+      <div class="font-bold text-slate-200 mb-1"><i class="fas fa-compass mr-1 text-fuchsia-400"></i>三指标判读 → 策略</div>
+      <ul class="list-disc pl-4 text-slate-300 space-y-0.5">${f.reasons.map(r => `<li>${r}</li>`).join('')}</ul>
+      <div class="mt-2 p-2 rounded bg-slate-900/70 border border-slate-700/60 text-amber-200"><i class="fas fa-lightbulb mr-1"></i>${f.strategy}</div>
+    </div>`
+  // 两条 K 线
+  ec('pk-odd').setOption(techOption(d.odd, '#f87171'), true)
+  ec('pk-even').setOption(techOption(d.even, '#38bdf8'), true)
+  const kp = a => `开${a.label} ${a.stats.total}/${d.n} (${pct(a.stats.rate, 1)}) · 指数 ${a.stats.last} · 近20根 ${a.stats.change20 > 0 ? '+' : ''}${a.stats.change20} · 当前连${a.stats.streak.hit ? '出' : '未出'} ${a.stats.streak.len}`
+  $('pk-odd-kpi').textContent = kp(d.odd); $('pk-even-kpi').textContent = kp(d.even)
+  // 指标读数
+  const row = (name, a) => `<tr><td class="text-slate-400 pr-2 whitespace-nowrap">${name}</td><td>${voteBadge(a.votes.boll)} <span class="text-slate-300">${a.votes.boll.text}</span></td><td>${voteBadge(a.votes.macd)} <span class="text-slate-300">${a.votes.macd.text}</span></td><td>${voteBadge(a.votes.kdj)} <span class="text-slate-300">${a.votes.kdj.text}</span></td><td class="font-mono font-bold ${a.score > 0 ? 'text-red-400' : a.score < 0 ? 'text-emerald-400' : 'text-slate-300'}">${a.score > 0 ? '+' : ''}${a.score}</td></tr>`
+  $('pk-ind').innerHTML = `<div class="font-bold text-slate-200 mb-2">指标读数（+ 看涨该指数 / − 看跌；权重 BOLL 0.3 · MACD 0.4 · KDJ 0.3）</div><table class="w-full text-[11px] align-top"><thead><tr class="text-slate-500"><th></th><th class="text-left">BOLL</th><th class="text-left">MACD</th><th class="text-left">KDJ</th><th class="text-left">合成</th></tr></thead><tbody class="[&_td]:py-1 [&_td]:pr-2 [&_td]:border-t [&_td]:border-slate-800">${row('单指数', d.odd)}${row('双指数', d.even)}</tbody></table>`
+  // 回测
+  const bt = d.odd.backtest, cell = (n, b) => `<div class="flex justify-between border-b border-slate-800 py-1"><span class="text-slate-400">${n}</span><span class="font-mono ${b.rate == null ? 'text-slate-500' : b.rate > 0.53 ? 'text-red-400' : b.rate < 0.47 ? 'text-emerald-400' : 'text-slate-200'}">${b.rate == null ? '—' : pct(b.rate, 1)} <span class="text-slate-500">(${b.hit}/${b.n})</span></span></div>`
+  $('pk-bt').innerHTML = `<div class="font-bold text-slate-200 mb-1"><i class="fas fa-vial mr-1 text-cyan-400"></i>历史回测 · 信号 vs 下一根方向</div><div class="text-[10px] text-slate-500 mb-2">基线 50%。这是本套规则在该样本上的真实命中率，请据此判断指标是否真有效。</div>${cell('BOLL', bt.boll)}${cell('MACD', bt.macd)}${cell('KDJ', bt.kdj)}${cell('三指标合成', bt.combo)}<div class="mt-2 text-[10px] text-slate-500">最近 20 次信号</div><div class="flex flex-wrap gap-1 mt-1">${bt.recent.map(r => `<span title="${r.expect} 预测${r.score > 0 ? '单' : '双'}" class="w-4 h-4 rounded text-[9px] flex items-center justify-center ${r.ok ? 'bg-emerald-500/70 text-black' : 'bg-red-500/60 text-white'}">${r.ok ? '✓' : '✗'}</span>`).join('')}</div>`
+  // 序列
+  $('pk-seq').innerHTML = `<span class="text-[10px] text-slate-500 mr-1 self-center">近 30 期${d.posName}（右=最新）：</span>` + d.seq.map(s => `<span class="w-6 h-6 rounded text-[10px] font-mono flex items-center justify-center ${s.p === '单' ? 'bg-red-500/30 text-red-300 border border-red-500/40' : 'bg-sky-500/30 text-sky-300 border border-sky-500/40'}" title="${s.p}">${s.d}</span>`).join('')
+  $('pk-disc').innerHTML = '<i class="fas fa-triangle-exclamation mr-1 text-amber-400"></i>' + d.disclaimer
+  // 实时：按开奖间隔轮询（最短 10s）
+  clearTimeout(PK.timer); PK.timer = setTimeout(() => loadParity(true), Math.max(10000, Math.min(60000, d.interval_ms / 4)))
+  $('pk-live').innerHTML = `<i class="fas fa-circle text-emerald-400 mr-1" style="font-size:8px"></i>实时 · ${new Date().toLocaleTimeString()}`
 }
 
 async function loadKline() {
