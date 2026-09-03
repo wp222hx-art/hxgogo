@@ -62,6 +62,27 @@ textarea.nums { width:100%; height:110px; background:#fff; color:#111; border-ra
   <!-- 顶部 KPI -->
   <section id="kpis" class="grid grid-cols-2 md:grid-cols-6 gap-3"></section>
 
+  <!-- 本期 AI 推荐 500 注（主入口） -->
+  <section class="card border-pink-500/40" id="ai-pick-section" style="border-color:#f472b655">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+      <h2 class="font-bold text-lg"><i class="fas fa-brain mr-2 text-pink-400"></i>本期 AI 推荐 · <span id="pick-expect" class="font-mono text-amber-300">—</span> <span class="text-xs text-slate-500 font-normal ml-2" id="pick-meta"></span></h2>
+      <div class="flex items-center gap-2 text-xs">
+        <span id="pick-status" class="px-2 py-1 rounded-lg bg-slate-800 text-slate-400"></span>
+        <select id="pick-fmt" class="bg-slate-800 rounded-lg px-2 py-1.5 border border-slate-700"><option value="space">空格分隔</option><option value="comma">逗号分隔</option><option value="line">每行一个</option></select>
+        <button id="pick-copy" class="bg-pink-500 hover:bg-pink-400 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-copy mr-1"></i>一键复制 500 注</button>
+        <span id="pick-copied" class="hidden text-emerald-400"><i class="fas fa-check mr-1"></i>已复制</span>
+      </div>
+    </div>
+    <div class="grid lg:grid-cols-5 gap-4">
+      <div class="lg:col-span-3 space-y-2">
+        <div id="pick-reason" class="ai-card"></div>
+        <textarea id="pick-text" class="nums" readonly spellcheck="false" style="height:90px"></textarea>
+        <div class="num-grid" id="pick-grid" style="max-height:220px"></div>
+      </div>
+      <div class="lg:col-span-2 space-y-2" id="pick-breakdown"></div>
+    </div>
+  </section>
+
   <!-- 规则说明 -->
   <section class="card">
     <div class="flex flex-wrap items-center justify-between gap-2">
@@ -110,25 +131,16 @@ textarea.nums { width:100%; height:110px; background:#fff; color:#111; border-ra
     </div>
   </section>
 
-  <!-- AI 预测官 -->
+  <!-- AI 预测官：其余分析区（逐期复盘时间线） -->
   <section class="card" id="ai-section">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
-      <h2 class="font-bold"><i class="fas fa-brain mr-2 text-pink-400"></i>AI 预测官 · 大模型推理闭环 <span class="text-xs text-slate-500 font-normal ml-2" id="ai-meta"></span></h2>
-      <div class="flex items-center gap-2 text-xs">
-        <span id="ai-status" class="px-2 py-1 rounded-lg bg-slate-800 text-slate-400"></span>
-        <button id="ai-report-btn" class="bg-pink-500 hover:bg-pink-400 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-file-lines mr-1"></i>生成 AI 分析报告</button>
-      </div>
+      <h2 class="font-bold"><i class="fas fa-timeline mr-2 text-pink-400"></i>AI 预测官 · 逐期预测与复盘 <span class="text-xs text-slate-500 font-normal ml-2" id="ai-meta"></span></h2>
+      <span id="ai-status" class="px-2 py-1 rounded-lg bg-slate-800 text-slate-400 text-xs"></span>
     </div>
-    <p class="text-xs text-slate-400 mb-3 leading-relaxed">每期开奖前，大模型读取<b class="text-slate-200">全部统计信号</b>（近 60 期前三位、各位频率/遗漏、大小单双/龙虎/形态走势）+ <b class="text-slate-200">各策略滚动战绩与组合最优权重</b> + <b class="text-slate-200">它自己上几期的预测与真实结果</b>，输出结构化预测（每位权重 · 策略融合比例 · 加注/回避号 · 推理 · 下期验证假设）→ 折算 1000 维得分取 Top 500 → 以「AI 预测」身份进入竞技场，与随机对照组同台结算。命中与失误都会在下一期反馈给它——这就是不间断迭代。</p>
-    <div class="grid lg:grid-cols-5 gap-4">
-      <div class="lg:col-span-2 space-y-2" id="ai-current"></div>
-      <div class="lg:col-span-3">
-        <div class="text-xs text-slate-400 font-bold mb-1"><i class="fas fa-timeline mr-1 text-pink-400"></i>逐期预测 · 复盘</div>
-        <div id="ai-timeline" class="space-y-1.5 max-h-[420px] overflow-auto pr-1"></div>
-      </div>
-    </div>
+    <p class="text-xs text-slate-400 mb-3 leading-relaxed">每期开奖后，AI 拿到自己上几期的预测与真实结果（命中/名次/盈亏），连同全部统计信号与各策略战绩一起重新推理，形成不间断的自我迭代。绿框 = 该期命中。</p>
+    <div id="ai-timeline" class="grid md:grid-cols-2 gap-1.5"></div>
     <div id="ai-report" class="hidden mt-4 border-t border-slate-800 pt-3">
-      <div class="flex items-center justify-between mb-2"><div class="text-xs text-slate-400 font-bold"><i class="fas fa-file-lines mr-1 text-pink-400"></i>AI 分析官报告 <span id="ai-report-meta" class="font-normal"></span></div></div>
+      <div class="flex items-center justify-between mb-2"><div class="text-xs text-slate-400 font-bold"><i class="fas fa-file-lines mr-1 text-pink-400"></i>AI 分析官报告（历史存档） <span id="ai-report-meta" class="font-normal"></span></div></div>
       <div id="ai-report-body" class="prose-ai text-sm leading-relaxed"></div>
     </div>
   </section>

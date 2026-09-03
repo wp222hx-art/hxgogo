@@ -14,7 +14,7 @@ import { pick } from './picker'
 import { recordPick, pickTrack } from './pick_track'
 import { autoArena, arenaBoard, arenaRound, replayArena, settleArena, STRATEGIES, ARENA_N, ARENA_ODDS, ARENA_MIN_HIST } from './arena'
 import { arenaPage } from './page_arena'
-import { aiEnabled, aiModel, aiEffort, forecastFor, aiScores, aiHistory, generateReport, latestReport, aiExtraPlans, aiPlansMaintain, type AiEnv } from './ai'
+import { aiEnabled, aiModel, aiEffort, forecastFor, aiScores, aiHistory, generateReport, latestReport, aiExtraPlans, aiPlansMaintain, aiPick, type AiEnv } from './ai'
 import { listAiPlans } from './ai_plans'
 
 type Bindings = { DB: D1Database } & AiEnv
@@ -538,8 +538,8 @@ async function arenaTick(db: D1Database, source: string, env: AiEnv) {
   finally { arenaBusy.delete(source) }
 }
 
-/** 自动报告节奏（实盘每 N 期一份；默认 30，可用 AI_REPORT_EVERY 调整；0 关闭） */
-const reportEvery = (env: AiEnv & { AI_REPORT_EVERY?: string }) => { const n = Number(env.AI_REPORT_EVERY ?? 30); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 30 }
+/** 自动报告节奏（实盘每 N 期一份；默认 0 = 关闭，只保留逐期推荐；需要时用 AI_REPORT_EVERY=30 开启） */
+const reportEvery = (env: AiEnv & { AI_REPORT_EVERY?: string }) => { const n = Number(env.AI_REPORT_EVERY ?? 0); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0 }
 const reportBusy = new Set<string>()
 async function autoReport(db: D1Database, env: AiEnv, source: string, board: any) {
   const every = reportEvery(env as any); if (!every || reportBusy.has(source)) return
@@ -563,10 +563,26 @@ app.get('/api/arena/board', async (c) => {
   const t0 = now()
   const r = await arenaBoard(c.env.DB, source, { mode, limit, extraPlans: await aiExtraPlans(c.env.DB, source) })
   const retired = await aiPlansMaintain(c.env.DB, source, r)   // 样本外显著劣于基线 / 超出活跃上限 → 自动退役
-  const ai = { enabled: aiEnabled(c.env), model: aiEnabled(c.env) ? aiModel(c.env) : null, effort: aiEffort(c.env), report_every: reportEvery(c.env), history: await aiHistory(c.env.DB, source, 8), plans_retired_now: retired }
-  // 自动报告节奏：实盘每 report_every 期结算后，在后台生成一份新报告（→ 抽取新规则 → 新回测方案），形成不间断的二阶闭环
-  if (aiEnabled(c.env)) { const job = autoReport(c.env.DB, c.env, source, r); try { c.executionCtx.waitUntil(job) } catch { await job } }
+  const ai = { enabled: aiEnabled(c.env), model: aiEnabled(c.env) ? aiModel(c.env) : null, effort: aiEffort(c.env), report_every: reportEvery(c.env), history: await aiHistory(c.env.DB, source, 8), plans_retired_now: retired,
+    pick: aiEnabled(c.env) ? await aiPick(c.env.DB, source, r.current) : null }   // 本期 AI 推荐 500 注 + 推理 + 结构拆解
+  // 自动报告节奏（默认关闭）：实盘每 report_every 期结算后，在后台生成一份新报告（→ 抽取新规则 → 新回测方案）
+  if (aiEnabled(c.env) && reportEvery(c.env) > 0) { const job = autoReport(c.env.DB, c.env, source, r); try { c.executionCtx.waitUntil(job) } catch { await job } }
   return c.json({ ok: true, source, mode, ...r, ai, compute_ms: now() - t0 })
+})
+
+/** 本期 AI 推荐（轻量接口）：确保本期已生成（含 AI 推理）→ 返回 500 注 + 推理 + 结构拆解；未就绪时 status=thinking，前端轮询 */
+app.get('/api/arena/pick', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  if (!aiEnabled(c.env)) return c.json({ ok: false, error: 'AI 未配置（需 OPENAI_API_KEY / OPENAI_BASE_URL）' }, 400)
+  if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)
+  await arenaTick(c.env.DB, source, c.env)
+  const pend = (await c.env.DB.prepare(`SELECT expect, strategy, based_on, numbers, count, coverage, weight FROM arena_rounds WHERE source=? AND scored_ms IS NULL ORDER BY expect DESC LIMIT 40`).bind(source).all<any>()).results
+  const expect = pend[0]?.expect
+  const current = expect ? { expect, based_on: pend[0].based_on, strategies: pend.filter(r => r.expect === expect) } : null
+  const pick = await aiPick(c.env.DB, source, current)
+  const st = (await c.env.DB.prepare(`SELECT COUNT(*) n, SUM(hit) h, SUM(pnl) pnl FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL`).bind(source).first<any>())
+  return c.json({ ok: true, source, model: aiModel(c.env), effort: aiEffort(c.env), pick, record: st && st.n ? { n: st.n, hits: st.h || 0, rate: Math.round((st.h || 0) / st.n * 1000) / 1000, pnl: st.pnl || 0 } : null, history: await aiHistory(c.env.DB, source, 8) })
 })
 /** AI 建议回测方案：活跃 + 已退役（含规则文本、样本内/样本外战绩） */
 app.get('/api/arena/plans', async (c) => {

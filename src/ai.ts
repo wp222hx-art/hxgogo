@@ -25,6 +25,7 @@ export interface AiForecast {
   boost: string[]                                 // 额外看好的三位号（≤30）
   avoid: string[]                                 // 明确回避的三位号（≤30）
   reasoning: string                               // 中文推理（≤300 字）
+  pick_plan: string                               // 选号方案说明：这 500 注应该如何构成（≤200 字）
   next_focus: string                              // 下期复盘时要验证的假设
 }
 
@@ -65,7 +66,8 @@ export interface AiCallResult { forecast: AiForecast | null; raw: string; usage:
 const SYSTEM = `你是「HashArena 竞技场」的 AI 预测官，负责对一个基于区块哈希的三位数（万/千/百，000-999）开奖序列做量化推理，并给出结构化预测。
 你清楚：哈希逐期独立，任何号码理论概率恒为 1/1000；你的任务不是宣称能预测，而是在同一 walk-forward 规则下，综合所有统计信号、各策略近期战绩以及你自己过往预测的复盘，给出你认为「倾向最高」的分布，让真实开奖来检验。
 要求：
-- 只输出 JSON，字段：regime(string, ≤40字), confidence(0-1), pos_weights(3×10 数组，每位 0-9 的相对权重 0-100，不要全部相同), strategy_blend(对象，key 为基础策略 key，值 0-100), boost(≤30 个三位号字符串), avoid(≤30 个三位号字符串), reasoning(中文 ≤300 字，说明依据与本期与上期思路的差异), next_focus(≤60 字，下期复盘要验证的假设)。
+- 只输出 JSON，字段：regime(string, ≤40字), confidence(0-1), pos_weights(3×10 数组，每位 0-9 的相对权重 0-100，不要全部相同), strategy_blend(对象，key 为基础策略 key，值 0-100), boost(≤30 个三位号字符串), avoid(≤30 个三位号字符串), reasoning(中文 ≤300 字，说明依据与本期与上期思路的差异), pick_plan(中文 ≤200 字，面向投注者的选号方案：三位各自重点覆盖哪几个数字、主要参考哪些策略、加注/回避的逻辑，这 500 注就是按你的权重实际生成的), next_focus(≤60 字，下期复盘要验证的假设)。
+- pos_weights 是你对 500 注构成的直接控制：权重高的数字会在该位获得更多注数。要有取舍（每位建议 3-5 个重点数字权重明显高于其余），但不要把任何数字压到 0。
 - 认真利用「你上几期的预测与结果」：如果连续失误，要调整思路（例如从追热切换为回补、降低对某策略的信任）；如果命中，说明哪部分假设成立。
 - 不要复述数据，直接给出判断。`
 
@@ -101,7 +103,58 @@ function normalize(o: any): AiForecast {
   return {
     regime: String(o.regime || '').slice(0, 80), confidence: Math.max(0, Math.min(1, Number(o.confidence) || 0.5)),
     pos_weights: pw, strategy_blend: blend, boost: nums(o.boost), avoid: nums(o.avoid),
-    reasoning: String(o.reasoning || '').slice(0, 1200), next_focus: String(o.next_focus || '').slice(0, 200),
+    reasoning: String(o.reasoning || '').slice(0, 1200), pick_plan: String(o.pick_plan || '').slice(0, 600), next_focus: String(o.next_focus || '').slice(0, 200),
+  }
+}
+
+// ------------------------------------------------------------ 本期 AI 推荐：500 注 + 对照推理的结构拆解
+/** 对一份 500 注做可解释的结构拆解：各位数字覆盖、形态/大小单双分布、加注入选/回避剔除、与其他策略的重合（共识度） */
+export function explainPick(f: AiForecast | null, numbers: string[], others: { strategy: string; numbers: string }[]) {
+  const posCount = [0, 1, 2].map(() => Array(10).fill(0))
+  const shape = { 豹: 0, 顺: 0, 对: 0, 杂: 0 } as Record<string, number>
+  const wan = { 大: 0, 小: 0, 单: 0, 双: 0 }
+  let sumBig = 0
+  for (const n of numbers) {
+    const a = +n[0], b = +n[1], c = +n[2]
+    posCount[0][a]++; posCount[1][b]++; posCount[2][c]++
+    if (a === b && b === c) shape.豹++; else { const s = [a, b, c].sort(); if (s[2] - s[1] === 1 && s[1] - s[0] === 1) shape.顺++; else if (a === b || b === c || a === c) shape.对++; else shape.杂++ }
+    a >= 5 ? wan.大++ : wan.小++; a % 2 ? wan.单++ : wan.双++
+    if (a + b + c >= 14) sumBig++
+  }
+  const set = new Set(numbers)
+  const focus = posCount.map(row => row.map((c, d) => ({ d, c })).sort((x, y) => y.c - x.c).filter(x => x.c > numbers.length / 10).slice(0, 5))
+  const consensus = others.filter(o => o.strategy !== 'ai').map(o => { const arr = o.numbers.split(' '); let k = 0; for (const x of arr) if (set.has(x)) k++; return { strategy: o.strategy, overlap: k, ratio: r3(k / Math.max(1, arr.length)) } }).sort((a, b) => b.overlap - a.overlap)
+  const blendSum = f ? Object.values(f.strategy_blend).reduce((a, b) => a + b, 0) : 0
+  return {
+    count: numbers.length,
+    pos_count: posCount,                                              // 3×10：500 注中每位每个数字出现的注数
+    pos_focus: focus,                                                 // 每位重点数字（高于均值）
+    shape, wan, sum_big: sumBig, sum_small: numbers.length - sumBig,
+    blend: f && blendSum > 0 ? Object.entries(f.strategy_blend).map(([k, v]) => ({ strategy: k, share: r3(v / blendSum) })).sort((a, b) => b.share - a.share) : [],
+    boost_in: f ? f.boost.filter(n => set.has(n)) : [], boost_out: f ? f.boost.filter(n => !set.has(n)) : [],
+    avoid_out: f ? f.avoid.filter(n => !set.has(n)) : [], avoid_in: f ? f.avoid.filter(n => set.has(n)) : [],
+    consensus,
+  }
+}
+
+/** 本期 AI 推荐：优先用 AI 预测官的 500 注；若本期调用失败/超时，用组合最优兜底（明确标注），保证每期都形成一个选择 */
+export async function aiPick(db: D1Database, source: string, current: { expect: string; based_on: string; strategies: { strategy: string; numbers: string; count: number; coverage: number; weight: number }[] } | null) {
+  if (!current) return null
+  const fRow = await db.prepare('SELECT output, error, model, latency_ms, created_ms, prompt_tokens, completion_tokens FROM ai_forecasts WHERE source=? AND expect=?').bind(source, current.expect).first<any>()
+  let forecast: AiForecast | null = null
+  if (fRow && !fRow.error) { try { forecast = normalize(JSON.parse(fRow.output)) } catch {} }
+  const aiRow = current.strategies.find(s => s.strategy === 'ai')
+  const metaRow = current.strategies.find(s => s.strategy === 'meta')
+  const status: 'ready' | 'thinking' | 'fallback' = aiRow ? 'ready' : (fRow?.error ? 'fallback' : 'thinking')
+  const row = aiRow || (status === 'fallback' ? metaRow : null)
+  const numbers = row ? row.numbers.split(' ') : []
+  return {
+    expect: current.expect, based_on: current.based_on, status,
+    strategy_used: row ? row.strategy : null, fallback: status === 'fallback', error: fRow?.error || null,
+    numbers, count: numbers.length, coverage: row?.coverage ?? null,
+    forecast, model: fRow?.model || null, latency_ms: fRow?.latency_ms ?? null, created_ms: fRow?.created_ms ?? null,
+    tokens: fRow ? (fRow.prompt_tokens || 0) + (fRow.completion_tokens || 0) : null,
+    breakdown: numbers.length ? explainPick(forecast, numbers, current.strategies) : null,
   }
 }
 
@@ -132,7 +185,7 @@ export async function aiHistory(db: D1Database, source: string, k = 6, beforeExp
   const rows = (await db.prepare(`SELECT f.expect, f.regime, f.confidence, f.reasoning, f.output, f.error, f.created_ms, f.model, f.latency_ms, a.actual, a.hit, a.rank, a.pnl
     FROM ai_forecasts f LEFT JOIN arena_rounds a ON a.source=f.source AND a.expect=f.expect AND a.strategy='ai'
     WHERE f.source=? ${beforeExpect ? 'AND f.expect<?' : ''} ORDER BY f.expect DESC LIMIT ?`).bind(...(beforeExpect ? [source, beforeExpect, k] : [source, k])).all<any>()).results
-  return rows.map(r => { let o: any = null; try { o = JSON.parse(r.output) } catch {} return { ...r, next_focus: o?.next_focus || '', boost: o?.boost || [], avoid: o?.avoid || [], pos_weights: o?.pos_weights || null, strategy_blend: o?.strategy_blend || null, output: undefined } })
+  return rows.map(r => { let o: any = null; try { o = JSON.parse(r.output) } catch {} return { ...r, next_focus: o?.next_focus || '', pick_plan: o?.pick_plan || '', boost: o?.boost || [], avoid: o?.avoid || [], pos_weights: o?.pos_weights || null, strategy_blend: o?.strategy_blend || null, output: undefined } })
 }
 
 /** 为目标期生成 AI 预测（含调用、落库）；返回 forecast（失败时 null，error 落库） */
@@ -141,7 +194,7 @@ export async function forecastFor(db: D1Database, env: AiEnv, source: string, ne
   if (exists) { if (exists.error) return null; try { return normalize(JSON.parse(exists.output)) } catch { return null } }
   const selfHist = await aiHistory(db, source, 6, next)
   const ctx = {
-    task: `为期号 ${next} 给出结构化预测（三位号 = 万/千/百）。竞技场每策略每期取 Top ${ARENA_N} 注（理论命中率 50%，保本 52.6%）。`,
+    task: `为期号 ${next} 给出结构化预测（三位号 = 万/千/百）。系统会把你的 pos_weights × strategy_blend × boost/avoid 折算为 1000 个三位号的得分，取 Top ${ARENA_N} 注作为本期推荐直接展示给用户（理论命中率 50%，保本 52.6%）。reasoning 和 pick_plan 要能让用户看懂这 500 注为什么这样选。`,
     market: digest(draws),
     strategy_leaderboard_rolling40: perfDigest(perf, weights),
     your_recent_forecasts_newest_first: selfHist.map(h => ({ expect: h.expect, regime: h.regime, confidence: h.confidence, next_focus: h.next_focus, boost: h.boost.slice(0, 10), result: h.actual ? { actual: h.actual, hit: !!h.hit, rank: h.rank, pnl: h.pnl } : 'pending', reasoning: (h.reasoning || '').slice(0, 200) })),

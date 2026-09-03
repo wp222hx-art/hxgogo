@@ -105,13 +105,20 @@
 - **投资策略模拟**：6 套「选哪套 × 何时下注」完整方案（组合最优每期必投 / 跟随最强每期必投 / 组合最优择时 z>0.5 / 跟随最强择时 z>1 / 连败 2 期止损 / 逆向跟最弱对照），每期决策只用之前已结算数据，输出下注期/观望期/命中率/z/累计盈亏/ROI/最大回撤/实际跟投分布 + 累计盈亏曲线；结论文案明示「多方案挑最好带有选择偏差」
 - **诚实原则**：任何策略必须长期显著跑赢随机对照组（z>1.96）才算有信号；页面明示 500 注每期期望 −25（950× 赔率），仅做统计验证，不构成投资建议
 
+### 本期 AI 推荐 500 注（`/arena` 顶部 `#ai-pick-section` · 主入口）
+- **每期一个选择**：每期开奖后，系统自动为下一期（本期待开）调用大模型推理并锁定 **500 注三位号**（万/千/百），页面顶部直接展示 + 一键复制（空格/逗号/每行一个）。推理中显示「推理中」并每 4 秒轮询 `GET /api/arena/pick`，就绪自动刷新
+- **推理说明**：`regime`（局势判断）· `reasoning`（推理依据）· **`pick_plan`（这 500 注是怎么选的：各位重点数字、参考策略、加注/回避逻辑）** · 融合策略权重 · 加注/回避号 · 下期验证假设
+- **结构拆解（由号码实际统计，非 AI 口述）**：各位 0-9 注数柱状图 + 重点数字、形态（豹/顺/对/杂）、万位大小单双、和值大小、加注号入选/回避号剔除计数、与其他策略的重合注数（共识度）
+- **兜底**：本期 AI 调用失败/超时 → 用「组合最优」500 注兜底并明确标注 `fallback`，保证每期都有选择；成功后与其他策略同台结算并反馈 AI 复盘
+- 分析官报告**默认不再自动生成**（`AI_REPORT_EVERY` 默认 0；页面按钮已移除，接口保留，可设 `AI_REPORT_EVERY=30` 重新开启二阶闭环）
+
 ### AI 预测官 / AI 分析官（大模型推理闭环，`/arena` 中部 `#ai-section`，表 `ai_forecasts` / `ai_reports`）
 - **AI 预测官（策略 key `ai`，仅实盘）**：每期开奖后、下一期生成时，Worker 直接 `fetch` OpenAI 兼容接口（默认 `gpt-5-mini`，`response_format=json_object`），输入三块上下文：① **全部统计信号摘要**（近 60 期三位号、各位 60/200 期频率、当前遗漏、近 30 期大小/单双/和值/龙虎/形态走势、200 期形态分布）② **各策略滚动 40 期战绩 + 组合最优当前权重** ③ **它自己近 6 期的预测、验证假设与真实结果**（命中/名次/盈亏）→ 输出结构化 JSON：`regime`（当前局势判断）/ `confidence` / `pos_weights`（万千百 3×10 权重）/ `strategy_blend`（对 7 个基础策略的融合比例）/ `boost` / `avoid` / `reasoning` / `next_focus`（下期验证假设）
 - **落地为号码**：`aiScores` = norm(√(自有分布 × 策略融合分布))，其中自有分布 = 三位权重乘积（+5 地板、0.8 次幂温和化防过度自信），再 boost ×1.6 / avoid ×0.4 → 1000 维得分 → Top 500 → 以 `strategy='ai'` 写入 `arena_rounds`，与随机对照、组合最优等**同规则结算、同榜排名、同曲线对比**
 - **不间断迭代**：命中/失误在下一期作为「你上几期的预测与结果」喂回模型，系统提示明确要求连续失误时切换思路；页面「逐期预测 · 复盘」时间线展示每期的局势判断、把握、推理摘要、验证假设与实际开奖/命中名次
 - **AI 分析官**：按钮 `POST /api/arena/report` 把 12 策略完整战绩、组合最优权重、6 套投资策略模拟、AI 预测官逐期表现、近 30 期结算一并交给模型，输出 Markdown 报告（一句话结论 / 各策略解读 / AI 复盘 / 权重建议 / 下一阶段择时·仓位·止损规则），系统提示强制「不编造数据、明示理论期望为负与样本不足」；同一结算期只生成一次（缓存于 `ai_reports`）
 - **成本 / 稳健性**：每期 1 次调用（`INSERT OR IGNORE`，失败落 `error` 不重试）；`AI_EFFORT=low` 默认（约 8-15 秒，1 分钟一期的厅安全），35 秒超时则本期轮空；回放模式不含 AI（避免历史刷费与前视）；未配置密钥时 AI 行自动隐藏、其余策略照常
-- **环境变量**：`OPENAI_API_KEY` / `OPENAI_BASE_URL`（必需，缺一则 AI 关闭）、`AI_MODEL`（默认 gpt-5-mini）、`AI_EFFORT`（low/medium/high）、`AI_REPORT_EVERY`（自动报告节奏，默认 30 期，0 关闭）。本地写在 `.dev.vars`（已 gitignore），生产用 `wrangler pages secret put`
+- **环境变量**：`OPENAI_API_KEY` / `OPENAI_BASE_URL`（必需，缺一则 AI 关闭）、`AI_MODEL`（默认 gpt-5-mini）、`AI_EFFORT`（low/medium/high）、`AI_REPORT_EVERY`（自动报告节奏，默认 0 = 关闭；设 30 开启）。本地写在 `.dev.vars`（已 gitignore），生产用 `wrangler pages secret put`
 
 ### AI 建议自动回测 · 二阶闭环（`/arena` `#ai-plans-section`，表 `ai_plans`，模块 `src/ai_plans.ts`）
 「AI 提建议 → 系统验证 → 结果反馈给 AI」：分析官报告里的择时/仓位/止损建议不再只是文字，而是被自动编译成**可回测的投资策略**，和内置 6 套模拟同台比较，并把样本外结果喂回下一份报告。
@@ -124,7 +131,7 @@
 - **Walk-forward 回测**：每次加载战绩榜，`aiExtraPlans` 用与内置 6 套完全相同的逐期链（只用该期之前信息）模拟每条活跃规则，结果作为粉色 `ai:true` 行并入 `plans[]`；**样本内**（规则提出前的历史）与**样本外**（`expect > report_expect`，规则提出后的真实新期）分列展示，图表以虚线 + `since_index` 标线区分——只有样本外才是 AI 建议的真实成绩
 - **反馈闭环**：下一份报告上下文新增 `ai_plans`（每条规则人话描述、提出时刻、样本内+样本外全量、样本外单独）与 `ai_plans_retired`，系统提示要求写「## AI 建议回测复盘」章节：对上一轮建议逐条认账/改进，再提 1–3 条新的机械规则（只能用 `available_metrics`）
 - **自动退役**：`retirePlans` —— 样本外 ≥30 投且 z<−1 → 退役（`retire_reason=forward_negative`）；活跃 >4 套 → 退役样本外盈亏最差者（`too_many`）；也可手动 `POST /api/arena/plans/:id/retire`
-- **自动节奏**：实盘每累计 `AI_REPORT_EVERY`（默认 30）期结算，`/api/arena/board` 在 `waitUntil` 中后台生成新报告 → 新规则自动入池（`reportBusy` 防并发；未配置密钥时静默关闭）
+- **自动节奏**：实盘每累计 `AI_REPORT_EVERY`（默认 0 关闭，设 30 开启）期结算，`/api/arena/board` 在 `waitUntil` 中后台生成新报告 → 新规则自动入池（`reportBusy` 防并发；未配置密钥时静默关闭）
 - **UI**：投资策略表新增「样本外」列；`#ai-plans-section` 卡片展示每套规则的规则原文 / AI 依据 / 样本内 / 样本外 / 退役按钮，折叠区列出已退役规则与原因
 
 ### 首页「统计结果」逐期数据表（严格对齐 qkltj 接口）
@@ -187,13 +194,14 @@
 | GET | `/api/arena/strategies` | 策略定义（key/name/desc/color/control/meta）+ 每策略注数 + 赔率 |
 | GET | `/api/arena/round?source=&expect=&strategy=` | 单期单策略详情（numbers[] / actual / hit / rank / pnl） |
 | POST | `/api/arena/replay?source=&n=1-30&lookback=` | 回放补齐历史（严格 walk-forward，返回 replayed / remaining） |
+| GET | `/api/arena/pick?source=` | **本期 AI 推荐**：pick{expect, status ready/thinking/fallback, numbers[500], forecast{regime,reasoning,pick_plan,pos_weights,strategy_blend,boost,avoid,next_focus}, breakdown{pos_count,pos_focus,shape,wan,sum_big,consensus…}} + record（AI 实盘战绩）+ history |
 | GET | `/api/arena/ai?source=&limit=` | **AI 预测官**逐期记录：regime / confidence / reasoning / next_focus / boost / avoid / pos_weights / strategy_blend + 结算 actual/hit/rank/pnl + tokens/latency/error |
 | GET | `/api/arena/report?source=` | 最新一份 AI 分析官报告（Markdown） |
 | POST | `/api/arena/report?source=` | 基于当前全部战绩生成 AI 分析官报告（同一结算期缓存）；随后自动编译规则，返回 `plans_added` / `plans_error` |
 | GET | `/api/arena/plans?source=` | **AI 建议回测**：active[]（规则 DSL + 人话描述 + 样本内/样本外统计）/ retired[]（含 retire_reason）/ builtin（内置 6 套 key） |
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
-> `/api/arena/board` 的 `plans[]` 现包含 `ai:true` 行（`plan_id / report_expect / rationale / forward{bets,hits,rate,z,pnl,roi,max_dd} / since_index`），`ai` 字段新增 `report_every` / `plans_retired_now`。
+> `/api/arena/board` 的 `plans[]` 现包含 `ai:true` 行（`plan_id / report_expect / rationale / forward{bets,hits,rate,z,pnl,roi,max_dd} / since_index`），`ai` 字段新增 `report_every` / `plans_retired_now` / `pick`（同 `/api/arena/pick` 的 pick）。
 | GET | `/api/analysis/recommend?source=&steps=` | **本期推荐**：5 玩法 19 组 81 候选概率 + 幸运数字综合榜 + 预见性策略 |
 | GET | `/api/qkltj/table?code=6001&limit=30` | 首页统计结果表：官方字段 + `highlight`（哈希中取用数字下标）+ `mismatch` |
 | GET | `/api/sync/status?source=&tick=1` | 同步状态（latest_expect / lag_ms / expected_publish_ms / audit / fresh / version）；`tick=1` 顺带执行到点同步 |
