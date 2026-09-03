@@ -159,7 +159,7 @@
 
 ## 数据架构
 - **存储**: Cloudflare D1 (SQLite)
-- **表**: `users` / `rounds` / `bets` / `draws`（统一格式开奖库：source+expect 主键，n1~n5 + 官方原字段 opennumber/lotto_type/lotto_type_cn/open_time/src_id/mismatch）/ `sync_meta`（同步节流）
+- **表**: `users` / `rounds` / `bets` / `draws`（统一格式开奖库：source+expect 主键，n1~n5 + 官方原字段 opennumber/lotto_type/lotto_type_cn/open_time/src_id/mismatch）/ `sync_meta`（同步节流）/ `pick_log`（选号器每期 Top-N 快照 + 开奖评分）
 - **调度**: 无 cron，采用 **懒结算**——任意请求到达时结算所有到期局（`open → settling(锁) → settled/void`），天然适配 Workers 无常驻进程的限制
 - **局号**: `floor(now / roundMs)`，全球一致、可离线推算任一时刻的局号
 
