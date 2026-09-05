@@ -1,8 +1,8 @@
 // ============ 运行时配置：/settings 页面填写的 key / 模型 / 报单窗口，存 D1 app_config，优先级高于环境变量 ============
-import { type AiEnv, llmChat, parseJson, aiProvider } from './ai'
+import { type AiEnv, llmChat, parseJson, aiProvider, buildChatBody, DEEPSEEK_MODELS, DEEPSEEK_LEGACY } from './ai'
 
 /** 允许在页面配置的键（白名单，防止任意写入） */
-export const CONFIG_KEYS = ['AI_PROVIDER', 'DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'AI_MODEL', 'AI_EFFORT', 'AI_LEAD_MS', 'AI_TIMEOUT_MS', 'AI_REPORT_EVERY'] as const
+export const CONFIG_KEYS = ['AI_PROVIDER', 'DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL', 'DEEPSEEK_THINKING', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'AI_MODEL', 'AI_EFFORT', 'AI_LEAD_MS', 'AI_TIMEOUT_MS', 'AI_REPORT_EVERY'] as const
 export type ConfigKey = typeof CONFIG_KEYS[number]
 const SECRET_KEYS: ConfigKey[] = ['DEEPSEEK_API_KEY', 'OPENAI_API_KEY']
 
@@ -53,7 +53,8 @@ export async function configView(db: D1Database, env: AiEnv) {
   }
   const eff = await effectiveEnv(db, env)
   const pv = aiProvider(eff)
-  return { items, effective: pv ? { provider: pv.name, model: pv.model, base: pv.base } : null }
+  const preview = pv ? buildChatBody(pv, { json: true, maxTokens: 1500, effort: 'low', temperature: 0.7 }, [{ role: 'system', content: '…' }, { role: 'user', content: '…' }]) : null
+  return { items, effective: pv ? { provider: pv.name, model: pv.model, base: pv.base, thinking: pv.thinking || null, endpoint: `${pv.base}/chat/completions`, request_preview: preview } : null, deepseek_models: DEEPSEEK_MODELS, deepseek_legacy: DEEPSEEK_LEGACY }
 }
 
 /** 校验：用给定（或当前生效）配置真实调一次模型，要求返回 JSON；返回延迟、模型、余额提示等 */
@@ -73,7 +74,7 @@ export async function validateProvider(env: AiEnv, opts: { rounds?: number } = {
   if (modelsErr && /401|invalid|authentication|api key/i.test(modelsErr)) return { ok: false, provider: pv.name, model: pv.model, base: pv.base, stage: 'auth', error: `鉴权失败：${modelsErr}`, latency_ms: Date.now() - t0 }
   // 2) 真实推理：要求输出 JSON，测速（模拟预测官任务体量的缩小版）
   const rounds = Math.max(1, Math.min(3, opts.rounds ?? 1))
-  const lat: number[] = []; let lastErr: string | undefined; let sample: any = null; let usage: any = null
+  const lat: number[] = []; let lastErr: string | undefined; let sample: any = null; let usage: any = null; let request: any = null; let cot: string | null = null
   for (let i = 0; i < rounds; i++) {
     const r = await llmChat(env, {
       system: '你是 JSON 生成器。只输出 JSON，不要任何多余文字。',
@@ -81,7 +82,7 @@ export async function validateProvider(env: AiEnv, opts: { rounds?: number } = {
       json: true, maxTokens: 300, effort: 'low', timeoutMs: 20_000, temperature: 0.7,
     })
     if (!r.ok) { lastErr = r.error; break }
-    lat.push(r.latency_ms); usage = r.usage
+    lat.push(r.latency_ms); usage = r.usage; if (r.request) request = r.request; if (r.reasoning_content) cot = r.reasoning_content.slice(0, 600)
     try { sample = parseJson(r.content) } catch (e: any) { lastErr = 'bad json: ' + e.message; break }
   }
   if (lastErr) return { ok: false, provider: pv.name, model: pv.model, base: pv.base, stage: 'chat', error: lastErr, models, latency_ms: Date.now() - t0 }
@@ -96,5 +97,10 @@ export async function validateProvider(env: AiEnv, opts: { rounds?: number } = {
     } catch {}
   }
   const modelListed = models.length ? models.includes(pv.model) : null
-  return { ok: true, provider: pv.name, model: pv.model, base: pv.base, models, model_listed: modelListed, latency_ms: Date.now() - t0, chat_latency_ms: lat, chat_avg_ms: avg, usage, sample: sample && { ok: sample.ok, note: sample.note, pw_ok: Array.isArray(sample.pos_weights) && sample.pos_weights.length === 3 }, balance, warn: modelsErr ? `列模型失败（不影响使用）：${modelsErr}` : (modelListed === false ? `模型 ${pv.model} 不在该供应商模型列表中` : null) }
+  const legacyUsed = pv.name === 'deepseek' && Object.keys(DEEPSEEK_LEGACY).includes(String((env as any).DEEPSEEK_MODEL || (env as any).AI_MODEL || ''))
+  const warns: string[] = []
+  if (modelsErr) warns.push(`列模型失败（不影响使用）：${modelsErr}`)
+  if (modelListed === false) warns.push(`模型 ${pv.model} 不在该供应商模型列表中`)
+  if (legacyUsed) warns.push(`你填的是旧模型名（deepseek-chat / deepseek-reasoner，官方已于 2026-07-24 停用），系统已自动映射为 ${pv.model}${pv.thinking !== 'off' ? '（思考模式）' : ''}，建议改用新名`)
+  return { ok: true, provider: pv.name, model: pv.model, thinking: pv.thinking || null, base: pv.base, endpoint: `${pv.base}/chat/completions`, models, model_listed: modelListed, latency_ms: Date.now() - t0, chat_latency_ms: lat, chat_avg_ms: avg, usage, request, cot, sample: sample && { ok: sample.ok, note: sample.note, pw_ok: Array.isArray(sample.pos_weights) && sample.pos_weights.length === 3 }, balance, warn: warns.length ? warns.join('；') : null }
 }

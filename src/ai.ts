@@ -8,8 +8,10 @@ import { STRATEGIES, ARENA_N, type PerfMap, type ExtraPlan } from './arena'
 import { normalizeRule, describeRule, simulateRule, listAiPlans, saveAiPlans, retirePlans, type PlanRule, MAX_ACTIVE_AI_PLANS } from './ai_plans'
 
 export interface AiEnv {
-  // DeepSeek（优先）：只需 key，base 默认官方；模型默认 deepseek-chat（V3 非思考模式，延迟最低）
-  DEEPSEEK_API_KEY?: string; DEEPSEEK_BASE_URL?: string; DEEPSEEK_MODEL?: string   // 默认 deepseek-chat；可选 deepseek-reasoner（慢，不建议 1 分钟厅）
+  // DeepSeek（优先）：只需 key，base 默认官方；模型默认 deepseek-v4-flash 非思考模式（延迟最低）
+  DEEPSEEK_API_KEY?: string; DEEPSEEK_BASE_URL?: string
+  DEEPSEEK_MODEL?: string      // deepseek-v4-flash（默认）| deepseek-v4-pro | deepseek-v4-flash-vision-exp（旧名 deepseek-chat/reasoner 已于 2026-07-24 停用）
+  DEEPSEEK_THINKING?: string   // off | low | high | max —— V4 思考模式开关与强度；默认 off（非思考，最快）；开启后 temperature 无效
   // OpenAI 兼容（备用）
   OPENAI_API_KEY?: string; OPENAI_BASE_URL?: string
   AI_PROVIDER?: string       // 'deepseek' | 'openai'，缺省：有 DEEPSEEK_API_KEY 则 deepseek，否则 openai
@@ -17,10 +19,21 @@ export interface AiEnv {
   AI_LEAD_MS?: string        // 报单窗口：AI 必须在「下期开奖时刻 − AI_LEAD_MS」之前锁定，默认 20000
   AI_TIMEOUT_MS?: string     // 单次调用上限，默认 25000（会被报单截止进一步裁剪）
 }
-export interface AiProvider { name: 'deepseek' | 'openai'; key: string; base: string; model: string }
+export interface AiProvider { name: 'deepseek' | 'openai'; key: string; base: string; model: string; thinking?: DsThinking }
+export type DsThinking = 'off' | 'low' | 'high' | 'max'
+/** DeepSeek V4 模型目录（官方 api-docs 2026-08）：供配置页罗列与校验时核对 */
+export const DEEPSEEK_MODELS = [
+  { id: 'deepseek-v4-flash', version: 'DeepSeek-V4-Flash-0731', tag: '推荐', desc: '轻量旗舰：1M 上下文，思考/非思考双模式，JSON 输出，并发 2500', price: { in_miss: 0.44, in_hit: 0.014, out: 1.32 }, speed: { off: '2–5s', low: '5–12s', high: '15–40s', max: '40s+' } },
+  { id: 'deepseek-v4-pro', version: 'DeepSeek-V4-Pro-0813', tag: '最强', desc: '旗舰推理：HLE 42.7/60.0，Agent 能力最强，价格 ×3，并发 500', price: { in_miss: 1.32, in_hit: 0.044, out: 3.96 }, speed: { off: '4–8s', low: '8–20s', high: '20–60s', max: '60s+' } },
+  { id: 'deepseek-v4-flash-vision-exp', version: 'DeepSeek-V4-Flash-Vision-Exp', tag: '实验', desc: '多模态实验版：纯文本能力同 Flash，额外接受图片输入', price: { in_miss: 0.44, in_hit: 0.014, out: 1.32 }, speed: { off: '2–5s', low: '5–12s', high: '15–40s', max: '40s+' } },
+] as const
+export const DEEPSEEK_LEGACY: Record<string, string> = { 'deepseek-chat': 'deepseek-v4-flash', 'deepseek-reasoner': 'deepseek-v4-flash' }
+export const dsThinking = (env: AiEnv): DsThinking => (['off', 'low', 'high', 'max'].includes(env.DEEPSEEK_THINKING || '') ? env.DEEPSEEK_THINKING : ((env.DEEPSEEK_MODEL || env.AI_MODEL) === 'deepseek-reasoner' ? 'low' : 'off')) as DsThinking
+/** 旧名自动映射到 V4（deepseek-chat → v4-flash 非思考；deepseek-reasoner → v4-flash 思考）；空 → v4-flash */
+const dsModel = (m: string) => { const x = (m || '').trim(); if (!x) return 'deepseek-v4-flash'; return DEEPSEEK_LEGACY[x] || x }
 export function aiProvider(env: AiEnv): AiProvider | null {
   const want = (env.AI_PROVIDER || '').toLowerCase()
-  const ds = env.DEEPSEEK_API_KEY ? { name: 'deepseek' as const, key: env.DEEPSEEK_API_KEY, base: (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/$/, ''), model: env.DEEPSEEK_MODEL || (env.AI_MODEL && /^deepseek/i.test(env.AI_MODEL) ? env.AI_MODEL : 'deepseek-chat') } : null
+  const ds = env.DEEPSEEK_API_KEY ? { name: 'deepseek' as const, key: env.DEEPSEEK_API_KEY, base: (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/$/, ''), model: dsModel(env.DEEPSEEK_MODEL || (env.AI_MODEL && /^deepseek/i.test(env.AI_MODEL) ? env.AI_MODEL : '')), thinking: dsThinking(env) } : null
   const oa = env.OPENAI_API_KEY && env.OPENAI_BASE_URL ? { name: 'openai' as const, key: env.OPENAI_API_KEY, base: env.OPENAI_BASE_URL.replace(/\/$/, ''), model: (env.AI_MODEL && !/^deepseek/i.test(env.AI_MODEL) ? env.AI_MODEL : 'gpt-5-mini') } : null
   if (want === 'deepseek') return ds
   if (want === 'openai') return oa
@@ -35,27 +48,40 @@ export const aiLeadMs = (env: AiEnv) => { const n = Number(env.AI_LEAD_MS); retu
 export const aiTimeoutMs = (env: AiEnv) => { const n = Number(env.AI_TIMEOUT_MS); return Number.isFinite(n) && n >= 3000 ? n : 25_000 }
 
 /** 统一的 chat 调用：屏蔽 DeepSeek / OpenAI 参数差异；json=true 时尽力要求 JSON 并稳健解析 */
-export interface ChatResult { ok: boolean; content: string; usage: { prompt_tokens?: number; completion_tokens?: number }; latency_ms: number; error?: string; model: string; provider: string }
-export async function llmChat(env: AiEnv, opts: { system: string; user: string; json?: boolean; maxTokens?: number; effort?: 'low' | 'medium' | 'high'; timeoutMs?: number; temperature?: number }): Promise<ChatResult> {
-  const pv = aiProvider(env); const t0 = Date.now()
-  if (!pv) return { ok: false, content: '', usage: {}, latency_ms: 0, error: 'AI 未配置', model: '', provider: '' }
-  const messages = [{ role: 'system', content: opts.system }, { role: 'user', content: opts.user }]
+export interface ChatResult { ok: boolean; content: string; reasoning_content?: string; usage: { prompt_tokens?: number; completion_tokens?: number; reasoning_tokens?: number; cache_hit?: number }; latency_ms: number; error?: string; model: string; provider: string; request?: any }
+/** 构造请求体（导出供配置页「请求预览」使用） */
+export function buildChatBody(pv: AiProvider, opts: { json?: boolean; maxTokens?: number; effort?: 'low' | 'medium' | 'high'; temperature?: number }, messages: any[]) {
   const body: any = { model: pv.model, messages }
   if (pv.name === 'deepseek') {
+    const th = pv.thinking || 'off'
     body.max_tokens = Math.min(8000, opts.maxTokens ?? 1500)
-    if (opts.temperature != null) body.temperature = opts.temperature
-    if (opts.json && !/reasoner/i.test(pv.model)) body.response_format = { type: 'json_object' }   // deepseek-reasoner 不支持 JSON 模式，靠解析兜底
+    // V4 思考模式：thinking.type + reasoning_effort(low/high/max)；思考开启时 temperature 等采样参数无效
+    body.thinking = { type: th === 'off' ? 'disabled' : 'enabled' }
+    if (th !== 'off') body.reasoning_effort = th
+    else if (opts.temperature != null) body.temperature = opts.temperature
+    if (opts.json) body.response_format = { type: 'json_object' }
   } else {
     body.reasoning_effort = opts.effort ?? 'low'
     body.max_completion_tokens = opts.maxTokens ?? 6000
     if (opts.json) body.response_format = { type: 'json_object' }
   }
+  return body
+}
+export async function llmChat(env: AiEnv, opts: { system: string; user: string; json?: boolean; maxTokens?: number; effort?: 'low' | 'medium' | 'high'; timeoutMs?: number; temperature?: number }): Promise<ChatResult> {
+  const pv = aiProvider(env); const t0 = Date.now()
+  if (!pv) return { ok: false, content: '', usage: {}, latency_ms: 0, error: 'AI 未配置', model: '', provider: '' }
+  const messages = [{ role: 'system', content: opts.system }, { role: 'user', content: opts.user }]
+  const body = buildChatBody(pv, opts, messages)
+  if (pv.name === 'deepseek' && pv.thinking !== 'off') body.max_tokens = Math.min(16000, (opts.maxTokens ?? 1500) + 6000)   // 思考模式：给思维链留额度
   const ac = new AbortController(); const timer = setTimeout(() => ac.abort(), opts.timeoutMs ?? aiTimeoutMs(env))
   try {
     const res = await fetch(`${pv.base}/chat/completions`, { method: 'POST', signal: ac.signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${pv.key}` }, body: JSON.stringify(body) })
     const j: any = await res.json().catch(() => ({}))
     if (!res.ok || j.error) return { ok: false, content: JSON.stringify(j).slice(0, 2000), usage: {}, latency_ms: Date.now() - t0, error: j.error?.message || `HTTP ${res.status}`, model: pv.model, provider: pv.name }
-    return { ok: true, content: j.choices?.[0]?.message?.content || '', usage: j.usage || {}, latency_ms: Date.now() - t0, model: pv.model, provider: pv.name }
+    const msg = j.choices?.[0]?.message || {}
+    const u = j.usage || {}
+    const usage = { prompt_tokens: u.prompt_tokens, completion_tokens: u.completion_tokens, reasoning_tokens: u.completion_tokens_details?.reasoning_tokens, cache_hit: u.prompt_cache_hit_tokens }
+    return { ok: true, content: msg.content || '', reasoning_content: msg.reasoning_content || undefined, usage, latency_ms: Date.now() - t0, model: pv.model, provider: pv.name, request: { ...body, messages: undefined } }
   } catch (e: any) {
     return { ok: false, content: '', usage: {}, latency_ms: Date.now() - t0, error: e.name === 'AbortError' ? 'timeout' : String(e.message || e), model: pv.model, provider: pv.name }
   } finally { clearTimeout(timer) }
@@ -117,7 +143,7 @@ function perfDigest(perf: PerfMap, weights: Record<string, any>) {
 }
 
 // ------------------------------------------------------------ 调用大模型
-export interface AiCallResult { forecast: AiForecast | null; raw: string; usage: { prompt_tokens?: number; completion_tokens?: number }; latency_ms: number; error?: string; model: string }
+export interface AiCallResult { forecast: AiForecast | null; raw: string; cot?: string; usage: { prompt_tokens?: number; completion_tokens?: number; reasoning_tokens?: number }; latency_ms: number; error?: string; model: string }
 
 const SYSTEM = `你是「HashArena 竞技场」的 AI 预测官，负责对一个基于区块哈希的三位数（万/千/百，000-999）开奖序列做量化推理，并给出结构化预测。
 你清楚：哈希逐期独立，任何号码理论概率恒为 1/1000；你的任务不是宣称能预测，而是在同一 walk-forward 规则下，综合所有统计信号、各策略近期战绩以及你自己过往预测的复盘，给出你认为「倾向最高」的分布，让真实开奖来检验。
@@ -129,11 +155,12 @@ const SYSTEM = `你是「HashArena 竞技场」的 AI 预测官，负责对一�
 
 export async function callAi(env: AiEnv, ctx: any, opts: { timeoutMs?: number; effort?: 'low' | 'medium' | 'high' } = {}): Promise<AiCallResult> {
   const r = await llmChat(env, { system: SYSTEM, user: JSON.stringify(ctx), json: true, maxTokens: aiProvider(env)?.name === 'deepseek' ? 1500 : 6000, effort: opts.effort ?? 'low', timeoutMs: opts.timeoutMs, temperature: 0.7 })
-  const model = `${r.provider}:${r.model}`
+  const pv = aiProvider(env)
+  const model = `${r.provider}:${r.model}` + (pv?.name === 'deepseek' && pv.thinking !== 'off' ? `:think-${pv.thinking}` : '')
   if (!r.ok) return { forecast: null, raw: r.content, usage: {}, latency_ms: r.latency_ms, error: r.error, model }
   let forecast: AiForecast | null = null
-  try { forecast = normalize(parseJson(r.content)) } catch (e: any) { return { forecast: null, raw: r.content, usage: r.usage, latency_ms: r.latency_ms, error: 'bad json: ' + e.message, model } }
-  return { forecast, raw: r.content, usage: r.usage, latency_ms: r.latency_ms, model }
+  try { forecast = normalize(parseJson(r.content)) } catch (e: any) { return { forecast: null, raw: r.content, cot: r.reasoning_content, usage: r.usage, latency_ms: r.latency_ms, error: 'bad json: ' + e.message, model } }
+  return { forecast, raw: r.content, cot: r.reasoning_content, usage: r.usage, latency_ms: r.latency_ms, model }
 }
 
 function normalize(o: any): AiForecast {
@@ -249,8 +276,8 @@ export async function forecastFor(db: D1Database, env: AiEnv, source: string, ne
   if (budget < 3000) r = { forecast: null, raw: '', usage: {}, latency_ms: 0, error: `skipped: lock window ${Math.round(budget / 1000)}s`, model: `${aiProviderName(env)}:${aiModel(env)}` }
   else r = await callAi(env, ctx, { effort: aiEffort(env), timeoutMs: Math.min(aiTimeoutMs(env), budget) })
   const f = r.forecast
-  await db.prepare(`INSERT OR IGNORE INTO ai_forecasts (source, expect, model, based_on, output, reasoning, regime, confidence, prompt_tokens, completion_tokens, latency_ms, created_ms, error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(source, next, r.model, draws[0].expect, f ? JSON.stringify(f) : r.raw.slice(0, 4000), f?.reasoning || null, f?.regime || null, f?.confidence ?? null, r.usage.prompt_tokens ?? null, r.usage.completion_tokens ?? null, r.latency_ms, Date.now(), r.error || null).run()
+  await db.prepare(`INSERT OR IGNORE INTO ai_forecasts (source, expect, model, based_on, output, reasoning, regime, confidence, prompt_tokens, completion_tokens, latency_ms, created_ms, error, cot, reasoning_tokens) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(source, next, r.model, draws[0].expect, f ? JSON.stringify(f) : r.raw.slice(0, 4000), f?.reasoning || null, f?.regime || null, f?.confidence ?? null, r.usage.prompt_tokens ?? null, r.usage.completion_tokens ?? null, r.latency_ms, Date.now(), r.error || null, r.cot ? r.cot.slice(0, 8000) : null, r.usage.reasoning_tokens ?? null).run()
   return f
 }
 

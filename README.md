@@ -117,9 +117,9 @@
 - `/arena` 顶部改为一张跳转卡 `#ai-pick-link`，首页 / 量化 / 竞技场导航均新增「AI 推荐」入口
 
 ### 配置中心 `/settings`（AI 供应商 key 填写 + 真实校验，表 `app_config`，模块 `src/config.ts`）
-- **页面填写、即时生效**：DeepSeek / OpenAI 兼容两组（key、Base URL、模型）、供应商选择（自动 / 强制 deepseek / 强制 openai）、`AI_LEAD_MS` 报单窗口、`AI_TIMEOUT_MS`、`AI_REPORT_EVERY`。保存到 D1 `app_config`，**优先级高于环境变量**，15s 内全站生效（`/api/*` 中间件每请求解析一次 `effectiveEnv` → `c.var.ai`，后台 `aiKick` 同样使用）
+- **页面填写、即时生效**：DeepSeek 卡片内置 **V4 模型目录卡**（点选即填，含版本/定价/各思考档耗时）+ **思考模式四档按钮**（off/low/high/max，带适用厅型提示）+ **请求体实时预览**（展示将发出的 `chat/completions` JSON，含 `thinking` / `reasoning_effort` / `response_format`）；OpenAI 兼容一组（key、Base URL、模型、effort）；供应商选择（自动 / 强制 deepseek / 强制 openai）、`AI_LEAD_MS` 报单窗口、`AI_TIMEOUT_MS`、`AI_REPORT_EVERY`。保存到 D1 `app_config`，**优先级高于环境变量**，15s 内全站生效（`/api/*` 中间件每请求解析一次 `effectiveEnv` → `c.var.ai`，后台 `aiKick` 同样使用）
 - **密钥安全**：只存服务端；`GET /api/config` 只返回打码值（`sk-a…9xYz`）与来源标签（页面配置 / 环境变量 / 未设置）；密钥输入框留空 = 不修改
-- **真实校验 `POST /api/config/validate`**（可带未保存草稿）：① `GET /models` 验 key 与 Base（鉴权失败立即返回，含供应商原始错误）② 真实调用 1–3 轮要求返回 3×10 权重 JSON，测**推理耗时**并解析结构 ③ DeepSeek 额外查 `/user/balance` 余额；结果附「是否赶得上 1 分钟厅报单窗口」的判断与错误对应的修复提示（key 无效 / 余额不足 / 模型名错 / Base 不可达 / 限流）
+- **真实校验 `POST /api/config/validate`**（可带未保存草稿）：① `GET /models` 验 key 与 Base（鉴权失败立即返回，含供应商原始错误）② 真实调用 1–3 轮要求返回 3×10 权重 JSON，测**推理耗时**并解析结构，思考模式下显示思维链样例与 `reasoning_tokens`，并附「实际发送的参数」③ DeepSeek 额外查 `/user/balance` 余额；旧模型名给出映射提示；结果附「是否赶得上 1 分钟厅报单窗口」的判断与错误对应的修复提示（key 无效 / 余额不足 / 模型名错 / Base 不可达 / 限流）
 - **时间预算计算器**：按 `AI_LEAD_MS` 实时显示「AI 最晚须在 Ns 内锁定 → 你获得 Ns 报单时间」；页头实时显示本期 AI 状态（推理中 / 已锁定 · 模型 · 耗时 / 兜底）
 - 一键「清除页面配置」回退到环境变量
 
@@ -138,9 +138,19 @@
 - **不间断迭代**：命中/失误在下一期作为「你上几期的预测与结果」喂回模型，系统提示明确要求连续失误时切换思路；页面「逐期预测 · 复盘」时间线展示每期的局势判断、把握、推理摘要、验证假设与实际开奖/命中名次
 - **AI 分析官**：按钮 `POST /api/arena/report` 把 12 策略完整战绩、组合最优权重、6 套投资策略模拟、AI 预测官逐期表现、近 30 期结算一并交给模型，输出 Markdown 报告（一句话结论 / 各策略解读 / AI 复盘 / 权重建议 / 下一阶段择时·仓位·止损规则），系统提示强制「不编造数据、明示理论期望为负与样本不足」；同一结算期只生成一次（缓存于 `ai_reports`）
 - **成本 / 稳健性**：每期 1 次调用（`INSERT OR IGNORE`，失败落 `error` 不重试）；`AI_EFFORT=low` 默认（约 8-15 秒，1 分钟一期的厅安全），35 秒超时则本期轮空；回放模式不含 AI（避免历史刷费与前视）；未配置密钥时 AI 行自动隐藏、其余策略照常
-- **模型供应商（DeepSeek 优先，OpenAI 备用）**：`src/ai.ts` 的 `aiProvider()` 统一选择供应商，`llmChat()` 屏蔽参数差异（DeepSeek 用 `max_tokens`/`temperature`/`response_format`；OpenAI 推理模型用 `reasoning_effort`/`max_completion_tokens`），`parseJson()` 容忍围栏/废话。**默认：配置了 `DEEPSEEK_API_KEY` 即走 DeepSeek `deepseek-chat`（V3 非思考模式，2–6s），否则退回 OpenAI**；`AI_PROVIDER=deepseek|openai` 可强制
+- **模型供应商（DeepSeek 优先，OpenAI 备用）**：`src/ai.ts` 的 `aiProvider()` 统一选择供应商，`llmChat()` / `buildChatBody()` 屏蔽参数差异，`parseJson()` 容忍围栏/废话。**默认：配置了 `DEEPSEEK_API_KEY` 即走 DeepSeek，否则退回 OpenAI**；`AI_PROVIDER=deepseek|openai` 可强制
+- **DeepSeek V4 模型目录（官方 api-docs 2026-08，`DEEPSEEK_MODELS`）**：
+
+  | 模型 id | 版本 | 定位 | 峰时价（输入 miss / hit · 输出，$/M） | 并发 |
+  |---|---|---|---|---|
+  | `deepseek-v4-flash`（默认·推荐） | DeepSeek-V4-Flash-0731 | 1M 上下文，思考/非思考双模式，JSON 输出 | 0.44 / 0.014 · 1.32 | 2500 |
+  | `deepseek-v4-pro` | DeepSeek-V4-Pro-0813 | 旗舰推理（HLE 42.7/60.0），价格 ×3 | 1.32 / 0.044 · 3.96 | 500 |
+  | `deepseek-v4-flash-vision-exp` | 实验 | 多模态，文本能力同 Flash | 同 Flash | 2500 |
+
+  谷时（非 UTC 01–04 / 06–10 工作日）半价。旧名 `deepseek-chat` / `deepseek-reasoner` **官方 2026-07-24 已停用**，系统自动映射为 `deepseek-v4-flash`（reasoner → 思考 low）并在校验时给出提示
+- **DeepSeek 思考模式（`DEEPSEEK_THINKING` = off | low | high | max）**：请求体 `{"thinking":{"type":"enabled"},"reasoning_effort":"low"}`（off 时 `type:"disabled"`，此时 `temperature` 才生效）；返回 `reasoning_content`（思维链）与 `content`（JSON 结论）分离，思维链存 `ai_forecasts.cot`，`usage.completion_tokens_details.reasoning_tokens` 存 `reasoning_tokens`。**实测（本沙箱）**：v4-flash 非思考 **1.4s**（校验小任务）/ **3.3s**（正式预测官上下文）；v4-flash 思考 low 5.6s；v4-pro 思考 low 9.5–12.6s。1 分钟厅建议 off；三分/五分厅可用 low/high
 - **报单窗口（20 秒硬截止）**：`AI_LEAD_MS`（默认 20000）—— AI 必须在「下期理论开奖时刻 − 20s」之前锁定 500 注；`aiKick` 把 `lockByMs` 传给 `forecastFor`，调用超时被裁剪为 `min(AI_TIMEOUT_MS, 剩余预算)`，预算不足 3s 则直接跳过（`error=skipped: lock window`）并由「组合最优」500 注兜底——**保证截止前一定有单可报**。`/ai` 页倒计时下方实时显示「报单窗口 剩 Ns / AI 须在 Ns 内锁定 / 超出截止·将用兜底」
-- **环境变量**：`DEEPSEEK_API_KEY`（推荐）、`DEEPSEEK_BASE_URL`（默认 https://api.deepseek.com）、`DEEPSEEK_MODEL`（默认 deepseek-chat；`deepseek-reasoner` 不建议用于 1 分钟厅）；备用 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `AI_MODEL` / `AI_EFFORT`；`AI_LEAD_MS`（报单窗口，默认 20000）、`AI_TIMEOUT_MS`（单次调用上限，默认 25000）、`AI_REPORT_EVERY`（自动报告节奏，默认 0 = 关闭）。本地写在 `.dev.vars`（已 gitignore），生产用 `wrangler pages secret put`
+- **环境变量**：`DEEPSEEK_API_KEY`（推荐）、`DEEPSEEK_BASE_URL`（默认 https://api.deepseek.com）、`DEEPSEEK_MODEL`（默认 deepseek-v4-flash）、`DEEPSEEK_THINKING`（默认 off）；备用 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `AI_MODEL` / `AI_EFFORT`；`AI_LEAD_MS`（报单窗口，默认 20000）、`AI_TIMEOUT_MS`（单次调用上限，默认 25000）、`AI_REPORT_EVERY`（自动报告节奏，默认 0 = 关闭）。本地写在 `.dev.vars`（已 gitignore），生产用 `wrangler pages secret put`
 
 ### AI 建议自动回测 · 二阶闭环（`/arena` `#ai-plans-section`，表 `ai_plans`，模块 `src/ai_plans.ts`）
 「AI 提建议 → 系统验证 → 结果反馈给 AI」：分析官报告里的择时/仓位/止损建议不再只是文字，而是被自动编译成**可回测的投资策略**，和内置 6 套模拟同台比较，并把样本外结果喂回下一份报告。

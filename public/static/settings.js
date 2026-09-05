@@ -2,9 +2,9 @@
 (function () {
   'use strict'
   var $ = function (id) { return document.getElementById(id) }
-  var KEYS = ['AI_PROVIDER', 'DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'AI_MODEL', 'AI_EFFORT', 'AI_LEAD_MS', 'AI_TIMEOUT_MS', 'AI_REPORT_EVERY']
+  var KEYS = ['AI_PROVIDER', 'DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL', 'DEEPSEEK_THINKING', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'AI_MODEL', 'AI_EFFORT', 'AI_LEAD_MS', 'AI_TIMEOUT_MS', 'AI_REPORT_EVERY']
   var SECRET = { DEEPSEEK_API_KEY: 1, OPENAI_API_KEY: 1 }
-  var S = { cfg: null, provider: '', source: 'qkltj:6001' }
+  var S = { cfg: null, provider: '', source: 'qkltj:6001', think: '' }
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] }) }
   var srcName = { db: '页面配置', env: '环境变量', none: '未设置' }
 
@@ -22,6 +22,10 @@
     })
     S.provider = (it.AI_PROVIDER && it.AI_PROVIDER.source === 'db') ? it.AI_PROVIDER.value : ''
     pickProv(S.provider, true)
+    renderModels(cfg.deepseek_models || [])
+    S.think = (it.DEEPSEEK_THINKING && it.DEEPSEEK_THINKING.source === 'db') ? it.DEEPSEEK_THINKING.value : ''
+    pickThink(S.think, true)
+    updatePreview()
     var e = cfg.effective
     $('eff-line').innerHTML = e ? '<span class="' + (e.provider === 'deepseek' ? 'text-sky-400' : 'text-slate-200') + '">' + esc(e.provider) + '</span> · <span class="mono">' + esc(e.model) + '</span>' : '<span class="text-amber-400">未配置任何供应商</span>'
     $('eff-sub').textContent = e ? e.base : '请在下方填写 DeepSeek 或 OpenAI 的 key'
@@ -29,6 +33,44 @@
     if (e) $(e.provider === 'deepseek' ? 'card-ds' : 'card-oa').classList.add('active')
     calcWindow()
   }
+  // ---- DeepSeek 模型目录
+  function renderModels(list) {
+    var cur = ($('in-DEEPSEEK_MODEL').value || '').trim()
+    $('ds-models').innerHTML = list.map(function (m) {
+      var tag = m.tag === '推荐' ? 'rec' : m.tag === '最强' ? 'top' : 'exp'
+      return '<div class="mc' + (cur === m.id || (!cur && m.id === 'deepseek-v4-flash') ? ' sel' : '') + '" data-id="' + m.id + '">' +
+        '<span class="id">' + m.id + '</span><span class="tag ' + tag + '">' + m.tag + '</span>' +
+        '<div class="d">' + esc(m.desc) + '</div>' +
+        '<div class="m">' + m.version + ' · 输入 $' + m.price.in_miss + '/M（缓存命中 $' + m.price.in_hit + '）· 输出 $' + m.price.out + '/M（峰时；谷时半价）· 耗时 关 ' + m.speed.off + ' / low ' + m.speed.low + ' / high ' + m.speed.high + ' / max ' + m.speed.max + '</div></div>'
+    }).join('')
+    document.querySelectorAll('#ds-models .mc').forEach(function (el) { el.addEventListener('click', function () { $('in-DEEPSEEK_MODEL').value = el.getAttribute('data-id'); highlightModel(); markDirty(); updatePreview() }) })
+  }
+  function highlightModel() {
+    var cur = ($('in-DEEPSEEK_MODEL').value || '').trim() || 'deepseek-v4-flash'
+    var legacy = (S.cfg && S.cfg.deepseek_legacy) || {}; if (legacy[cur]) cur = legacy[cur]
+    document.querySelectorAll('#ds-models .mc').forEach(function (el) { el.classList.toggle('sel', el.getAttribute('data-id') === cur) })
+  }
+  $('in-DEEPSEEK_MODEL').addEventListener('input', function () { highlightModel(); updatePreview() })
+  function pickThink(v, silent) {
+    S.think = v
+    document.querySelectorAll('#ds-think .tk').forEach(function (el) { el.classList.toggle('sel', el.getAttribute('data-v') === (v || 'off')) })
+    var hints = { off: '非思考模式：直接输出 JSON，2–5s，temperature 生效。1 分钟厅首选。', low: '轻推理：先出简短思维链再给结论，约 5–12s；返回 reasoning_content。三分厅可用，1 分钟厅需把 AI_LEAD_MS 压到 ≤15000。', high: '标准推理：15–40s，DeepSeek 默认档。只适合三分 / 五分厅。', max: '最深推理：40s 以上，适合十分厅或离线分析报告；1 分钟厅一定超时走兜底。' }
+    $('ds-think-hint').innerHTML = '<i class="fas fa-lightbulb mr-1 text-amber-400"></i>' + hints[v || 'off'] + (v && v !== 'off' ? ' <span class="text-slate-600">思考模式下 temperature / top_p 参数被官方忽略。</span>' : '')
+    if (!silent) { markDirty(); updatePreview() }
+  }
+  document.querySelectorAll('#ds-think .tk').forEach(function (el) { el.addEventListener('click', function () { pickThink(el.getAttribute('data-v')) }) })
+  function updatePreview() {
+    var model = ($('in-DEEPSEEK_MODEL').value || '').trim() || 'deepseek-v4-flash'
+    var legacy = (S.cfg && S.cfg.deepseek_legacy) || {}; var th = S.think || 'off'
+    if (legacy[model]) { if (model === 'deepseek-reasoner' && !S.think) th = 'low'; model = legacy[model] }
+    var body = { model: model, messages: [{ role: 'system', content: '<预测官系统提示>' }, { role: 'user', content: '<量化上下文 JSON>' }], max_tokens: th === 'off' ? 1500 : 7500, thinking: { type: th === 'off' ? 'disabled' : 'enabled' } }
+    if (th !== 'off') body.reasoning_effort = th; else body.temperature = 0.7
+    body.response_format = { type: 'json_object' }
+    $('ds-preview').textContent = 'POST /chat/completions\n' + JSON.stringify(body, null, 2)
+    var base = ($('in-DEEPSEEK_BASE_URL').value || '').trim() || ((S.cfg && S.cfg.items.DEEPSEEK_BASE_URL && S.cfg.items.DEEPSEEK_BASE_URL.value) || 'https://api.deepseek.com')
+    $('ds-endpoint').textContent = base.replace(/\/$/, '') + '/chat/completions'
+  }
+  $('in-DEEPSEEK_BASE_URL').addEventListener('input', updatePreview)
   function pickProv(v, silent) {
     S.provider = v
     document.querySelectorAll('#prov-pick .prov').forEach(function (el) { el.classList.toggle('sel', el.getAttribute('data-v') === v) })
@@ -49,9 +91,9 @@
 
   // ---------------------------------------------------------------- 收集
   function collect(onlySet) {
-    var body = { AI_PROVIDER: S.provider }
+    var body = { AI_PROVIDER: S.provider, DEEPSEEK_THINKING: S.think || '' }
     KEYS.forEach(function (k) {
-      if (k === 'AI_PROVIDER') return
+      if (k === 'AI_PROVIDER' || k === 'DEEPSEEK_THINKING') return
       var inp = $('in-' + k); if (!inp) return
       var v = inp.value.trim()
       if (SECRET[k]) { if (v) body[k] = v }                   // 留空 = 不修改密钥
@@ -76,14 +118,17 @@
     var speed = r.chat_avg_ms < 6000 ? 'text-emerald-300' : r.chat_avg_ms < 12000 ? 'text-amber-300' : 'text-rose-300'
     var bal = r.balance && r.balance.infos && r.balance.infos.length ? r.balance.infos.map(function (b) { return b.total + ' ' + b.currency }).join(' / ') + (r.balance.available === false ? ' <span class="text-rose-300">（余额不可用）</span>' : '') : null
     el.innerHTML = '<div class="res ok"><div class="font-bold text-emerald-300"><i class="fas fa-circle-check mr-1"></i>校验通过 · 已真实完成一次 JSON 推理</div><div class="kv mt-1">' +
-      '<b>供应商</b><span>' + esc(r.provider) + ' · <span class="mono">' + esc(r.model) + '</span>' + (r.model_listed === false ? ' <span class="text-amber-300">（不在模型列表）</span>' : r.model_listed ? ' <span class="text-emerald-400">✓ 模型有效</span>' : '') + '</span>' +
+      '<b>供应商</b><span>' + esc(r.provider) + ' · <span class="mono">' + esc(r.model) + '</span>' + (r.thinking && r.thinking !== 'off' ? ' <span class="text-pink-300">思考 ' + esc(r.thinking) + '</span>' : r.provider === 'deepseek' ? ' <span class="text-slate-500">非思考</span>' : '') + (r.model_listed === false ? ' <span class="text-amber-300">（不在模型列表）</span>' : r.model_listed ? ' <span class="text-emerald-400">✓ 模型有效</span>' : '') + '</span>' +
       '<b>推理耗时</b><span class="' + speed + ' mono">' + lat.map(function (x) { return (x / 1000).toFixed(1) + 's' }).join(' · ') + (lat.length > 1 ? '　均值 ' + (r.chat_avg_ms / 1000).toFixed(1) + 's' : '') + '</span>' +
-      '<b>tokens</b><span class="mono text-slate-400">' + (r.usage ? (r.usage.prompt_tokens || 0) + ' in / ' + (r.usage.completion_tokens || 0) + ' out' : '—') + '</span>' +
+      '<b>tokens</b><span class="mono text-slate-400">' + (r.usage ? (r.usage.prompt_tokens || 0) + ' in / ' + (r.usage.completion_tokens || 0) + ' out' + (r.usage.reasoning_tokens ? ' · 其中思维链 ' + r.usage.reasoning_tokens : '') + (r.usage.cache_hit ? ' · 缓存命中 ' + r.usage.cache_hit : '') : '—') + '</span>' +
+      (r.endpoint ? '<b>端点</b><span class="mono text-slate-500 text-[11px]">' + esc(r.endpoint) + '</span>' : '') +
+      (r.cot ? '<b>思维链样例</b><span class="text-slate-400 text-[11px]">' + esc(r.cot.slice(0, 260)) + (r.cot.length > 260 ? '…' : '') + '</span>' : '') +
       (bal ? '<b>账户余额</b><span class="mono">' + bal + '</span>' : '') +
       '<b>返回样例</b><span class="text-slate-400">' + (r.sample ? esc(r.sample.note || '') + (r.sample.pw_ok ? ' · 3×10 权重结构 ✓' : ' · <span class="text-amber-300">权重结构异常</span>') : '—') + '</span>' +
       (r.models && r.models.length ? '<b>可用模型</b><span class="mono text-slate-500 text-[11px]">' + esc(r.models.slice(0, 10).join(', ')) + (r.models.length > 10 ? ' …' : '') + '</span>' : '') +
       '</div>' + (r.warn ? '<div class="text-[11px] text-amber-300 mt-2"><i class="fas fa-triangle-exclamation mr-1"></i>' + esc(r.warn) + '</div>' : '') +
-      '<div class="text-[11px] text-slate-500 mt-2">' + fitHint(r.chat_avg_ms) + '</div></div>'
+      '<div class="text-[11px] text-slate-500 mt-2">' + fitHint(r.chat_avg_ms) + '</div>' +
+      (r.request ? '<details class="mt-2 text-[11px]"><summary class="cursor-pointer text-slate-500">实际发送的参数</summary><pre class="mono bg-[#0b1220] rounded p-2 mt-1 overflow-auto">' + esc(JSON.stringify(r.request, null, 1)) + '</pre></details>' : '') + '</div>'
   }
   function hint(r) {
     var e = String(r.error || '')
@@ -112,7 +157,7 @@
       .finally(function () { busy(btn, false) })
   }
   $('btn-test-ds').addEventListener('click', function () {
-    var d = { AI_PROVIDER: 'deepseek' }
+    var d = { AI_PROVIDER: 'deepseek', DEEPSEEK_THINKING: S.think || 'off' }
     ;['DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL'].forEach(function (k) { var v = $('in-' + k).value.trim(); if (v) d[k] = v })
     if (!d.DEEPSEEK_API_KEY && !(S.cfg.items.DEEPSEEK_API_KEY && S.cfg.items.DEEPSEEK_API_KEY.set)) { renderResult($('res-ds'), { ok: false, error: '请先填写 DEEPSEEK_API_KEY' }); return }
     validate(d, $('btn-test-ds'), $('res-ds'), 2)

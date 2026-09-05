@@ -782,6 +782,7 @@ app.put('/api/config', async (c) => {
   if (patch.AI_LEAD_MS && !(Number(patch.AI_LEAD_MS) >= 5000 && Number(patch.AI_LEAD_MS) <= 120000)) return bad(c, 'AI_LEAD_MS 需在 5000–120000 毫秒之间')
   if (patch.AI_TIMEOUT_MS && !(Number(patch.AI_TIMEOUT_MS) >= 3000 && Number(patch.AI_TIMEOUT_MS) <= 90000)) return bad(c, 'AI_TIMEOUT_MS 需在 3000–90000 毫秒之间')
   if (patch.AI_PROVIDER && !['', 'deepseek', 'openai'].includes(patch.AI_PROVIDER)) return bad(c, 'AI_PROVIDER 只能是 deepseek / openai / 空')
+  if (patch.DEEPSEEK_THINKING && !['', 'off', 'low', 'high', 'max'].includes(patch.DEEPSEEK_THINKING)) return bad(c, 'DEEPSEEK_THINKING 只能是 off / low / high / max')
   await saveConfig(c.env.DB, patch)
   return c.json({ ok: true, ...(await configView(c.env.DB, c.env)) })
 })

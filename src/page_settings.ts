@@ -25,6 +25,12 @@ input.f.mono { font-family: ui-monospace, monospace; letter-spacing:.3px; }
 .pill { display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 10px; border-radius:999px; background:#1e293b; }
 .prov { cursor:pointer; border:1px solid #1e293b; border-radius:12px; padding:10px 12px; display:flex; gap:10px; align-items:center; }
 .prov.sel { border-color:#38bdf8; background:#0b1220; }
+.mc { display:grid; grid-template-columns: 1fr auto; gap:2px 10px; border:1px solid #1e293b; border-radius:10px; padding:8px 10px; cursor:pointer; background:#0b1220; }
+.mc.sel { border-color:#38bdf8; box-shadow:0 0 0 1px #38bdf844 inset; } .mc .id { font-family: ui-monospace, monospace; font-weight:700; font-size:13px; } .mc .tag { font-size:10px; padding:1px 6px; border-radius:999px; background:#1e293b; color:#cbd5e1; align-self:start; }
+.mc .tag.rec { background:#22c55e; color:#000; } .mc .tag.top { background:#a855f7; color:#fff; } .mc .tag.exp { background:#f59e0b; color:#000; }
+.mc .d { grid-column:1 / -1; font-size:11px; color:#94a3b8; } .mc .m { grid-column:1 / -1; font-size:10.5px; color:#64748b; font-family: ui-monospace, monospace; }
+.tk { border:1px solid #1e293b; border-radius:8px; padding:6px 4px; background:#0b1220; display:flex; flex-direction:column; align-items:center; font-size:11px; color:#94a3b8; } .tk b { color:#e2e8f0; font-size:12px; } .tk span { font-size:10px; }
+.tk.sel { border-color:#38bdf8; color:#e2e8f0; background:#0f1a2e; }
 .fade-in { animation: fi .3s ease; } @keyframes fi { from { opacity:0; transform: translateY(4px) } to { opacity:1; transform:none } }
 </style>
 </head>
@@ -73,7 +79,26 @@ input.f.mono { font-family: ui-monospace, monospace; letter-spacing:.3px; }
         <div class="font-bold text-sm text-sky-300"><i class="fas fa-fish mr-1"></i>DeepSeek</div>
         <div><label class="f">DEEPSEEK_API_KEY <span class="src" id="src-DEEPSEEK_API_KEY"></span></label><div class="flex gap-2"><input class="f mono" id="in-DEEPSEEK_API_KEY" type="password" placeholder="sk-…（留空不修改）" autocomplete="off"><button class="btn bg-slate-800 border border-slate-700 px-3 eye" data-for="in-DEEPSEEK_API_KEY"><i class="fas fa-eye"></i></button></div><div class="text-[11px] text-slate-500 mt-1" id="cur-DEEPSEEK_API_KEY"></div></div>
         <div><label class="f">DEEPSEEK_BASE_URL <span class="src" id="src-DEEPSEEK_BASE_URL"></span></label><input class="f mono" id="in-DEEPSEEK_BASE_URL" placeholder="https://api.deepseek.com"></div>
-        <div><label class="f">DEEPSEEK_MODEL <span class="src" id="src-DEEPSEEK_MODEL"></span></label><select class="f" id="in-DEEPSEEK_MODEL"><option value="">deepseek-chat（默认 · V3 非思考，2–6s）</option><option value="deepseek-chat">deepseek-chat</option><option value="deepseek-reasoner">deepseek-reasoner（R1 思考模式，30–60s，不适合 1 分钟厅）</option></select></div>
+        <div>
+          <label class="f">DEEPSEEK_MODEL · 模型（V4 系列，官方 2026-08 目录） <span class="src" id="src-DEEPSEEK_MODEL"></span></label>
+          <div class="space-y-2" id="ds-models"></div>
+          <input class="f mono mt-2" id="in-DEEPSEEK_MODEL" placeholder="或手填模型 id（留空 = deepseek-v4-flash）">
+          <div class="text-[11px] text-slate-500 mt-1"><i class="fas fa-circle-info mr-1"></i>旧名 <code>deepseek-chat</code> / <code>deepseek-reasoner</code> 官方已于 2026-07-24 停用；填了也会自动映射为 v4-flash（reasoner → 思考模式 low）</div>
+        </div>
+        <div>
+          <label class="f">DEEPSEEK_THINKING · 思考模式（推理链） <span class="src" id="src-DEEPSEEK_THINKING"></span></label>
+          <div class="grid grid-cols-4 gap-1" id="ds-think">
+            <button type="button" class="tk" data-v="off"><b>关闭</b><span>非思考 · 最快</span></button>
+            <button type="button" class="tk" data-v="low"><b>low</b><span>轻推理</span></button>
+            <button type="button" class="tk" data-v="high"><b>high</b><span>标准推理</span></button>
+            <button type="button" class="tk" data-v="max"><b>max</b><span>最深 · 很慢</span></button>
+          </div>
+          <div class="text-[11px] text-slate-500 mt-1" id="ds-think-hint"></div>
+        </div>
+        <details class="text-xs"><summary class="cursor-pointer text-sky-300 select-none"><i class="fas fa-code mr-1"></i>将发送的请求（chat/completions 请求体预览）</summary>
+          <pre class="mono text-[11px] bg-[#0b1220] border border-slate-800 rounded-lg p-3 mt-2 overflow-auto text-slate-300" id="ds-preview">—</pre>
+          <div class="text-[11px] text-slate-500 mt-1">端点 <code id="ds-endpoint">https://api.deepseek.com/chat/completions</code> · Header <code>Authorization: Bearer &lt;key&gt;</code> · 思考模式下返回 <code>reasoning_content</code>（思维链）与 <code>content</code>（JSON 结论）分离，系统会把思维链存入 <code>ai_forecasts.cot</code></div>
+        </details>
         <button class="btn bg-sky-500 hover:bg-sky-400 text-black w-full" id="btn-test-ds"><i class="fas fa-vial mr-1"></i>用上面填的内容校验 DeepSeek</button>
         <div id="res-ds" class="hidden"></div>
       </div>
