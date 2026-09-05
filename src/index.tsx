@@ -18,6 +18,8 @@ import { aiPage } from './page_ai'
 import { aiEnabled, aiModel, aiEffort, aiProviderName, aiLeadMs, forecastFor, aiScores, aiHistory, generateReport, latestReport, aiExtraPlans, aiPlansMaintain, aiPick, type AiEnv } from './ai'
 import { listAiPlans } from './ai_plans'
 import { effectiveEnv, saveConfig, configView, validateProvider, CONFIG_KEYS } from './config'
+import { top3Round, top3View, top3Backfill, TOP3_KEY } from './top3'
+import { top3Page } from './page_top3'
 import { settingsPage } from './page_settings'
 
 type Bindings = { DB: D1Database } & AiEnv
@@ -534,7 +536,7 @@ const arenaBusy = new Set<string>()
 async function arenaTick(db: D1Database, source: string) {
   if (arenaBusy.has(source)) return
   arenaBusy.add(source)
-  try { const rows = await loadDraws(db, source, 800); await autoArena(db, source, rows as any, 2) }
+  try { const rows = await loadDraws(db, source, 800); const r = await autoArena(db, source, rows as any, 2); if (rows.length && await top3Round(db, source, (rows[0] as any).expect)) invalidateArena(source); if (r.generated) invalidateArena(source) }
   catch (e) { console.error('arena tick', e) }
   finally { arenaBusy.delete(source) }
 }
@@ -865,6 +867,29 @@ app.get('/analysis', (c) => c.html(analysisPage()))
 app.get('/arena', (c) => c.html(arenaPage()))
 app.get('/ai', (c) => c.html(aiPage()))
 app.get('/settings', (c) => c.html(settingsPage()))
+app.get('/top3', (c) => c.html(top3Page()))
+
+/** 回放补齐 top3 历史（幂等；每次最多 N 期） */
+app.post('/api/top3/backfill', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const n = Math.min(300, Number(c.req.query('n') || 100))
+  const done = await top3Backfill(c.env.DB, source, n); if (done) invalidateArena(source)
+  return c.json({ ok: true, source, backfilled: done })
+})
+/** 战绩榜优质策略推荐选号：前三名各 500 注 + 融合 500 注（strategy='top3'）+ 逐期战绩 */
+app.get('/api/top3/pick', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const hist = Math.min(60, Number(c.req.query('history') || 12))
+  if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)
+  await arenaTick(c.env.DB, source)
+  const t0 = now()
+  const key = `top3|${source}|${hist}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
+  const { v, cached, age } = await cachedArena(key, 20_000, () => top3View(c.env.DB, source, hist))
+  c.header('X-Cache', cached ? 'HIT' : 'MISS')
+  return c.json({ ok: true, source, strategy: TOP3_KEY, interval_ms: SOURCES[source].intervalMs, ...v, cached, cache_age_ms: age, compute_ms: now() - t0 })
+})
 
 // ------------------------------------------------------------------ 配置中心：AI 供应商 key / 模型 / 报单窗口（存 D1，覆盖环境变量）
 app.get('/api/config', async (c) => c.json({ ok: true, keys: CONFIG_KEYS, ...(await configView(c.env.DB, c.env)) }))

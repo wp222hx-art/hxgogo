@@ -11,6 +11,7 @@
 - **策略竞技场（自动战绩榜）**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/arena
 - **AI 推荐（每期 500 注 · 一键复制）⭐**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/ai
 - **配置中心（填 key · 校验 · 报单窗口）**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/settings
+- **战绩榜优质策略推荐选号（滚动前三 · 融合 500 注）⭐**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/top3
 - **生产环境**: 待部署（Cloudflare Pages）
 
 ## 已完成功能
@@ -115,6 +116,15 @@
 - **战绩 `#stats`**：已实盘期数、命中率（对照保本 52.6%）、累计盈亏（950×）、近 20 期命中条
 - **逐期记录 `#hist-sec`**：最近 12/30/60 期，每行 = 期号 · 实际开出 · 盘面判断 · 命中#名次/未中 · 盈亏；展开后显示该期 500 注（绿色 = 命中号）+ 推理与方案 + 复制该期 500 注
 - `/arena` 顶部改为一张跳转卡 `#ai-pick-link`，首页 / 量化 / 竞技场导航均新增「AI 推荐」入口
+
+### 战绩榜优质策略推荐选号 `/top3`（模块 `src/top3.ts`，策略 key `top3`，表 `top3_picks`）⭐
+把「谁最近最强」变成一份可直接下注的新号码：**每期取战绩榜滚动前三名的策略，各自 500 注 + 按战绩加权融合成一份全新的 500 注**，一键复制，并像其他策略一样逐期结算。
+- **前三怎么定（与竞技场同口径，walk-forward 无前视）**：候选 = 7 个基础策略 + 3 个组合策略（排除随机对照与 AI——AI 异步到达且可能缺席，不能保证每期确定）；按「目标期之前」最近 40 期滚动 z =（命中 − 期望）/√Σp(1−p) 排名，样本 <10 期不参与，不足 3 个时用组合最优/共识投票/量化均衡补位
+- **融合规则**：成员权重 w ∝ exp(0.6·clamp(z,−2,2))；每个三位号得分 = Σ w_k·(501 − 该号在成员 k 的 500 注中的名次)；取 Top 500 → 写入 `arena_rounds(strategy='top3')`，成员与权重写入 `top3_picks.members`
+- **每期自动**：`arenaTick` 在基础策略生成后立即调用 `top3Round`（幂等）——与开局同步，锁定时刻 ≈ 上期开奖后 5–8s；开奖后与其他策略同规则结算（950×，每注 1）
+- **回放补齐 `POST /api/top3/backfill?n=`**：对历史已结算期，用该期之前的战绩排名 + 该期已存的成员 500 注重建融合并直接结算（仍无前视），已补齐全部 ~900 期
+- **页面**：本期期号 / 倒计时（北京时间）/ 三张成员卡（名次 · 滚动 z · 近 40 期命中率 · 融合权重 · 其 500 注中多少进入融合）/ **四个可切换列表**（融合 500 注 + 三位成员各 500 注）→ 一键复制（空格 / 逗号 / 每行）/ 网格中金色 = 三策略共识、浅金 = 两策略共识 / 战绩卡（融合策略已实盘期数 · 命中率 vs 52.6% · 累计盈亏 · 近 20 期）/「为什么是这三个」完整排行（入选标记）/ 逐期战绩（每行 = 期号 · 实开 · 北京时间 · 三位成员各自中/未 · 融合命中#名次 · 盈亏；展开看该期 500 注 + 成员权重 + 复制）
+- **实测**：本期 `…1207` 前三 = 量化均衡(z+1.48, w49%) / 量化聚焦(+0.82, 33%) / 马尔可夫(−0.16, 18%)，融合 500 注中三策略共识 284 注；融合策略实盘 712 期命中率 49.2%（与理论 50% 一致——「跟随最强」并不自动带来超额，这正是要用数据说话的地方）
 
 ### 配置中心 `/settings`（AI 供应商 key 填写 + 真实校验，表 `app_config`，模块 `src/config.ts`）
 - **页面填写、即时生效**：DeepSeek 卡片内置 **V4 模型目录卡**（点选即填，含版本/定价/各思考档耗时）+ **思考模式四档按钮**（off/low/high/max，带适用厅型提示）+ **请求体实时预览**（展示将发出的 `chat/completions` JSON，含 `thinking` / `reasoning_effort` / `response_format`）；OpenAI 兼容一组（key、Base URL、模型、effort）；供应商选择（自动 / 强制 deepseek / 强制 openai）、`AI_LEAD_MS` 报单窗口、`AI_TIMEOUT_MS`、`AI_REPORT_EVERY`。保存到 D1 `app_config`，**优先级高于环境变量**，15s 内全站生效（`/api/*` 中间件每请求解析一次 `effectiveEnv` → `c.var.ai`，后台 `aiKick` 同样使用）
@@ -250,6 +260,8 @@
 | GET | `/api/arena/plans?source=` | **AI 建议回测**：active[]（规则 DSL + 人话描述 + 样本内/样本外统计）/ retired[]（含 retire_reason）/ builtin（内置 6 套 key） |
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
+| GET | `/api/top3/pick?source=&history=12\|30\|60` | 优质策略推荐：`current{expect, based_on, status, created_ms, members[]{key,name,short,color,desc,z,rate,n,hits,w,numbers[500]}, fused[500], count, overlap[], consensus_all}` + `record{n,hits,rate,pnl,streak[20]}` + `leaderboard[]{key,short,z,n,rate,total}` + `history[]{expect,numbers,actual,hit,rank,pnl,open_ms,members[]{key,short,z,w,hit,rank}}`；缓存 20s |
+| POST | `/api/top3/backfill?source=&n=100` | 回放补齐 top3 历史（幂等） |
 | GET | `/api/ai/self-check?source=&n=10` | 与上游 API 逐字段对账：`summary{upstream_latest, local_latest, in_sync, compared, all_match, mismatches, pending_expect, pending_based_on, expected_next, pending_ok, upstream_ms, server_now_bj}` + `rows[]{expect, upstream{opennumber,openTime,block}, local{…}, ai{based_on, actual, hit, rank, scored, locked_bj}, ok, diffs[]}` |
 | GET | `/api/ai/sync-audit?source=&n=30` | 报单同步审计：`summary{n, locked_in_time, locked_in_time_rate, ai_success, fallback, margin_open_min_s, margin_open_avg_s, lead_ms, heartbeat_alive}` + `items[]{expect, model, trigger, latency_ms, started_after_prev_s, locked_after_prev_s, margin_to_lock_s, margin_to_open_s, ok, error, hit}` |
 | GET | `/api/config` | 配置快照：`items{KEY:{value(密钥打码), source db\|env\|none, set, updated_ms}}` + `effective{provider, model, base}` |
