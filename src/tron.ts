@@ -1,22 +1,43 @@
 // ============ TRON 公链区块读取（TronGrid 公共接口） ============
-const TRONGRID = 'https://api.trongrid.io'
+/** 多个公共全节点轮询：TronGrid 匿名限流较严（429），失败自动切换到备用节点并退避重试 */
+const NODES = ['https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com']
 const BLOCK_INTERVAL = 3000
+let nodeIdx = 0
+let apiKey: string | undefined
+/** 可选：配置 TronGrid API Key 提升限额（设置后仅对 trongrid 生效） */
+export function setTronApiKey(k?: string | null) { apiKey = k || undefined }
 
 export interface TronBlock { number: number; hash: string; timestamp: number }
 
-async function post(path: string, body: unknown): Promise<any> {
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+async function postOnce(base: string, path: string, body: unknown): Promise<any> {
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), 6000)
   try {
-    const res = await fetch(TRONGRID + path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    })
-    if (!res.ok) throw new Error(`TronGrid ${path} HTTP ${res.status}`)
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Accept': 'application/json' }
+    if (apiKey && base.includes('trongrid')) headers['TRON-PRO-API-KEY'] = apiKey
+    const res = await fetch(base + path, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal })
+    if (!res.ok) { await res.text().catch(() => {}); const e: any = new Error(`TronGrid ${path} HTTP ${res.status}`); e.status = res.status; throw e }
     return await res.json()
   } finally { clearTimeout(t) }
+}
+
+/** 429/5xx/网络错误 → 切换节点 + 指数退避，最多 4 次 */
+async function post(path: string, body: unknown): Promise<any> {
+  let lastErr: any = null
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const base = NODES[nodeIdx % NODES.length]
+    try { return await postOnce(base, path, body) }
+    catch (e: any) {
+      lastErr = e
+      const st = e?.status
+      if (st && st !== 429 && st < 500) throw e          // 4xx（非限流）不重试
+      nodeIdx++                                            // 换节点
+      await sleep(300 * Math.pow(2, attempt))
+    }
+  }
+  throw lastErr
 }
 
 function parse(raw: any): TronBlock | null {

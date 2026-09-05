@@ -252,7 +252,7 @@ export async function autoArena(db: D1Database, source: string, draws: Draw[], b
 }
 
 /** 外部（AI）选手独立生成：可在后台（waitUntil）执行，不阻塞页面请求；已存在则直接返回 */
-export async function externalRound(db: D1Database, source: string, draws: Draw[], key: string, scorer: ExternalScorer) {
+export async function externalRound(db: D1Database, source: string, draws: Draw[], key: string, scorer: ExternalScorer, extraNs: number[] = []) {
   if (draws.length < ARENA_MIN_HIST) return false
   const latest = draws[0].expect; const next = nextOf(latest); if (!next) return false
   const have = await db.prepare('SELECT 1 FROM arena_rounds WHERE source=? AND expect=? AND strategy=?').bind(source, next, key).first()
@@ -262,7 +262,9 @@ export async function externalRound(db: D1Database, source: string, draws: Draw[
   const scores = await scorer({ next, hist: draws, perf, weights: gen.weights, vec: gen.vec })
   if (!scores) return false
   const main = roundFromScores(key, scores)
-  const derived = STRATEGIES.filter(s => s.derived === key && s.n).map(s => ({ strategy: s.key, numbers: main.numbers.slice(0, s.n!), coverage: r4(main.numbers.slice(0, s.n!).reduce((a, i) => a + scores[i], 0)), weight: 1 }))
+  const fixed = STRATEGIES.filter(s => s.derived === key && s.n).map(s => ({ key: s.key, n: s.n! }))
+  const custom = extraNs.filter(n => Number.isInteger(n) && n >= 10 && n <= 900 && !fixed.some(f => f.n === n)).map(n => ({ key: `${key}-custom-${n}`, n }))
+  const derived = [...fixed, ...custom].map(d => { const nums = d.n <= main.numbers.length ? main.numbers.slice(0, d.n) : topN(scores, d.n); return { strategy: d.key, numbers: nums, coverage: r4(nums.reduce((a, i) => a + scores[i], 0)), weight: 1 } })
   await insertRounds(db, source, next, latest, 'live', [main, ...derived])
   return true
 }

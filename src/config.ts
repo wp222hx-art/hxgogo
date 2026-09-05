@@ -2,7 +2,7 @@
 import { type AiEnv, llmChat, parseJson, aiProvider, buildChatBody, DEEPSEEK_MODELS, DEEPSEEK_LEGACY } from './ai'
 
 /** 允许在页面配置的键（白名单，防止任意写入） */
-export const CONFIG_KEYS = ['AI_PROVIDER', 'DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL', 'DEEPSEEK_THINKING', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'AI_MODEL', 'AI_EFFORT', 'AI_LEAD_MS', 'AI_TIMEOUT_MS', 'AI_REPORT_EVERY'] as const
+export const CONFIG_KEYS = ['AI_PROVIDER', 'DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL', 'DEEPSEEK_THINKING', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'AI_MODEL', 'AI_EFFORT', 'AI_LEAD_MS', 'AI_TIMEOUT_MS', 'AI_REPORT_EVERY', 'AI_CUSTOM_N'] as const
 export type ConfigKey = typeof CONFIG_KEYS[number]
 const SECRET_KEYS: ConfigKey[] = ['DEEPSEEK_API_KEY', 'OPENAI_API_KEY']
 
@@ -103,4 +103,11 @@ export async function validateProvider(env: AiEnv, opts: { rounds?: number } = {
   if (modelListed === false) warns.push(`模型 ${pv.model} 不在该供应商模型列表中`)
   if (legacyUsed) warns.push(`你填的是旧模型名（deepseek-chat / deepseek-reasoner，官方已于 2026-07-24 停用），系统已自动映射为 ${pv.model}${pv.thinking !== 'off' ? '（思考模式）' : ''}，建议改用新名`)
   return { ok: true, provider: pv.name, model: pv.model, thinking: pv.thinking || null, base: pv.base, endpoint: `${pv.base}/chat/completions`, models, model_listed: modelListed, latency_ms: Date.now() - t0, chat_latency_ms: lat, chat_avg_ms: avg, usage, request, cot, sample: sample && { ok: sample.ok, note: sample.note, pw_ok: Array.isArray(sample.pos_weights) && sample.pos_weights.length === 3 }, balance, warn: warns.length ? warns.join('；') : null }
+}
+
+/** 自定义精选注数：逗号分隔，10–900，最多 4 个，去重、排除固定档（100/150/300/500） */
+export function parseCustomNs(v?: string | null): number[] {
+  const out: number[] = []
+  for (const x of String(v || '').split(/[,，\s]+/)) { const n = Math.round(Number(x)); if (Number.isInteger(n) && n >= 10 && n <= 900 && ![100, 150, 300, 500].includes(n) && !out.includes(n)) out.push(n) }
+  return out.sort((a, b) => a - b).slice(0, 4)
 }

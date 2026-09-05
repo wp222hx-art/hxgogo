@@ -18,7 +18,7 @@ body { background:#0b0f1a; }
 .grid500 span.dim { opacity:.35; }
 .tab { font-size:12px; padding:6px 12px; border-radius:10px; border:1px solid #1e293b; background:#0f172a; color:#94a3b8; cursor:pointer; } .tab.on { background:#f472b6; color:#000; border-color:#f472b6; font-weight:700; } .tab small { opacity:.7; margin-left:4px; }
 .sc { background:#0b1220; border:1px solid #1e293b; border-radius:12px; padding:10px 12px; } .sc.on { border-color:#f472b6; }
-.chipsub { display:inline-flex; align-items:center; gap:3px; font-size:10px; padding:1px 6px; border-radius:999px; background:#1e293b; color:#94a3b8; } .chipsub.h { background:#22c55e33; color:#86efac; }
+.chipsub { display:inline-flex; align-items:center; gap:3px; font-size:10px; padding:1px 6px; border-radius:999px; background:#1e293b; color:#94a3b8; } .chipsub.h { background:#22c55e33; color:#86efac; } .chipsub.c { outline:1px solid #7c3aed66; }
 textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-radius:10px; padding:10px; font-family: ui-monospace, monospace; font-size:13px; line-height:1.6; resize:vertical; }
 .stat { background:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:10px 12px; } .stat .v { font-family: ui-monospace, monospace; font-size:20px; font-weight:800; }
 .streak { display:flex; gap:2px; } .streak i { width:10px; height:18px; border-radius:2px; background:#334155; } .streak i.h { background:#22c55e; }

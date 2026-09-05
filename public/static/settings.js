@@ -2,7 +2,7 @@
 (function () {
   'use strict'
   var $ = function (id) { return document.getElementById(id) }
-  var KEYS = ['AI_PROVIDER', 'DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL', 'DEEPSEEK_THINKING', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'AI_MODEL', 'AI_EFFORT', 'AI_LEAD_MS', 'AI_TIMEOUT_MS', 'AI_REPORT_EVERY']
+  var KEYS = ['AI_PROVIDER', 'DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL', 'DEEPSEEK_THINKING', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'AI_MODEL', 'AI_EFFORT', 'AI_LEAD_MS', 'AI_TIMEOUT_MS', 'AI_REPORT_EVERY', 'AI_CUSTOM_N']
   var SECRET = { DEEPSEEK_API_KEY: 1, OPENAI_API_KEY: 1 }
   var S = { cfg: null, provider: '', source: 'qkltj:6001', think: '' }
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] }) }
@@ -199,6 +199,45 @@
     }).catch(function () {})
   }
 
+  // ---------------------------------------------------------------- 开奖数据完整性 / 链上补齐
+  function renderCoverage(d) {
+    var body = $('cov-body'); if (!body) return
+    var days = d.days || []
+    var rows = days.map(function (x) {
+      var ok = x.missing === 0
+      return '<tr class="border-t border-slate-800"><td class="py-1 mono">' + esc(x.day) + '</td>' +
+        '<td class="py-1 text-right mono">' + x.n + '/' + x.expected + '</td>' +
+        '<td class="py-1 text-right mono ' + (x.chain ? 'text-cyan-400' : 'text-slate-500') + '">' + (x.chain || 0) + '</td>' +
+        '<td class="py-1 text-right">' + (ok ? '<span class="text-emerald-400"><i class="fas fa-check mr-1"></i>完整</span>' : '<span class="text-amber-400"><i class="fas fa-triangle-exclamation mr-1"></i>缺 ' + x.missing + '</span>') + '</td></tr>'
+    }).join('')
+    var t = d.total || {}
+    var fills = (d.recent_fills || []).slice(0, 6).map(function (f) { return '<span class="mono text-[11px] px-1.5 py-0.5 rounded bg-slate-800 ' + (f.ok ? 'text-cyan-300' : 'text-rose-300') + '">' + esc(f.expect) + (f.ok ? ' ✓' : ' ✗') + '</span>' }).join(' ')
+    body.innerHTML = '<div class="flex flex-wrap gap-4 text-xs mb-2">' +
+      '<span>库内总期数 <b class="mono text-slate-200">' + (t.n || 0) + '</b></span>' +
+      '<span>链上补齐 <b class="mono text-cyan-300">' + (t.chain || 0) + '</b></span>' +
+      '<span>近 ' + days.length + ' 天缺失 <b class="mono ' + (d.missing_total ? 'text-amber-400' : 'text-emerald-400') + '">' + (d.missing_total || 0) + '</b></span>' +
+      (t.first ? '<span class="text-slate-500">范围 <span class="mono">' + esc(t.first) + '</span> → <span class="mono">' + esc(t.last) + '</span></span>' : '') + '</div>' +
+      '<table class="w-full text-xs"><thead><tr class="text-slate-500"><th class="text-left font-normal">日期（北京）</th><th class="text-right font-normal">已记录/应有</th><th class="text-right font-normal">链上补</th><th class="text-right font-normal">状态</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      (d.missing && d.missing.length ? '<div class="mt-2 text-xs text-amber-300">缺失期号：<span class="mono">' + d.missing.slice(0, 20).map(esc).join(' ') + (d.missing.length > 20 ? ' …' : '') + '</span></div>' : '') +
+      (fills ? '<div class="mt-2 text-xs text-slate-500">最近补齐：' + fills + '</div>' : '')
+  }
+  function loadCoverage() {
+    if (!$('cov-body')) return
+    axios.get('/api/draws/coverage', { params: { source: S.source, days: 7 } }).then(function (r) { renderCoverage(r.data) })
+      .catch(function (e) { $('cov-body').innerHTML = '<span class="text-rose-400">读取失败：' + esc(e.message) + '</span>' })
+  }
+  if ($('btn-cov')) $('btn-cov').addEventListener('click', loadCoverage)
+  if ($('btn-gapfill')) $('btn-gapfill').addEventListener('click', function () {
+    var b = $('btn-gapfill'); b.disabled = true; b.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>链上补齐中…'
+    axios.post('/api/draws/gapfill', null, { params: { source: S.source, days: 7, max: 50 } }).then(function (r) {
+      var d = r.data
+      $('save-msg').innerHTML = '<span class="text-cyan-300"><i class="fas fa-link mr-1"></i>扫描 ' + (d.checked || 0) + ' 期 · 缺失 ' + (d.missing_total || 0) + ' · 本次补齐 ' + (d.filled || 0) + (d.failed ? ' · 失败 ' + d.failed : '') + '</span>'
+      loadCoverage()
+    }).catch(function (e) { $('save-msg').innerHTML = '<span class="text-rose-400">' + esc((e.response && e.response.data && e.response.data.error) || e.message) + '</span>' })
+      .then(function () { b.disabled = false; b.innerHTML = '<i class="fas fa-link mr-1"></i>链上补齐缺失' })
+  })
+
   axios.get('/api/config').then(function (r) { render(r.data) }).catch(function (e) { $('eff-line').innerHTML = '<span class="text-rose-400">读取配置失败：' + esc(e.message) + '</span>' })
   livePick(); setInterval(livePick, 5000)
+  loadCoverage()
 })()

@@ -166,6 +166,25 @@
 - **页面 `/ai`**：500 注上方新增四个档位标签（全部 500 / 前 100 / 前 150 / 前 300，各带保本线与实盘命中率）→ 一键复制按钮随档位变为「复制 N 注」；网格仍显示全部 500，超出所选档位的号码变暗；「AI 精选档位战绩」四张卡（命中率 vs 保本 · 期数 · z · 累计 · ROI · 近 20 期）；逐期记录每行带 `100✓ 150✗ 300✓` 芯片，展开后可分别复制该期前 100/150/300/500
 - **当前实盘（876 期）**：500 注 53.1%（+3,750，ROI +0.86%）· 前 100 注 10.8%（z +0.83，ROI **+3.00%**）· 前 150 注 16.0%（z +0.81，+1.20%）· 前 300 注 31.8%（z +1.19，+0.90%）。四档全部在保本线之上，但 z 均 <2，尚未达统计显著；派生策略不参与 top3 排名与 AI 融合候选（注数不同、且与 ai 完全相关）
 
+### 开奖数据完整性：漏期扫描 + 链上补齐（模块 `src/gapfill.ts`，表 `gap_log`，列 `draws.src`）⭐
+- **问题**：上游 `api.qkltj.com` 无论传什么参数最多只返回最近 1000 期；一旦拉取连续失败超过 1000 期（约 16.7 小时），官方接口就再也补不回来，战绩榜 / AI 学习样本会出现永久空洞
+- **漏期扫描** `scanGaps`：以期号 ↔ 分钟的确定性映射（`expect = YYYYMMDD + 0001..1440`，序号 N = 北京时间当日 00:00 + N 分钟；当日 `1440` 落在次日 00:00）生成完整分钟序列，与库内比对
+- **链上补齐** `fillGapsFromChain`：缺失期 → 分钟时间戳 +3s → TRON 首个区块（`findFirstBlockAtOrAfter`）→ `blockID` 去 a–f 取末 5 位 = 开奖号；写入 `draws(src='chain')` + `gap_log`。**已实测**：删除 `202609051200` 后补齐得区块 `85979293` / 号码 `24543`，与上游原记录**逐字段一致**
+- **公共节点容灾** `src/tron.ts`：TronGrid 匿名限流（429）→ 自动切换 tronstack / publicnode 备用节点 + 指数退避（4 次）；补齐逐期间隔 250ms；可选 `setTronApiKey` 提升限额
+- **自动化**：服务端心跳每 5 分钟对 TRON 厅扫描近 2 天并补齐（每次 ≤10 期）；页面 `/settings`「开奖数据完整性」面板：逐日 已记录/应有 · 链上补数 · 状态 ✓，缺失期号列表，「链上补齐缺失」按钮
+- **接口**：`GET /api/draws/coverage?source&days≤30`（days[]、missing[]、total{n,chain}、recent_fills）· `POST /api/draws/gapfill?source&days&max≤50`
+
+### AI 精选自定义注数（配置键 `AI_CUSTOM_N`，策略 key `ai-custom-N`）⭐
+- **定义**：`/settings`「AI 精选 · 自定义注数档位」填入逗号分隔的注数（10–900，最多 4 个，不能与 100/150/300/500 重复；服务端 `parseCustomNs` 校验）。示例 `200,250`
+- **定义即生效**：保存时立刻从 `ai` 主榜的 `rank` 派生历史（`backfillCustomTiers`，N ≤ 500 可派生，400 期）→ 新档位不从零起步；**从下一期开始**由 AI 每期推理完成后实时生成（`externalRound(..., extraNs)`，N ≤ 500 取排序前缀，N > 500 取 `topN(scores)`），作为**独立策略**记录 `arena_rounds`、逐期结算、进入 `/api/arena/pick.subsets[]`（`custom:true`）与 `history[].subsets`
+- **页面 `/ai`**：自定义档位按注数插入标签栏（紫色 ★ 标记）、战绩卡带「自定义」徽标、逐期记录芯片 `200★✓`、展开后可复制该期「前 200★」；缓存键含 `AI_CUSTOM_N`，修改后即时刷新
+- **当前实盘（400 期）**：200 注 21.3%（保本 21.1%，z +0.63，ROI +0.9%）· 250 注 26.8%（保本 26.3%，z +0.81，ROI +1.7%）
+
+### AI 推理自学习：档位战绩反馈闭环（`tierDigest` → prompt `your_tier_performance`）⭐
+- **逻辑**：每期推理前，系统从 `arena_rounds` 计算 AI 自身各档位（100/150/300/500 + 自定义）在**全部 400 期**与**最近 60 期**的命中率、保本线、edge、z、ROI，以及命中时落在前 100 / 101–200 / 201–300 / 301–500 的**位次分布**（对比均匀分布期望），连同一句决策提示一起喷给模型
+- **模型据此调整**：头部档位 edge 持续高于尾部 → 排序有效，`pos_weights` 更有取舍、把最有把握的组合排到前面；头部 edge 为负而 500 注为正 → 前段过度自信，应分散。形成「推理 → 记录 → 结算 → 反馈 → 再推理」的数据飞轮，样本越多反馈越精
+- **可观测**：`GET /api/ai/tier-digest?source` 返回模型本期看到的完整摘要（当前：位次分布 49/36/49/80 vs 均匀 43/43/43/86，头部 1–100 略高于均匀，300 注档 z +1.53 最强）
+
 ### 前端加载体系优化（缓存 + 后台推理 + 进度反馈）
 **问题**：此前 `/api/arena/board` 与 `/api/arena/pick` 在请求路径内**同步等待大模型推理（6–15s）**，且 board JSON 约 290KB，页面首屏 2–15s 不等。
 **方案**（`src/index.tsx`）：
@@ -275,7 +294,10 @@
 | GET | `/api/arena/plans?source=` | **AI 建议回测**：active[]（规则 DSL + 人话描述 + 样本内/样本外统计）/ retired[]（含 retire_reason）/ builtin（内置 6 套 key） |
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
-| POST | `/api/ai/backfill-subsets?source=&n=300` | 由 ai 行回填 ai-100/150/300 历史（幂等） |
+| POST | `/api/ai/backfill-subsets?source=&n=300` | 由 ai 行回填 ai-100/150/300 + 当前自定义档位历史（幂等） |
+| GET | `/api/ai/tier-digest?source=` | AI 自学习摘要：各档位全量/近 60 期战绩 + 命中位次分布（即每期喷给模型的 `your_tier_performance`） |
+| GET | `/api/draws/coverage?source=&days=7` | 开奖完整性报告：逐日 已记录/应有、链上补数、缺失期号、最近补齐日志 |
+| POST | `/api/draws/gapfill?source=&days=7&max=20` | 扫描缺失期并从 TRON 链按「分钟 +3s 首块」规则补齐（`src='chain'`） |
 | GET | `/api/arena/stake-curve?source=&strategies=ai,top3,…&limit=2000` | 注数回测：`strategies[]{strategy, periods, curve[]{N, n, hits, rate, breakeven, edge, z, pnl, roi}, best_N, best_roi}` |
 | GET | `/api/sync/alerts?source=` | 拉取告警：`open` 未解决数 + `alerts[]{kind fetch_fail\|recovered, detail, created_ms, resolved_ms}` |
 | GET | `/api/top3/pick?source=&history=12\|30\|60` | 优质策略推荐：`current{expect, based_on, status, created_ms, members[]{key,name,short,color,desc,z,rate,n,hits,w,numbers[500]}, fused[500], count, overlap[], consensus_all}` + `record{n,hits,rate,pnl,streak[20]}` + `leaderboard[]{key,short,z,n,rate,eligible,total}` + `rules{min_n,min_z,ai_wait_ms,candidates}` + `history[]{expect,numbers,actual,hit,rank,pnl,open_ms,members[]{key,short,z,w,hit,rank}}`；缓存 20s |

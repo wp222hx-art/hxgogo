@@ -15,10 +15,11 @@ import { recordPick, pickTrack } from './pick_track'
 import { autoArena, arenaBoard, arenaRound, replayArena, settleArena, externalRound, nextOf, STRATEGIES, AI_SUBSETS, ARENA_N, ARENA_ODDS, ARENA_MIN_HIST } from './arena'
 import { arenaPage } from './page_arena'
 import { aiPage } from './page_ai'
-import { aiEnabled, aiModel, aiEffort, aiProviderName, aiLeadMs, backfillAiSubsets, forecastFor, aiScores, aiHistory, generateReport, latestReport, aiExtraPlans, aiPlansMaintain, aiPick, type AiEnv } from './ai'
+import { aiEnabled, aiModel, aiEffort, aiProviderName, aiLeadMs, backfillAiSubsets, backfillCustomTiers, tierDigest, forecastFor, aiScores, aiHistory, generateReport, latestReport, aiExtraPlans, aiPlansMaintain, aiPick, type AiEnv } from './ai'
 import { listAiPlans } from './ai_plans'
-import { effectiveEnv, saveConfig, configView, validateProvider, CONFIG_KEYS } from './config'
+import { effectiveEnv, saveConfig, configView, validateProvider, CONFIG_KEYS, parseCustomNs } from './config'
 import { top3Round, top3View, top3Backfill, TOP3_KEY } from './top3'
+import { scanGaps, fillGapsFromChain, coverageReport } from './gapfill'
 import { top3Page } from './page_top3'
 import { settingsPage } from './page_settings'
 
@@ -549,7 +550,7 @@ async function aiKick(db: D1Database, env: AiEnv, source: string, trigger = 'pag
     const rows = await loadDraws(db, source, 800)
     // 报单截止 = 下期理论开奖时刻 − AI_LEAD_MS（默认 20s）：留出足够的下单时间；超时则本期由兜底策略顶上
     const lockByMs = rows.length ? (rows[0] as any).open_ms + SOURCES[source].intervalMs - aiLeadMs(env) : undefined
-    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights, { lockByMs, trigger }); return f ? aiScores(f, ctx.vec, ctx.perf) : null })
+    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights, { lockByMs, trigger }); return f ? aiScores(f, ctx.vec, ctx.perf) : null }, parseCustomNs(env.AI_CUSTOM_N))
     if (done) invalidateArena(source)
   } catch (e) { console.error('ai kick', e) } finally { aiBusy.delete(source) }
 }
@@ -558,8 +559,8 @@ async function aiKick(db: D1Database, env: AiEnv, source: string, trigger = 'pag
  *  Cloudflare Pages 无 cron，这里用「每个到达的请求顺带续命」的方式：任何 /api 请求进来，若心跳链未在跑则用 waitUntil 起一条，
  *  链内按 HEARTBEAT_MS 轮询直到 HEARTBEAT_LIFE_MS 到期（Worker 隔离体存活期内持续）。本地 wrangler dev 下等价于常驻。
  *  每一跳只做：syncSource（受 dueInfo 节流，不到点不打网络）→ arenaTick → aiNeeded ? aiKick('heartbeat') */
-const HEARTBEAT_MS = 2_000, HEARTBEAT_LIFE_MS = 20 * 60_000
-let heartbeatUntil = 0
+const HEARTBEAT_MS = 2_000, HEARTBEAT_LIFE_MS = 20 * 60_000, GAP_CHECK_MS = 5 * 60_000
+let heartbeatUntil = 0, lastGapCheck = 0
 async function heartbeat(db: D1Database, baseEnv: AiEnv) {
   const until = Date.now() + HEARTBEAT_LIFE_MS; heartbeatUntil = until
   while (Date.now() < until && heartbeatUntil === until) {
@@ -570,6 +571,8 @@ async function heartbeat(db: D1Database, baseEnv: AiEnv) {
         if (!r.skipped) await arenaTick(db, s)
         // 只对刚有新开奖或 AI 缺失的期触发；aiKick 自带 busy 锁
         if (await aiNeeded(db, s)) aiKick(db, env, s, 'heartbeat')
+        // 每 5 分钟：扫近 2 天漏期，链上补齐（每次 ≤10 期，串行、不阻塞主链路）
+        if (Date.now() - lastGapCheck > GAP_CHECK_MS && SOURCES[s].chain === 'tron') { lastGapCheck = Date.now(); const g = await scanGaps(db, s, { days: 2 }); if (g.missing.length) { const r = await fillGapsFromChain(db, s, g.missing, 10); if (r.filled) { invalidateArena(s); console.log('gapfill', s, r.filled) } } }
       } catch (e) { console.error('heartbeat', s, e) }
     }
     await new Promise(r => setTimeout(r, HEARTBEAT_MS))
@@ -647,18 +650,18 @@ app.get('/api/arena/pick', async (c) => {
   const needAi = await aiNeeded(c.env.DB, source)
   if (needAi) bg(c, aiKick(c.env.DB, c.var.ai, source, 'pick'))
   const t0 = now()
-  const key = `pick|${source}|${hist}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
+  const key = `pick|${source}|${hist}|c${c.var.ai.AI_CUSTOM_N || ''}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
   const { v, cached, age } = await cachedArena(key, 20_000, async () => {
     const db = c.env.DB
     const pend = (await db.prepare(`SELECT expect, strategy, based_on, numbers, count, coverage, weight FROM arena_rounds WHERE source=? AND scored_ms IS NULL ORDER BY expect DESC LIMIT 40`).bind(source).all<any>()).results
     const expect = pend[0]?.expect
     const current = expect ? { expect, based_on: pend[0].based_on, strategies: pend.filter(r => r.expect === expect) } : null
-    const pick = await aiPick(db, source, current)
+    const pick = await aiPick(db, source, current, c.var.ai.AI_CUSTOM_N)
     const st = await db.prepare(`SELECT COUNT(*) n, SUM(hit) h, SUM(pnl) pnl FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL`).bind(source).first<any>()
     const rows = (await db.prepare(`SELECT a.expect, a.numbers, a.count, a.actual, a.hit, a.rank, a.pnl, a.created_ms, f.regime, f.confidence, f.reasoning, f.output, d.open_ms
       FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect LEFT JOIN draws d ON d.source=a.source AND d.expect=a.expect
       WHERE a.source=? AND a.strategy='ai' AND a.scored_ms IS NOT NULL ORDER BY a.expect DESC LIMIT ?`).bind(source, hist).all<any>()).results
-    const history = rows.map(r => { let o: any = null; try { o = JSON.parse(r.output) } catch {} const sub: Record<string, { hit: boolean; pnl: number }> = {}; for (const x of AI_SUBSETS) sub[x.key] = { hit: !!r.hit && r.rank != null && r.rank <= x.n, pnl: (!!r.hit && r.rank != null && r.rank <= x.n) ? ARENA_ODDS - x.n : -x.n }
+    const history = rows.map(r => { let o: any = null; try { o = JSON.parse(r.output) } catch {} const sub: Record<string, { hit: boolean; pnl: number }> = {}; for (const x of [...AI_SUBSETS.map(a => ({ key: a.key, n: a.n })), ...parseCustomNs(c.var.ai.AI_CUSTOM_N).map(n => ({ key: `ai-custom-${n}`, n }))]) sub[x.key] = { hit: !!r.hit && r.rank != null && r.rank <= x.n, pnl: (!!r.hit && r.rank != null && r.rank <= x.n) ? ARENA_ODDS - x.n : -x.n }
       return { expect: r.expect, numbers: r.numbers, count: r.count, actual: r.actual, hit: !!r.hit, rank: r.rank, pnl: r.pnl, open_ms: r.open_ms, regime: r.regime, confidence: r.confidence, reasoning: r.reasoning, pick_plan: o?.pick_plan || '', boost: o?.boost || [], subsets: sub } })
     // 最近 20 期命中序列（新→旧）供迷你条形图
     const streak = (await db.prepare(`SELECT hit FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT 20`).bind(source).all<any>()).results.map(r => r.hit ? 1 : 0)
@@ -733,6 +736,22 @@ app.get('/api/arena/stake-curve', async (c) => {
     out.push({ strategy: k, periods: rows.length, curve, best_N: best?.N ?? null, best_roi: best?.roi ?? null })
   }
   return c.json({ ok: true, source, odds: ARENA_ODDS, strategies: out })
+})
+/** 开奖完整性：覆盖率报告 + 缺失期 */
+app.get('/api/draws/coverage', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  return c.json({ ok: true, source, ...(await coverageReport(c.env.DB, source, Math.min(30, Number(c.req.query('days') || 7)))) })
+})
+/** 链上补齐缺失期（每次最多 max 期） */
+app.post('/api/draws/gapfill', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const g = await scanGaps(c.env.DB, source, { days: Math.min(30, Number(c.req.query('days') || 7)) })
+  if (!g.missing.length) return c.json({ ok: true, source, checked: g.checked, filled: 0, failed: 0, missing_total: 0 })
+  const r = await fillGapsFromChain(c.env.DB, source, g.missing, Math.min(50, Number(c.req.query('max') || 20)))
+  if (r.filled) { invalidateArena(source) }
+  return c.json({ ok: true, source, checked: g.checked, ...r, missing_total: g.missing_total })
 })
 /** 拉取告警 */
 app.get('/api/sync/alerts', async (c) => {
@@ -902,12 +921,22 @@ app.get('/ai', (c) => c.html(aiPage()))
 app.get('/settings', (c) => c.html(settingsPage()))
 app.get('/top3', (c) => c.html(top3Page()))
 
+/** AI 自学习摘要：每期喷给模型的 your_tier_performance（各档位真实战绩 + 命中位次分布），前端与审计都能看到模型“学到了什么” */
+app.get('/api/ai/tier-digest', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const digest = await tierDigest(c.env.DB, source, '99999999999', parseCustomNs(c.var.ai.AI_CUSTOM_N))
+  return c.json({ ok: true, source, custom_n: parseCustomNs(c.var.ai.AI_CUSTOM_N), digest })
+})
 /** 回填 AI 精选（100/150/300 注）历史 */
 app.post('/api/ai/backfill-subsets', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
-  const done = await backfillAiSubsets(c.env.DB, source, Math.min(500, Number(c.req.query('n') || 300))); if (done) invalidateArena(source)
-  return c.json({ ok: true, source, backfilled: done })
+  const n = Math.min(500, Number(c.req.query('n') || 300))
+  const done = await backfillAiSubsets(c.env.DB, source, n)
+  const custom = await backfillCustomTiers(c.env.DB, source, parseCustomNs(c.var.ai.AI_CUSTOM_N), n)
+  if (done || custom.periods) invalidateArena(source)
+  return c.json({ ok: true, source, backfilled: done, custom })
 })
 /** 回放补齐 top3 历史（幂等；每次最多 N 期） */
 app.post('/api/top3/backfill', async (c) => {
@@ -942,8 +971,16 @@ app.put('/api/config', async (c) => {
   if (patch.AI_TIMEOUT_MS && !(Number(patch.AI_TIMEOUT_MS) >= 3000 && Number(patch.AI_TIMEOUT_MS) <= 90000)) return bad(c, 'AI_TIMEOUT_MS 需在 3000–90000 毫秒之间')
   if (patch.AI_PROVIDER && !['', 'deepseek', 'openai'].includes(patch.AI_PROVIDER)) return bad(c, 'AI_PROVIDER 只能是 deepseek / openai / 空')
   if (patch.DEEPSEEK_THINKING && !['', 'off', 'low', 'high', 'max'].includes(patch.DEEPSEEK_THINKING)) return bad(c, 'DEEPSEEK_THINKING 只能是 off / low / high / max')
+  if (patch.AI_CUSTOM_N) { const ns = parseCustomNs(patch.AI_CUSTOM_N); if (!ns.length) return bad(c, 'AI_CUSTOM_N 需为 10–900 的整数（逗号分隔，最多 4 个，不能与 100/150/300/500 重复）'); patch.AI_CUSTOM_N = ns.join(',') }
   await saveConfig(c.env.DB, patch)
-  return c.json({ ok: true, ...(await configView(c.env.DB, c.env)) })
+  // 自定义注数一旦定义：立即从 ai 主榜派生历史（N ≤ 500），让新档位不从零起步；下一期起由 AI 推理实时生成
+  let custom_backfill: any = null
+  if (patch.AI_CUSTOM_N) {
+    const ns = parseCustomNs(patch.AI_CUSTOM_N)
+    custom_backfill = {}
+    for (const s of Object.keys(SOURCES)) { const r = await backfillCustomTiers(c.env.DB, s, ns, 400); if (r.periods) { invalidateArena(s); custom_backfill[s] = r } }
+  }
+  return c.json({ ok: true, custom_backfill, ...(await configView(c.env.DB, c.env)) })
 })
 /** 校验：body 可带未保存的草稿（含明文 key）临时覆盖后测试；不带则测当前生效配置 */
 app.post('/api/config/validate', async (c) => {

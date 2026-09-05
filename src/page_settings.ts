@@ -125,6 +125,35 @@ input.f.mono { font-family: ui-monospace, monospace; letter-spacing:.3px; }
     <div class="mt-3 text-xs text-slate-400 bg-[#0b1220] rounded-lg p-3" id="window-calc"></div>
   </section>
 
+  <!-- 自定义注数 -->
+  <section class="card" id="custom-n-sec">
+    <h2 class="font-bold mb-3"><i class="fas fa-sliders mr-2 text-violet-400"></i>AI 精选 · 自定义注数档位</h2>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div>
+        <label class="f">AI_CUSTOM_N · 逗号分隔的注数 <span class="src" id="src-AI_CUSTOM_N"></span></label>
+        <input class="f mono" id="in-AI_CUSTOM_N" type="text" placeholder="例如 200,250">
+        <div class="text-[11px] text-slate-500 mt-1">范围 10–900，最多 4 个；100/150/300/500 已是固定档位无需填写。定义后从下一期开始，AI 每期推理完成即按该注数生成精选，并作为独立策略记录、结算、进入战绩榜。</div>
+      </div>
+      <div class="text-xs text-slate-400 bg-[#0b1220] rounded-lg p-3 leading-relaxed">
+        <div class="font-semibold text-slate-300 mb-1"><i class="fas fa-brain mr-1 text-violet-400"></i>推理积累机制</div>
+        每期 AI 的上下文会携带 <code>your_tier_performance</code>：各档位（含自定义档）历史命中率、盈亏、命中名次分布。模型据此判断自己的优势集中在头部还是长尾，动态调整下期的排序信心，形成“推理 → 记录 → 结算 → 反馈 → 再推理”的数据飞轮。
+      </div>
+    </div>
+  </section>
+
+  <!-- 数据完整性 -->
+  <section class="card" id="coverage-sec">
+    <h2 class="font-bold mb-3 flex items-center justify-between">
+      <span><i class="fas fa-database mr-2 text-cyan-400"></i>开奖数据完整性（近 7 天）</span>
+      <span class="flex gap-2">
+        <button class="btn bg-slate-800 border border-slate-700 hover:bg-slate-700 text-xs" id="btn-cov"><i class="fas fa-rotate mr-1"></i>重新扫描</button>
+        <button class="btn bg-cyan-600 hover:bg-cyan-500 text-xs" id="btn-gapfill"><i class="fas fa-link mr-1"></i>链上补齐缺失</button>
+      </span>
+    </h2>
+    <div id="cov-body" class="text-sm text-slate-400">加载中…</div>
+    <p class="text-[11px] text-slate-600 mt-2">后台心跳每 5 分钟自动扫描近 2 天并从 TRON 链按“分钟 +3s 首个区块”规则补齐；上游接口最多只返回 1000 期，链上补齐是找回历史缺失的唯一途径。补齐记录 <code>src='chain'</code>。</p>
+  </section>
+
   <div class="flex flex-wrap items-center gap-3 sticky bottom-4">
     <button class="btn bg-emerald-500 hover:bg-emerald-400 text-black" id="btn-save"><i class="fas fa-floppy-disk mr-1"></i>保存配置</button>
     <button class="btn bg-slate-800 border border-slate-700 hover:bg-slate-700" id="btn-save-test"><i class="fas fa-check-double mr-1"></i>保存并校验</button>

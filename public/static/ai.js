@@ -55,8 +55,8 @@
   function activeNums() { var n = S.pick ? S.pick.numbers : []; var k = subN(); return k ? n.slice(0, k) : n }
   function renderSubTabs() {
     var p = S.pick, el = $('sub-tabs'); if (!el) return
-    var subs = (p && p.subsets) || []
-    var tabs = [{ key: 'all', label: '全部 500 注', sub: '保本 52.6%' }].concat(subs.map(function (q) { return { key: q.key, label: '前 ' + q.n_pick + ' 注', sub: '保本 ' + pct(q.breakeven, 1) + (q.record ? ' · 实盘 ' + pct(q.record.rate, 1) : '') } }))
+    var subs = ((p && p.subsets) || []).slice().sort(function (a, b) { return a.n_pick - b.n_pick })
+    var tabs = [{ key: 'all', label: '全部 500 注', sub: '保本 52.6%' }].concat(subs.map(function (q) { return { key: q.key, label: '前 ' + q.n_pick + ' 注' + (q.custom ? ' <i class="fas fa-star text-violet-400 text-[9px]" title="自定义档位"></i>' : ''), sub: '保本 ' + pct(q.breakeven, 1) + (q.record ? ' · 实盘 ' + pct(q.record.rate, 1) : '') } }))
     el.innerHTML = tabs.map(function (t) { return '<button class="tab' + (S.sub === t.key ? ' on' : '') + '" data-k="' + t.key + '">' + t.label + '<small>' + t.sub + '</small></button>' }).join('')
     el.querySelectorAll('.tab').forEach(function (b) { b.addEventListener('click', function () { S.sub = b.getAttribute('data-k'); try { localStorage.setItem('ai:sub', S.sub) } catch (e) {} renderSubTabs(); renderList(); renderSubStats() }) })
   }
@@ -72,14 +72,14 @@
   }
   function renderSubStats() {
     var p = S.pick, el = $('sub-cards'), sec = $('sub-stats'); if (!el) return
-    var subs = (p && p.subsets) || []; if (!subs.length) { sec.classList.add('hidden'); return }
+    var subs = ((p && p.subsets) || []).slice().sort(function (a, b) { return a.n_pick - b.n_pick }); if (!subs.length) { sec.classList.add('hidden'); return }
     sec.classList.remove('hidden')
     var all = S.record ? { key: 'all', n_pick: 500, short: 'AI·500', color: '#f472b6', breakeven: 0.526, record: Object.assign({ z: null, roi: S.record.n ? S.record.pnl / (S.record.n * 500) : null }, S.record) } : null
     el.innerHTML = ([all].filter(Boolean).concat(subs)).map(function (q) {
       var r = q.record
       var streak = r && r.streak ? r.streak.slice().reverse().map(function (h) { return '<i class="' + (h ? 'h' : '') + '"></i>' }).join('') : ''
       var good = r && r.rate >= q.breakeven
-      return '<div class="sc' + (S.sub === q.key ? ' on' : '') + '"><div class="flex items-center justify-between"><b style="color:' + q.color + '">前 ' + q.n_pick + ' 注</b><span class="text-[10px] text-slate-500">保本 ' + pct(q.breakeven, 1) + '</span></div>' +
+      return '<div class="sc' + (S.sub === q.key ? ' on' : '') + '"><div class="flex items-center justify-between"><b style="color:' + q.color + '">前 ' + q.n_pick + ' 注' + (q.custom ? ' <span class="text-[9px] px-1 rounded bg-violet-500/20 text-violet-300 font-normal">自定义</span>' : '') + '</b><span class="text-[10px] text-slate-500">保本 ' + pct(q.breakeven, 1) + '</span></div>' +
         (r ? '<div class="mt-1 flex items-baseline gap-2"><span class="mono text-xl font-black ' + (good ? 'text-emerald-300' : 'text-slate-200') + '">' + pct(r.rate, 1) + '</span><span class="text-[11px] text-slate-500">' + r.hits + '/' + r.n + ' 期</span>' + (r.z != null ? '<span class="text-[11px] mono ' + (r.z > 0 ? 'text-emerald-400' : 'text-slate-500') + '">z ' + (r.z > 0 ? '+' : '') + r.z + '</span>' : '') + '</div>' +
           '<div class="text-[11px] mt-1">累计 <b class="mono ' + (r.pnl >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + fmtInt(r.pnl) + '</b> · ROI <b class="mono ' + (r.roi >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + (r.roi > 0 ? '+' : '') + pct(r.roi, 2) + '</b></div><div class="streak mt-2">' + streak + '</div>' : '<div class="text-[11px] text-slate-500 mt-1">尚无结算</div>') + '</div>'
     }).join('')
@@ -204,9 +204,13 @@
       '<div class="stat"><div class="text-xs text-slate-400">累计盈亏 <span class="text-slate-600">950× · 每注 1</span></div><div class="v ' + (r.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + fmtInt(r.pnl) + '</div></div>' +
       '<div class="stat"><div class="text-xs text-slate-400">近 20 期（右=最新）</div><div class="streak mt-2">' + streak + '</div></div>'
   }
+  // 档位 key → 显示标签：ai-150 → 150；ai-custom-200 → 200★（★ 标记自定义档）
+  function tierN(k) { var m = /(\d+)$/.exec(k); return m ? +m[1] : 0 }
+  function tierLabel(k) { return tierN(k) + (k.indexOf('custom') >= 0 ? '★' : '') }
+  function tierKeys(sub) { return Object.keys(sub || {}).sort(function (a, b) { return tierN(a) - tierN(b) }) }
   function subChips(h) {
-    var sub = h.subsets || {}; var keys = Object.keys(sub); if (!keys.length) return ''
-    return '<span class="block mt-1">' + keys.map(function (k) { var n = k.replace('ai-', ''); return '<span class="chipsub' + (sub[k].hit ? ' h' : '') + '">' + n + (sub[k].hit ? '✓' : '✗') + '</span>' }).join(' ') + '</span>'
+    var sub = h.subsets || {}; var keys = tierKeys(sub); if (!keys.length) return ''
+    return '<span class="block mt-1">' + keys.map(function (k) { return '<span class="chipsub' + (sub[k].hit ? ' h' : '') + (k.indexOf('custom') >= 0 ? ' c' : '') + '" title="' + k + '">' + tierLabel(k) + (sub[k].hit ? '✓' : '✗') + '</span>' }).join(' ') + '</span>'
   }
   function renderHist() {
     var rows = S.history || []
@@ -229,7 +233,9 @@
     var nums = String(h.numbers || '').trim().split(/\s+/)
     var body = d.querySelector('.hist-body')
     body.innerHTML = '<div class="text-xs text-slate-500 mb-2">北京时间 ' + hhmm(h.open_ms) + ' 开出 <b class="text-slate-200 mono">' + esc(h.actual) + '</b> · ' + h.count + ' 注' + (h.hit ? ' · 命中位次 #' + h.rank : '') +
-      ' <button class="ml-2 text-pink-300 hover:text-pink-200 h-copy" data-n="500"><i class="fas fa-copy mr-1"></i>复制 500</button> <button class="ml-1 text-pink-300 hover:text-pink-200 h-copy" data-n="100">前 100</button> <button class="ml-1 text-pink-300 hover:text-pink-200 h-copy" data-n="150">前 150</button> <button class="ml-1 text-pink-300 hover:text-pink-200 h-copy" data-n="300">前 300</button>' + (h.subsets ? ' <span class="text-slate-600 ml-2">档位：' + Object.keys(h.subsets).map(function (k) { return k.replace('ai-', '') + (h.subsets[k].hit ? '✓' : '✗') }).join(' ') + '</span>' : '') + '</div>' +
+      ' <button class="ml-2 text-pink-300 hover:text-pink-200 h-copy" data-n="500"><i class="fas fa-copy mr-1"></i>复制 500</button>' +
+      tierKeys(h.subsets).filter(function (k) { return tierN(k) <= nums.length }).map(function (k) { return ' <button class="ml-1 ' + (k.indexOf('custom') >= 0 ? 'text-violet-300 hover:text-violet-200' : 'text-pink-300 hover:text-pink-200') + ' h-copy" data-n="' + tierN(k) + '">前 ' + tierLabel(k) + '</button>' }).join('') +
+      (h.subsets ? ' <span class="text-slate-600 ml-2">档位：' + tierKeys(h.subsets).map(function (k) { return tierLabel(k) + (h.subsets[k].hit ? '✓' : '✗') }).join(' ') + '</span>' : '') + '</div>' +
       '<div class="grid500">' + gridHtml(nums, h.boost, h.actual) + '</div>' +
       (h.reasoning || h.pick_plan ? '<div class="reason mt-3">' + (h.reasoning ? '<div><b>推理</b>：' + esc(h.reasoning) + '</div>' : '') + (h.pick_plan ? '<div class="mt-1"><b>方案</b>：' + esc(h.pick_plan) + '</div>' : '') + '</div>' : '')
     body.querySelectorAll('.h-copy').forEach(function (b) { b.addEventListener('click', function (ev) { ev.preventDefault(); var k = +b.getAttribute('data-n'); copyText(joinNums(nums.slice(0, k), S.fmt), b) }) })

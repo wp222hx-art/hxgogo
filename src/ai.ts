@@ -6,6 +6,7 @@
 import { type Draw } from './analysis'
 import { STRATEGIES, ARENA_N, AI_SUBSETS, rollingZ, type PerfMap, type ExtraPlan } from './arena'
 import { normalizeRule, describeRule, simulateRule, listAiPlans, saveAiPlans, retirePlans, type PlanRule, MAX_ACTIVE_AI_PLANS } from './ai_plans'
+import { parseCustomNs } from './config'
 
 export interface AiEnv {
   // DeepSeek（优先）：只需 key，base 默认官方；模型默认 deepseek-v4-flash 非思考模式（延迟最低）
@@ -18,6 +19,7 @@ export interface AiEnv {
   AI_MODEL?: string; AI_EFFORT?: string
   AI_LEAD_MS?: string        // 报单窗口：AI 必须在「下期开奖时刻 − AI_LEAD_MS」之前锁定，默认 20000
   AI_TIMEOUT_MS?: string     // 单次调用上限，默认 25000（会被报单截止进一步裁剪）
+  AI_CUSTOM_N?: string       // 自定义精选注数（逗号分隔，如 "200,250"）：定义后每期同步生成 ai-custom-N 并独立结算
 }
 export interface AiProvider { name: 'deepseek' | 'openai'; key: string; base: string; model: string; thinking?: DsThinking }
 export type DsThinking = 'off' | 'low' | 'high' | 'max'
@@ -154,6 +156,7 @@ const SYSTEM = `你是「HashArena 竞技场」的 AI 预测官，负责对一�
 你清楚：哈希逐期独立，任何号码理论概率恒为 1/1000；你的任务不是宣称能预测，而是在同一 walk-forward 规则下，综合所有统计信号、各策略近期战绩以及你自己过往预测的复盘，给出你认为「倾向最高」的分布，让真实开奖来检验。
 要求：
 - 只输出 JSON，字段：regime(string, ≤40字), confidence(0-1), pos_weights(3×10 数组，每位 0-9 的相对权重 0-100，不要全部相同), strategy_blend(对象，key 为基础策略 key，值 0-100), boost(≤30 个三位号字符串), avoid(≤30 个三位号字符串), reasoning(中文 ≤200 字，说明依据与本期与上期思路的差异), pick_plan(中文 ≤150 字，面向投注者的选号方案：三位各自重点覆盖哪几个数字、主要参考哪些策略、加注/回避的逻辑，这 500 注就是按你的权重实际生成的), next_focus(≤60 字，下期复盘要验证的假设)。
+- your_tier_performance 是你自己各精选档位（前 100/150/300/500 注及用户自定义档）的真实战绩与命中位次分布：这是对你排序质量的直接反馈，请据此决定本期是更集中（头部有效）还是更分散（头部过度自信）。
 - strategy_blend 只对 blend_eligible=true（滚动 z>0）的策略生效，其余会被系统清零；请把融合权重集中在有正信号的策略上，没有合格策略时可以给空对象。
 - pos_weights 是你对 500 注构成的直接控制：权重高的数字会在该位获得更多注数。要有取舍（每位建议 3-5 个重点数字权重明显高于其余），但不要把任何数字压到 0。
 - 认真利用「你上几期的预测与结果」：如果连续失误，要调整思路（例如从追热切换为回补、降低对某策略的信任）；如果命中，说明哪部分假设成立。
@@ -215,7 +218,7 @@ export function explainPick(f: AiForecast | null, numbers: string[], others: { s
 }
 
 /** 本期 AI 推荐：优先用 AI 预测官的 500 注；若本期调用失败/超时，用组合最优兜底（明确标注），保证每期都形成一个选择 */
-export async function aiPick(db: D1Database, source: string, current: { expect: string; based_on: string; strategies: { strategy: string; numbers: string; count: number; coverage: number; weight: number }[] } | null) {
+export async function aiPick(db: D1Database, source: string, current: { expect: string; based_on: string; strategies: { strategy: string; numbers: string; count: number; coverage: number; weight: number }[] } | null, customN?: string | null) {
   if (!current) return null
   const fRow = await db.prepare('SELECT output, error, model, latency_ms, created_ms, prompt_tokens, completion_tokens FROM ai_forecasts WHERE source=? AND expect=?').bind(source, current.expect).first<any>()
   let forecast: AiForecast | null = null
@@ -231,11 +234,12 @@ export async function aiPick(db: D1Database, source: string, current: { expect: 
   const row = guarded && status !== 'thinking' ? metaRow! : (aiRow || (status === 'fallback' ? metaRow : null))
   const numbers = row ? row.numbers.split(' ') : []
   // AI 精选：前 N 注（与 numbers 同序，前缀）+ 各档累计战绩 + 近 20 期
-  const subsets = await Promise.all(AI_SUBSETS.map(async sub => {
+  const customDefs = parseCustomNs(customN).map(n => ({ key: `ai-custom-${n}`, n, name: `AI 自定义 ${n} 注`, short: `AI·${n}`, color: '#a78bfa', custom: true }))
+  const subsets = await Promise.all([...AI_SUBSETS.map(x => ({ ...x, custom: false })), ...customDefs].map(async sub => {
     const st = await db.prepare(`SELECT COUNT(*) n, SUM(hit) h, SUM(pnl) pnl FROM arena_rounds WHERE source=? AND strategy=? AND scored_ms IS NOT NULL`).bind(source, sub.key).first<any>()
     const streak = (await db.prepare(`SELECT hit FROM arena_rounds WHERE source=? AND strategy=? AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT 20`).bind(source, sub.key).all<any>()).results.map(r => r.hit ? 1 : 0)
     const n = st?.n || 0, h = st?.h || 0, p = sub.n / SPACE
-    return { key: sub.key, n_pick: sub.n, name: sub.name, short: sub.short, color: sub.color, breakeven: r3(sub.n / 950), numbers: row && row.strategy === 'ai' ? numbers.slice(0, sub.n) : [], record: n ? { n, hits: h, rate: r3(h / n), pnl: st.pnl || 0, z: r3((h - n * p) / Math.sqrt(n * p * (1 - p))), roi: r3((st.pnl || 0) / (n * sub.n)), streak } : null }
+    return { key: sub.key, n_pick: sub.n, name: sub.name, short: sub.short, color: sub.color, custom: (sub as any).custom, breakeven: r3(sub.n / 950), numbers: row ? numbers.slice(0, sub.n) : [], from: row ? row.strategy : null, record: n ? { n, hits: h, rate: r3(h / n), pnl: st.pnl || 0, z: r3((h - n * p) / Math.sqrt(n * p * (1 - p))), roi: r3((st.pnl || 0) / (n * sub.n)), streak } : null }
   }))
   return {
     expect: current.expect, based_on: current.based_on, status, subsets,
@@ -286,6 +290,20 @@ export async function aiHistory(db: D1Database, source: string, k = 6, beforeExp
   return rows.map(r => { let o: any = null; try { o = JSON.parse(r.output) } catch {} return { ...r, next_focus: o?.next_focus || '', pick_plan: o?.pick_plan || '', boost: o?.boost || [], avoid: o?.avoid || [], pos_weights: o?.pos_weights || null, strategy_blend: o?.strategy_blend || null, output: undefined } })
 }
 
+/** 档位学习摘要：AI 各精选档位（100/150/300/500 + 自定义）近 K 期与全历史的命中率 vs 保本、z、ROI，以及命中位次分布——反馈给模型，让它知道自己的信号集中在头部还是尾部 */
+export async function tierDigest(db: D1Database, source: string, beforeExpect: string, customNs: number[]) {
+  const rows = (await db.prepare(`SELECT hit, rank FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL AND expect<? ORDER BY expect DESC LIMIT 400`).bind(source, beforeExpect).all<any>()).results
+  if (!rows.length) return null
+  const Ns = [...new Set([100, 150, 300, 500, ...customNs])].sort((a, b) => a - b)
+  const stat = (rs: any[], N: number) => { const n = rs.length, h = rs.filter(r => r.hit && r.rank != null && r.rank <= N).length, p = N / SPACE; return { N, n, rate: r3(h / n), breakeven: r3(N / 950), edge: r3(h / n - N / 950), z: r3((h - n * p) / Math.sqrt(n * p * (1 - p) || 1)), roi: r3((h * (950 - N) - (n - h) * N) / (n * N)) } }
+  const recent = rows.slice(0, 60)
+  // 命中位次分布：命中时落在前 100 / 101–200 / 201–300 / 301–500 的比例
+  const hits = rows.filter(r => r.hit && r.rank != null); const bucket = [0, 0, 0, 0]
+  for (const r of hits) bucket[r.rank <= 100 ? 0 : r.rank <= 200 ? 1 : r.rank <= 300 ? 2 : 3]++
+  return { periods: rows.length, tiers_all: Ns.map(N => stat(rows, N)), tiers_recent60: Ns.map(N => stat(recent, N)), hit_rank_distribution: { '1-100': bucket[0], '101-200': bucket[1], '201-300': bucket[2], '301-500': bucket[3], expected_if_uniform: hits.length ? [0.2, 0.2, 0.2, 0.4].map(x => Math.round(x * hits.length)) : null },
+    hint: '若头部档位 edge 持续高于尾部，说明你的排序有效；请让 pos_weights 更有取舍、把最有把握的组合排到前面。若头部 edge 为负而 500 注为正，说明排序前段过度自信，应分散。' }
+}
+
 /** 为目标期生成 AI 预测（含调用、落库）；返回 forecast（失败时 null，error 落库） */
 export async function forecastFor(db: D1Database, env: AiEnv, source: string, next: string, draws: Draw[], perf: PerfMap, weights: Record<string, any>, opts: { lockByMs?: number; trigger?: string } = {}) {
   const startedMs = Date.now()
@@ -297,6 +315,7 @@ export async function forecastFor(db: D1Database, env: AiEnv, source: string, ne
     market: digest(draws),
     strategy_leaderboard_rolling40: perfDigest(perf, weights),
     your_recent_forecasts_newest_first: selfHist.map(h => ({ expect: h.expect, regime: h.regime, confidence: h.confidence, next_focus: h.next_focus, boost: h.boost.slice(0, 10), result: h.actual ? { actual: h.actual, hit: !!h.hit, rank: h.rank, pnl: h.pnl } : 'pending', reasoning: (h.reasoning || '').slice(0, 200) })),
+    your_tier_performance: await tierDigest(db, source, next, parseCustomNs(env.AI_CUSTOM_N)),
   }
   // 报单窗口：必须在 lockByMs（下期开奖 − AI_LEAD_MS）前锁定；剩余不足 3s 直接放弃 → 本期走兜底，保证截止前有单可报
   const budget = opts.lockByMs ? opts.lockByMs - Date.now() : aiTimeoutMs(env)
@@ -407,4 +426,35 @@ export async function backfillAiSubsets(db: D1Database, source: string, max = 30
   }
   for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40))
   return rows.length
+}
+
+/**
+ * 自定义注数档位的历史回填：从 ai 主榜（500 注排序）派生 ai-custom-N（N ≤ 500 才能派生；N > 500 只能从定义后的下一期开始积累）。
+ * 让用户一定义就能看到该档位在过去几百期的表现，而不是从零起步。
+ */
+export async function backfillCustomTiers(db: D1Database, source: string, ns: number[], max = 400) {
+  const ODDS = 950
+  const todo = ns.filter(n => n >= 10 && n <= 500 && !AI_SUBSETS.some(s => s.n === n) && n !== 500)
+  if (!todo.length) return { periods: 0, tiers: [] as string[] }
+  let periods = 0
+  for (const n of todo) {
+    const key = `ai-custom-${n}`
+    const rows = (await db.prepare(`SELECT a.expect, a.based_on, a.mode, a.numbers, a.actual, a.rank, a.scored_ms, a.created_ms FROM arena_rounds a
+      WHERE a.source=? AND a.strategy='ai' AND NOT EXISTS (SELECT 1 FROM arena_rounds b WHERE b.source=a.source AND b.expect=a.expect AND b.strategy=?) ORDER BY a.expect DESC LIMIT ?`).bind(source, key, max).all<any>()).results
+    const stmts: D1PreparedStatement[] = []
+    for (const r of rows) {
+      const sel = String(r.numbers).split(' ').slice(0, n)
+      if (r.scored_ms) {
+        const hit = r.rank != null && r.rank <= n
+        stmts.push(db.prepare(`INSERT OR IGNORE INTO arena_rounds (source, expect, strategy, mode, based_on, numbers, count, coverage, weight, created_ms, actual, hit, rank, pnl, scored_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .bind(source, r.expect, key, r.mode, r.based_on, sel.join(' '), sel.length, sel.length / SPACE, 1, r.created_ms, r.actual, hit ? 1 : 0, hit ? r.rank : null, hit ? ODDS - sel.length : -sel.length, r.scored_ms))
+      } else {
+        stmts.push(db.prepare(`INSERT OR IGNORE INTO arena_rounds (source, expect, strategy, mode, based_on, numbers, count, coverage, weight, created_ms) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+          .bind(source, r.expect, key, r.mode, r.based_on, sel.join(' '), sel.length, sel.length / SPACE, 1, r.created_ms))
+      }
+    }
+    for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40))
+    periods = Math.max(periods, rows.length)
+  }
+  return { periods, tiers: todo.map(n => `ai-custom-${n}`) }
 }
