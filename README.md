@@ -12,6 +12,7 @@
 - **AI 推荐（每期 500 注 · 一键复制）⭐**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/ai
 - **配置中心（填 key · 校验 · 报单窗口）**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/settings
 - **战绩榜优质策略推荐选号（滚动前三 · 融合 500 注）⭐**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/top3
+- **GitHub**: https://github.com/wp222hx-art/hxgogo
 - **生产环境**: 待部署（Cloudflare Pages）
 
 ## 已完成功能
