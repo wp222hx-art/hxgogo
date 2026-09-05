@@ -10,6 +10,7 @@
 - **量化分析中心**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/analysis
 - **策略竞技场（自动战绩榜）**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/arena
 - **AI 推荐（每期 500 注 · 一键复制）⭐**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/ai
+- **配置中心（填 key · 校验 · 报单窗口）**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/settings
 - **生产环境**: 待部署（Cloudflare Pages）
 
 ## 已完成功能
@@ -115,6 +116,13 @@
 - **逐期记录 `#hist-sec`**：最近 12/30/60 期，每行 = 期号 · 实际开出 · 盘面判断 · 命中#名次/未中 · 盈亏；展开后显示该期 500 注（绿色 = 命中号）+ 推理与方案 + 复制该期 500 注
 - `/arena` 顶部改为一张跳转卡 `#ai-pick-link`，首页 / 量化 / 竞技场导航均新增「AI 推荐」入口
 
+### 配置中心 `/settings`（AI 供应商 key 填写 + 真实校验，表 `app_config`，模块 `src/config.ts`）
+- **页面填写、即时生效**：DeepSeek / OpenAI 兼容两组（key、Base URL、模型）、供应商选择（自动 / 强制 deepseek / 强制 openai）、`AI_LEAD_MS` 报单窗口、`AI_TIMEOUT_MS`、`AI_REPORT_EVERY`。保存到 D1 `app_config`，**优先级高于环境变量**，15s 内全站生效（`/api/*` 中间件每请求解析一次 `effectiveEnv` → `c.var.ai`，后台 `aiKick` 同样使用）
+- **密钥安全**：只存服务端；`GET /api/config` 只返回打码值（`sk-a…9xYz`）与来源标签（页面配置 / 环境变量 / 未设置）；密钥输入框留空 = 不修改
+- **真实校验 `POST /api/config/validate`**（可带未保存草稿）：① `GET /models` 验 key 与 Base（鉴权失败立即返回，含供应商原始错误）② 真实调用 1–3 轮要求返回 3×10 权重 JSON，测**推理耗时**并解析结构 ③ DeepSeek 额外查 `/user/balance` 余额；结果附「是否赶得上 1 分钟厅报单窗口」的判断与错误对应的修复提示（key 无效 / 余额不足 / 模型名错 / Base 不可达 / 限流）
+- **时间预算计算器**：按 `AI_LEAD_MS` 实时显示「AI 最晚须在 Ns 内锁定 → 你获得 Ns 报单时间」；页头实时显示本期 AI 状态（推理中 / 已锁定 · 模型 · 耗时 / 兜底）
+- 一键「清除页面配置」回退到环境变量
+
 ### 前端加载体系优化（缓存 + 后台推理 + 进度反馈）
 **问题**：此前 `/api/arena/board` 与 `/api/arena/pick` 在请求路径内**同步等待大模型推理（6–15s）**，且 board JSON 约 290KB，页面首屏 2–15s 不等。
 **方案**（`src/index.tsx`）：
@@ -214,6 +222,9 @@
 | GET | `/api/arena/plans?source=` | **AI 建议回测**：active[]（规则 DSL + 人话描述 + 样本内/样本外统计）/ retired[]（含 retire_reason）/ builtin（内置 6 套 key） |
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
+| GET | `/api/config` | 配置快照：`items{KEY:{value(密钥打码), source db\|env\|none, set, updated_ms}}` + `effective{provider, model, base}` |
+| PUT | `/api/config` | body `{KEY: value \| null}`（白名单键；null/空 = 删除页面配置；数值范围校验） |
+| POST | `/api/config/validate` | body 可带草稿 `{AI_PROVIDER, DEEPSEEK_API_KEY, …, rounds}`；返回 `result{ok, provider, model, base, stage auth\|chat, error, models[], model_listed, chat_latency_ms[], chat_avg_ms, usage, sample, balance, warn}` |
 | GET | `/api/arena/pick?source=&history=12\|30\|60` | **本期 AI 推荐（/ai 页数据源，缓存 20s）**：顶层 `provider / model / lead_ms / interval_ms`；`pick{expect, based_on, status ready/thinking/fallback, numbers[500], coverage, forecast{regime, confidence, reasoning, pick_plan, pos_weights, strategy_blend, boost, avoid, next_focus}, breakdown{pos_count, pos_focus, shape, wan, sum_big, blend, boost_in, avoid_out, consensus[]}, model, latency_ms, tokens, created_ms}` + `record{n, hits, rate, pnl, streak[20]}` + `history[]{expect, numbers, count, actual, hit, rank, pnl, open_ms, regime, confidence, reasoning, pick_plan, boost}` + `cached / cache_age_ms / compute_ms`；响应头 `X-Cache` |
 
 > `/api/arena/board` 的 `plans[]` 现包含 `ai:true` 行（`plan_id / report_expect / rationale / forward{bets,hits,rate,z,pnl,roi,max_dd} / since_index`），`ai` 字段新增 `report_every` / `plans_retired_now`（本期 pick 已移至 `/api/arena/pick`，board 不再内嵌）；board 也带 `cached / cache_age_ms / compute_ms / timing`。

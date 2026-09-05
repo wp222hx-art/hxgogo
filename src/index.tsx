@@ -17,10 +17,14 @@ import { arenaPage } from './page_arena'
 import { aiPage } from './page_ai'
 import { aiEnabled, aiModel, aiEffort, aiProviderName, aiLeadMs, forecastFor, aiScores, aiHistory, generateReport, latestReport, aiExtraPlans, aiPlansMaintain, aiPick, type AiEnv } from './ai'
 import { listAiPlans } from './ai_plans'
+import { effectiveEnv, saveConfig, configView, validateProvider, CONFIG_KEYS } from './config'
+import { settingsPage } from './page_settings'
 
 type Bindings = { DB: D1Database } & AiEnv
-const app = new Hono<{ Bindings: Bindings }>()
+const app = new Hono<{ Bindings: Bindings; Variables: { ai: AiEnv } }>()
 app.use('/api/*', cors())
+// AI 生效配置 = D1 app_config（/settings 页面填写）> 环境变量；每个请求解析一次，后续所有 AI 调用都用 c.var.ai
+app.use('/api/*', async (c, next) => { c.set('ai', await effectiveEnv(c.env.DB, c.env)); await next() })
 
 // ------------------------------------------------------------------ helpers
 const now = () => Date.now()
@@ -356,7 +360,7 @@ app.post('/api/sync', async (c) => {
 app.get('/api/sync/status', async (c) => {
   const source = c.req.query('source')
   const targets = source && isSource(source) ? [source] : Object.keys(SOURCES).filter(s => s.startsWith('qkltj:'))
-  if (c.req.query('tick') === '1') for (const s of targets) { await syncSource(c.env.DB, s); await autoTrack(c.env.DB, s); await arenaTick(c.env.DB, s); if (await aiNeeded(c.env.DB, s)) bg(c, aiKick(c.env.DB, c.env, s)) } // 顺带触发到点同步 + 战绩快照 + 竞技场生成/结算
+  if (c.req.query('tick') === '1') for (const s of targets) { await syncSource(c.env.DB, s); await autoTrack(c.env.DB, s); await arenaTick(c.env.DB, s); if (await aiNeeded(c.env.DB, s)) bg(c, aiKick(c.env.DB, c.var.ai, s)) } // 顺带触发到点同步 + 战绩快照 + 竞技场生成/结算
   const status: any = {}
   for (const s of targets) status[s] = await syncStatus(c.env.DB, s)
   return c.json({ ok: true, status })
@@ -592,17 +596,17 @@ app.get('/api/arena/board', async (c) => {
   await arenaTick(c.env.DB, source); tm.tick = now() - tt; tt = now()      // 毫秒级：保证当前期基础策略已生成、已开奖期已结算
   const gen = (await c.env.DB.prepare(`SELECT COUNT(*) n FROM arena_rounds WHERE source=? AND created_ms>?`).bind(source, now() - 3000).first<any>())?.n || 0
   if (gen) invalidateArena(source)
-  if (await aiNeeded(c.env.DB, source)) bg(c, aiKick(c.env.DB, c.env, source))   // AI 推理放后台，不阻塞本请求
+  if (await aiNeeded(c.env.DB, source)) bg(c, aiKick(c.env.DB, c.var.ai, source))   // AI 推理放后台，不阻塞本请求
   tm.check = now() - tt
   const t0 = now()
   const key = `board|${source}|${mode}|${limit}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
   const { v: r, cached, age } = await cachedArena(key, 30_000, async () => {
     const r = await arenaBoard(c.env.DB, source, { mode, limit, extraPlans: await aiExtraPlans(c.env.DB, source) })
     const retired = await aiPlansMaintain(c.env.DB, source, r)
-    const ai = { enabled: aiEnabled(c.env), model: aiEnabled(c.env) ? aiModel(c.env) : null, effort: aiEffort(c.env), report_every: reportEvery(c.env), history: await aiHistory(c.env.DB, source, 8), plans_retired_now: retired }
+    const ai = { enabled: aiEnabled(c.var.ai), model: aiEnabled(c.var.ai) ? aiModel(c.var.ai) : null, effort: aiEffort(c.var.ai), report_every: reportEvery(c.var.ai), history: await aiHistory(c.env.DB, source, 8), plans_retired_now: retired }
     return { ...r, ai }
   })
-  if (aiEnabled(c.env) && reportEvery(c.env) > 0) bg(c, autoReport(c.env.DB, c.env, source, r))
+  if (aiEnabled(c.var.ai) && reportEvery(c.var.ai) > 0) bg(c, autoReport(c.env.DB, c.var.ai, source, r))
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
   return c.json({ ok: true, source, mode, ...r, cached, cache_age_ms: age, compute_ms: now() - t0, timing: { ...tm, board: now() - t0 } })
 })
@@ -611,12 +615,12 @@ app.get('/api/arena/board', async (c) => {
 app.get('/api/arena/pick', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
-  if (!aiEnabled(c.env)) return c.json({ ok: false, error: 'AI 未配置（需 DEEPSEEK_API_KEY 或 OPENAI_API_KEY+OPENAI_BASE_URL）' }, 400)
+  if (!aiEnabled(c.var.ai)) return c.json({ ok: false, error: 'AI 未配置（需 DEEPSEEK_API_KEY 或 OPENAI_API_KEY+OPENAI_BASE_URL）' }, 400)
   const hist = Math.min(60, Number(c.req.query('history') || 12))
   if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)
   await arenaTick(c.env.DB, source)
   const needAi = await aiNeeded(c.env.DB, source)
-  if (needAi) bg(c, aiKick(c.env.DB, c.env, source))
+  if (needAi) bg(c, aiKick(c.env.DB, c.var.ai, source))
   const t0 = now()
   const key = `pick|${source}|${hist}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
   const { v, cached, age } = await cachedArena(key, 20_000, async () => {
@@ -635,7 +639,7 @@ app.get('/api/arena/pick', async (c) => {
     return { pick, record: st && st.n ? { n: st.n, hits: st.h || 0, rate: Math.round((st.h || 0) / st.n * 1000) / 1000, pnl: st.pnl || 0, streak } : null, history }
   })
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
-  return c.json({ ok: true, source, provider: aiProviderName(c.env), model: aiModel(c.env), effort: aiEffort(c.env), lead_ms: aiLeadMs(c.env), interval_ms: SOURCES[source].intervalMs, ...v, cached, cache_age_ms: age, compute_ms: now() - t0 })
+  return c.json({ ok: true, source, provider: aiProviderName(c.var.ai), model: aiModel(c.var.ai), effort: aiEffort(c.var.ai), lead_ms: aiLeadMs(c.var.ai), interval_ms: SOURCES[source].intervalMs, ...v, cached, cache_age_ms: age, compute_ms: now() - t0 })
 })
 /** AI 建议回测方案：活跃 + 已退役（含规则文本、样本内/样本外战绩） */
 app.get('/api/arena/plans', async (c) => {
@@ -655,22 +659,22 @@ app.get('/api/arena/ai', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
   const k = Math.max(1, Math.min(200, Number(c.req.query('limit') || 30)))
-  return c.json({ ok: true, source, enabled: aiEnabled(c.env), model: aiEnabled(c.env) ? aiModel(c.env) : null, history: await aiHistory(c.env.DB, source, k) })
+  return c.json({ ok: true, source, enabled: aiEnabled(c.var.ai), model: aiEnabled(c.var.ai) ? aiModel(c.var.ai) : null, history: await aiHistory(c.env.DB, source, k) })
 })
 /** AI 分析官阶段报告：GET 取最新；POST 基于当前战绩生成（同一结算期只生成一次） */
 app.get('/api/arena/report', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
   const r = await latestReport(c.env.DB, source)
-  return c.json({ ok: true, source, enabled: aiEnabled(c.env), report: r || null })
+  return c.json({ ok: true, source, enabled: aiEnabled(c.var.ai), report: r || null })
 })
 app.post('/api/arena/report', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
-  if (!aiEnabled(c.env)) return bad(c, 'AI 未配置（需 DEEPSEEK_API_KEY 或 OPENAI_API_KEY+OPENAI_BASE_URL）', 503)
+  if (!aiEnabled(c.var.ai)) return bad(c, 'AI 未配置（需 DEEPSEEK_API_KEY 或 OPENAI_API_KEY+OPENAI_BASE_URL）', 503)
   try {
     const board = await arenaBoard(c.env.DB, source, { mode: 'all', limit: 300, extraPlans: await aiExtraPlans(c.env.DB, source) })
-    const r = await generateReport(c.env.DB, c.env, source, board)
+    const r = await generateReport(c.env.DB, c.var.ai, source, board)
     return c.json({ ok: true, source, ...r })
   } catch (e: any) { return bad(c, 'AI 报告生成失败：' + (e.message || e), 502) }
 })
@@ -766,5 +770,30 @@ app.get('/', (c) => c.html(page()))
 app.get('/analysis', (c) => c.html(analysisPage()))
 app.get('/arena', (c) => c.html(arenaPage()))
 app.get('/ai', (c) => c.html(aiPage()))
+app.get('/settings', (c) => c.html(settingsPage()))
+
+// ------------------------------------------------------------------ 配置中心：AI 供应商 key / 模型 / 报单窗口（存 D1，覆盖环境变量）
+app.get('/api/config', async (c) => c.json({ ok: true, keys: CONFIG_KEYS, ...(await configView(c.env.DB, c.env)) }))
+app.put('/api/config', async (c) => {
+  const body = await c.req.json().catch(() => ({})) as Record<string, string | null>
+  const patch: Record<string, string | null> = {}
+  for (const k of CONFIG_KEYS) if (k in body) patch[k] = body[k] == null ? null : String(body[k])
+  // 数值项做基本校验
+  if (patch.AI_LEAD_MS && !(Number(patch.AI_LEAD_MS) >= 5000 && Number(patch.AI_LEAD_MS) <= 120000)) return bad(c, 'AI_LEAD_MS 需在 5000–120000 毫秒之间')
+  if (patch.AI_TIMEOUT_MS && !(Number(patch.AI_TIMEOUT_MS) >= 3000 && Number(patch.AI_TIMEOUT_MS) <= 90000)) return bad(c, 'AI_TIMEOUT_MS 需在 3000–90000 毫秒之间')
+  if (patch.AI_PROVIDER && !['', 'deepseek', 'openai'].includes(patch.AI_PROVIDER)) return bad(c, 'AI_PROVIDER 只能是 deepseek / openai / 空')
+  await saveConfig(c.env.DB, patch)
+  return c.json({ ok: true, ...(await configView(c.env.DB, c.env)) })
+})
+/** 校验：body 可带未保存的草稿（含明文 key）临时覆盖后测试；不带则测当前生效配置 */
+app.post('/api/config/validate', async (c) => {
+  const body = await c.req.json().catch(() => ({})) as Record<string, string>
+  const base = await effectiveEnv(c.env.DB, c.env)
+  const draft: any = { ...base }
+  for (const k of CONFIG_KEYS) if (body[k] != null && body[k] !== '') draft[k] = String(body[k]).trim()
+  // 若草稿明确选择了供应商但没填 key，则用已保存的 key
+  const r = await validateProvider(draft, { rounds: Math.min(3, Number(body.rounds || 1)) })
+  return c.json({ ok: true, result: r })
+})
 
 export default app
