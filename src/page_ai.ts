@@ -95,6 +95,9 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
     <details class="mt-3" id="cur-why"><summary class="text-xs text-pink-300 cursor-pointer select-none"><i class="fas fa-lightbulb mr-1"></i>为什么是这 500 注（AI 推理）</summary><div class="reason mt-2" id="cur-reason"></div></details>
   </section>
 
+  <!-- 报单同步状态 -->
+  <section id="sync-line" class="hidden text-xs text-slate-400 flex flex-wrap items-center gap-x-4 gap-y-1 px-1"></section>
+
   <!-- 战绩概览 -->
   <section id="stats" class="grid grid-cols-2 md:grid-cols-4 gap-3 hidden"></section>
 

@@ -123,6 +123,18 @@
 - **时间预算计算器**：按 `AI_LEAD_MS` 实时显示「AI 最晚须在 Ns 内锁定 → 你获得 Ns 报单时间」；页头实时显示本期 AI 状态（推理中 / 已锁定 · 模型 · 耗时 / 兜底）
 - 一键「清除页面配置」回退到环境变量
 
+### 报单同步保障（AI 锁定与真实开局对齐）· 服务端心跳 + 时序审计
+**问题（审计发现）**：此前 AI 推理只由「页面请求」触发——没人开页面就没人推理；页面在上期开奖后 30–45s 才轮询到新期，AI 再跑 5–25s，留给报单的余量只剩 0–20s，甚至直接 `skipped: lock window -5s`；思考模式（think-low）在完整上下文下 >25s 全部超时。
+**方案**：
+1. **服务端心跳 `heartbeat()`**（`src/index.tsx`）：任何 `/api/*` 请求到达时若心跳未在跑，就用 `waitUntil` 起一条 20 分钟的循环（每 2s 一跳；每跳重新解析 `/settings` 配置），跳内 `syncSource`（受 `dueInfo` 节流，不到点不打网络）→ `arenaTick` → `aiNeeded ? aiKick('heartbeat')`。**新开奖入库后 2–5s 内 AI 即开始推理**，不再依赖有人开着页面
+2. **思考模式自动降级**：`THINK_MIN_BUDGET_MS=90s`，预算不足时本期自动切非思考并在 `model` 标注 `:degraded`（1 分钟厅 think 档等价于 off；三分厅以上才真正开思考）
+3. **超时不再被吞**：`llmChat` 用 `res.text()` 读体，读体阶段 abort 正确记为 `timeout`；思考耗尽 tokens 无 `content` 记 `thinking consumed all tokens`
+4. **时序落库**：`ai_forecasts` 新增 `lock_by_ms / started_ms / trigger`（page | board | pick | heartbeat）
+5. **审计接口 `GET /api/ai/sync-audit?source=&n=`**：逐期给出 `started_after_prev_s`（上期开奖后几秒开始）、`locked_after_prev_s`、`margin_to_lock_s`（距截止余量，>0 合格）、`margin_to_open_s`（距实际开奖余量）+ 汇总 `locked_in_time_rate / margin_open_min_s / heartbeat_alive`
+6. **`/ai` 页同步状态行**：服务端心跳运行中 · 近 20 期 N/20 在报单截止前锁定 · 上期开奖后平均 Xs 锁定（最慢 Ys）
+
+**实测（修复后连续 5 期无人值守，v4-flash 非思考）**：上期开奖后 **2–5s 开始**、**7.6–10.7s 锁定**、距 20s 截止余量 **+29~32s**、距实际开奖 **48–52s**；5/5 截止前锁定。
+
 ### 前端加载体系优化（缓存 + 后台推理 + 进度反馈）
 **问题**：此前 `/api/arena/board` 与 `/api/arena/pick` 在请求路径内**同步等待大模型推理（6–15s）**，且 board JSON 约 290KB，页面首屏 2–15s 不等。
 **方案**（`src/index.tsx`）：
@@ -232,10 +244,11 @@
 | GET | `/api/arena/plans?source=` | **AI 建议回测**：active[]（规则 DSL + 人话描述 + 样本内/样本外统计）/ retired[]（含 retire_reason）/ builtin（内置 6 套 key） |
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
+| GET | `/api/ai/sync-audit?source=&n=30` | 报单同步审计：`summary{n, locked_in_time, locked_in_time_rate, ai_success, fallback, margin_open_min_s, margin_open_avg_s, lead_ms, heartbeat_alive}` + `items[]{expect, model, trigger, latency_ms, started_after_prev_s, locked_after_prev_s, margin_to_lock_s, margin_to_open_s, ok, error, hit}` |
 | GET | `/api/config` | 配置快照：`items{KEY:{value(密钥打码), source db\|env\|none, set, updated_ms}}` + `effective{provider, model, base}` |
 | PUT | `/api/config` | body `{KEY: value \| null}`（白名单键；null/空 = 删除页面配置；数值范围校验） |
 | POST | `/api/config/validate` | body 可带草稿 `{AI_PROVIDER, DEEPSEEK_API_KEY, …, rounds}`；返回 `result{ok, provider, model, base, stage auth\|chat, error, models[], model_listed, chat_latency_ms[], chat_avg_ms, usage, sample, balance, warn}` |
-| GET | `/api/arena/pick?source=&history=12\|30\|60` | **本期 AI 推荐（/ai 页数据源，缓存 20s）**：顶层 `provider / model / lead_ms / interval_ms`；`pick{expect, based_on, status ready/thinking/fallback, numbers[500], coverage, forecast{regime, confidence, reasoning, pick_plan, pos_weights, strategy_blend, boost, avoid, next_focus}, breakdown{pos_count, pos_focus, shape, wan, sum_big, blend, boost_in, avoid_out, consensus[]}, model, latency_ms, tokens, created_ms}` + `record{n, hits, rate, pnl, streak[20]}` + `history[]{expect, numbers, count, actual, hit, rank, pnl, open_ms, regime, confidence, reasoning, pick_plan, boost}` + `cached / cache_age_ms / compute_ms`；响应头 `X-Cache` |
+| GET | `/api/arena/pick?source=&history=12\|30\|60` | **本期 AI 推荐（/ai 页数据源，缓存 20s）**：顶层 `provider / model / lead_ms / interval_ms`；`pick{expect, based_on, status ready/thinking/fallback, numbers[500], coverage, forecast{regime, confidence, reasoning, pick_plan, pos_weights, strategy_blend, boost, avoid, next_focus}, breakdown{pos_count, pos_focus, shape, wan, sum_big, blend, boost_in, avoid_out, consensus[]}, model, latency_ms, tokens, created_ms}` + `record{n, hits, rate, pnl, streak[20]}` + `sync{n, in_time, avg_lock_s, max_lock_s, heartbeat_alive}` + `history[]{expect, numbers, count, actual, hit, rank, pnl, open_ms, regime, confidence, reasoning, pick_plan, boost}` + `cached / cache_age_ms / compute_ms`；响应头 `X-Cache` |
 
 > `/api/arena/board` 的 `plans[]` 现包含 `ai:true` 行（`plan_id / report_expect / rationale / forward{bets,hits,rate,z,pnl,roi,max_dd} / since_index`），`ai` 字段新增 `report_every` / `plans_retired_now`（本期 pick 已移至 `/api/arena/pick`，board 不再内嵌）；board 也带 `cached / cache_age_ms / compute_ms / timing`。
 | GET | `/api/analysis/recommend?source=&steps=` | **本期推荐**：5 玩法 19 组 81 候选概率 + 幸运数字综合榜 + 预见性策略 |

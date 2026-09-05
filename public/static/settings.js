@@ -54,7 +54,7 @@
   function pickThink(v, silent) {
     S.think = v
     document.querySelectorAll('#ds-think .tk').forEach(function (el) { el.classList.toggle('sel', el.getAttribute('data-v') === (v || 'off')) })
-    var hints = { off: '非思考模式：直接输出 JSON，2–5s，temperature 生效。1 分钟厅首选。', low: '轻推理：先出简短思维链再给结论，约 5–12s；返回 reasoning_content。三分厅可用，1 分钟厅需把 AI_LEAD_MS 压到 ≤15000。', high: '标准推理：15–40s，DeepSeek 默认档。只适合三分 / 五分厅。', max: '最深推理：40s 以上，适合十分厅或离线分析报告；1 分钟厅一定超时走兜底。' }
+    var hints = { off: '非思考模式：直接输出 JSON，2–5s，temperature 生效。1 分钟厅首选。', low: '轻推理：完整预测官上下文下实测 >25s（会撞 1 分钟厅截止）。系统会在预算 <90s 时自动降级为非思考并标注 degraded；仅三分/五分/十分厅真正生效。', high: '标准推理：30–60s。仅五分 / 十分厅；1 分钟厅自动降级。', max: '最深推理：60s 以上，只适合十分厅或离线分析报告；其余厅自动降级。' }
     $('ds-think-hint').innerHTML = '<i class="fas fa-lightbulb mr-1 text-amber-400"></i>' + hints[v || 'off'] + (v && v !== 'off' ? ' <span class="text-slate-600">思考模式下 temperature / top_p 参数被官方忽略。</span>' : '')
     if (!silent) { markDirty(); updatePreview() }
   }

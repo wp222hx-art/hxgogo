@@ -24,7 +24,7 @@ type Bindings = { DB: D1Database } & AiEnv
 const app = new Hono<{ Bindings: Bindings; Variables: { ai: AiEnv } }>()
 app.use('/api/*', cors())
 // AI 生效配置 = D1 app_config（/settings 页面填写）> 环境变量；每个请求解析一次，后续所有 AI 调用都用 c.var.ai
-app.use('/api/*', async (c, next) => { c.set('ai', await effectiveEnv(c.env.DB, c.env)); await next() })
+app.use('/api/*', async (c, next) => { c.set('ai', await effectiveEnv(c.env.DB, c.env)); ensureHeartbeat(c); await next() })
 
 // ------------------------------------------------------------------ helpers
 const now = () => Date.now()
@@ -360,7 +360,7 @@ app.post('/api/sync', async (c) => {
 app.get('/api/sync/status', async (c) => {
   const source = c.req.query('source')
   const targets = source && isSource(source) ? [source] : Object.keys(SOURCES).filter(s => s.startsWith('qkltj:'))
-  if (c.req.query('tick') === '1') for (const s of targets) { await syncSource(c.env.DB, s); await autoTrack(c.env.DB, s); await arenaTick(c.env.DB, s); if (await aiNeeded(c.env.DB, s)) bg(c, aiKick(c.env.DB, c.var.ai, s)) } // 顺带触发到点同步 + 战绩快照 + 竞技场生成/结算
+  if (c.req.query('tick') === '1') for (const s of targets) { await syncSource(c.env.DB, s); await autoTrack(c.env.DB, s); await arenaTick(c.env.DB, s); if (await aiNeeded(c.env.DB, s)) bg(c, aiKick(c.env.DB, c.var.ai, s, 'page')) } // 顺带触发到点同步 + 战绩快照 + 竞技场生成/结算
   const status: any = {}
   for (const s of targets) status[s] = await syncStatus(c.env.DB, s)
   return c.json({ ok: true, status })
@@ -540,17 +540,40 @@ async function arenaTick(db: D1Database, source: string) {
 }
 /** 后台触发 AI 推理（进程内去重；INSERT OR IGNORE 兜底多实例）；返回 Promise 供 waitUntil */
 const aiBusy = new Set<string>()
-async function aiKick(db: D1Database, env: AiEnv, source: string) {
+async function aiKick(db: D1Database, env: AiEnv, source: string, trigger = 'page') {
   if (!aiEnabled(env) || aiBusy.has(source)) return
   aiBusy.add(source)
   try {
     const rows = await loadDraws(db, source, 800)
     // 报单截止 = 下期理论开奖时刻 − AI_LEAD_MS（默认 20s）：留出足够的下单时间；超时则本期由兜底策略顶上
     const lockByMs = rows.length ? (rows[0] as any).open_ms + SOURCES[source].intervalMs - aiLeadMs(env) : undefined
-    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights, { lockByMs }); return f ? aiScores(f, ctx.vec) : null })
+    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights, { lockByMs, trigger }); return f ? aiScores(f, ctx.vec) : null })
     if (done) invalidateArena(source)
   } catch (e) { console.error('ai kick', e) } finally { aiBusy.delete(source) }
 }
+
+/** ---------------- 服务端心跳：不依赖任何页面打开，按开奖节拍自己跑「同步 → 生成/结算 → AI 推理」 ----------------
+ *  Cloudflare Pages 无 cron，这里用「每个到达的请求顺带续命」的方式：任何 /api 请求进来，若心跳链未在跑则用 waitUntil 起一条，
+ *  链内按 HEARTBEAT_MS 轮询直到 HEARTBEAT_LIFE_MS 到期（Worker 隔离体存活期内持续）。本地 wrangler dev 下等价于常驻。
+ *  每一跳只做：syncSource（受 dueInfo 节流，不到点不打网络）→ arenaTick → aiNeeded ? aiKick('heartbeat') */
+const HEARTBEAT_MS = 2_000, HEARTBEAT_LIFE_MS = 20 * 60_000
+let heartbeatUntil = 0
+async function heartbeat(db: D1Database, baseEnv: AiEnv) {
+  const until = Date.now() + HEARTBEAT_LIFE_MS; heartbeatUntil = until
+  while (Date.now() < until && heartbeatUntil === until) {
+    const env = await effectiveEnv(db, baseEnv)   // 每跳重新解析：/settings 改了 key / 模型 / 思考档立刻生效
+    for (const s of Object.keys(SOURCES).filter(k => k.startsWith('qkltj:'))) {
+      try {
+        const r = await syncSource(db, s)
+        if (!r.skipped) await arenaTick(db, s)
+        // 只对刚有新开奖或 AI 缺失的期触发；aiKick 自带 busy 锁
+        if (await aiNeeded(db, s)) aiKick(db, env, s, 'heartbeat')
+      } catch (e) { console.error('heartbeat', s, e) }
+    }
+    await new Promise(r => setTimeout(r, HEARTBEAT_MS))
+  }
+}
+const ensureHeartbeat = (c: any) => { if (Date.now() < heartbeatUntil - 60_000) return; heartbeatUntil = Date.now() + HEARTBEAT_LIFE_MS; bg(c, heartbeat(c.env.DB, c.env)) }
 /** 是否需要为当前待开期跑 AI（无 forecast 记录时才需要；有 error 记录 = 本期已放弃） */
 async function aiNeeded(db: D1Database, source: string) {
   const latest = (await db.prepare('SELECT expect FROM draws WHERE source=? ORDER BY expect DESC LIMIT 1').bind(source).first<any>())?.expect
@@ -596,7 +619,7 @@ app.get('/api/arena/board', async (c) => {
   await arenaTick(c.env.DB, source); tm.tick = now() - tt; tt = now()      // 毫秒级：保证当前期基础策略已生成、已开奖期已结算
   const gen = (await c.env.DB.prepare(`SELECT COUNT(*) n FROM arena_rounds WHERE source=? AND created_ms>?`).bind(source, now() - 3000).first<any>())?.n || 0
   if (gen) invalidateArena(source)
-  if (await aiNeeded(c.env.DB, source)) bg(c, aiKick(c.env.DB, c.var.ai, source))   // AI 推理放后台，不阻塞本请求
+  if (await aiNeeded(c.env.DB, source)) bg(c, aiKick(c.env.DB, c.var.ai, source, 'board'))   // AI 推理放后台，不阻塞本请求
   tm.check = now() - tt
   const t0 = now()
   const key = `board|${source}|${mode}|${limit}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
@@ -620,7 +643,7 @@ app.get('/api/arena/pick', async (c) => {
   if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)
   await arenaTick(c.env.DB, source)
   const needAi = await aiNeeded(c.env.DB, source)
-  if (needAi) bg(c, aiKick(c.env.DB, c.var.ai, source))
+  if (needAi) bg(c, aiKick(c.env.DB, c.var.ai, source, 'pick'))
   const t0 = now()
   const key = `pick|${source}|${hist}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
   const { v, cached, age } = await cachedArena(key, 20_000, async () => {
@@ -636,11 +659,45 @@ app.get('/api/arena/pick', async (c) => {
     const history = rows.map(r => { let o: any = null; try { o = JSON.parse(r.output) } catch {} return { expect: r.expect, numbers: r.numbers, count: r.count, actual: r.actual, hit: !!r.hit, rank: r.rank, pnl: r.pnl, open_ms: r.open_ms, regime: r.regime, confidence: r.confidence, reasoning: r.reasoning, pick_plan: o?.pick_plan || '', boost: o?.boost || [] } })
     // 最近 20 期命中序列（新→旧）供迷你条形图
     const streak = (await db.prepare(`SELECT hit FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT 20`).bind(source).all<any>()).results.map(r => r.hit ? 1 : 0)
-    return { pick, record: st && st.n ? { n: st.n, hits: st.h || 0, rate: Math.round((st.h || 0) / st.n * 1000) / 1000, pnl: st.pnl || 0, streak } : null, history }
+    // 报单同步：近 20 期 AI 是否在截止前锁定、平均锁定用时
+    const sy = (await db.prepare(`SELECT f.created_ms, f.error, f.lock_by_ms, p.open_ms prev_open FROM ai_forecasts f LEFT JOIN draws p ON p.source=f.source AND p.expect=f.based_on WHERE f.source=? ORDER BY f.expect DESC LIMIT 20`).bind(source).all<any>()).results
+    const okRows = sy.filter(r => !r.error && (!r.lock_by_ms || r.created_ms <= r.lock_by_ms))
+    const lockSecs = sy.filter(r => !r.error && r.prev_open).map(r => (r.created_ms - r.prev_open) / 1000)
+    const sync = { n: sy.length, in_time: okRows.length, avg_lock_s: lockSecs.length ? +(lockSecs.reduce((a, b) => a + b, 0) / lockSecs.length).toFixed(1) : null, max_lock_s: lockSecs.length ? +Math.max(...lockSecs).toFixed(1) : null, heartbeat_alive: Date.now() < heartbeatUntil }
+    return { pick, record: st && st.n ? { n: st.n, hits: st.h || 0, rate: Math.round((st.h || 0) / st.n * 1000) / 1000, pnl: st.pnl || 0, streak } : null, history, sync }
   })
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
   return c.json({ ok: true, source, provider: aiProviderName(c.var.ai), model: aiModel(c.var.ai), effort: aiEffort(c.var.ai), lead_ms: aiLeadMs(c.var.ai), interval_ms: SOURCES[source].intervalMs, ...v, cached, cache_age_ms: age, compute_ms: now() - t0 })
 })
+/** 报单同步审计：每期 AI 锁定时刻 vs 报单截止 vs 实际开奖；heartbeat 状态 */
+app.get('/api/ai/sync-audit', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const n = Math.min(100, Number(c.req.query('n') || 30))
+  const lead = aiLeadMs(c.var.ai), interval = SOURCES[source].intervalMs
+  const rows = (await c.env.DB.prepare(`SELECT f.expect, f.model, f.latency_ms, f.error, f.created_ms, f.started_ms, f.lock_by_ms, f.trigger, d.open_ms AS target_open_ms, p.open_ms AS prev_open_ms, a.created_ms AS round_ms, a.hit
+    FROM ai_forecasts f LEFT JOIN draws d ON d.source=f.source AND d.expect=f.expect LEFT JOIN draws p ON p.source=f.source AND p.expect=f.based_on LEFT JOIN arena_rounds a ON a.source=f.source AND a.expect=f.expect AND a.strategy='ai'
+    WHERE f.source=? ORDER BY f.expect DESC LIMIT ?`).bind(source, n).all<any>()).results
+  const items = rows.map(r => {
+    const targetOpen = r.target_open_ms || (r.prev_open_ms ? r.prev_open_ms + interval : null)
+    const lockBy = r.lock_by_ms || (targetOpen ? targetOpen - lead : null)
+    const locked = !r.error
+    return { expect: r.expect, model: r.model, trigger: r.trigger, hit: r.hit, error: r.error, latency_ms: r.latency_ms,
+      started_after_prev_s: r.prev_open_ms && r.started_ms ? +((r.started_ms - r.prev_open_ms) / 1000).toFixed(1) : null,
+      locked_after_prev_s: r.prev_open_ms ? +((r.created_ms - r.prev_open_ms) / 1000).toFixed(1) : null,
+      margin_to_lock_s: lockBy ? +((lockBy - r.created_ms) / 1000).toFixed(1) : null,      // >0 = 截止前锁定
+      margin_to_open_s: targetOpen ? +((targetOpen - r.created_ms) / 1000).toFixed(1) : null, // 距实际开奖余量
+      ok: locked && (lockBy ? r.created_ms <= lockBy : true), drawn: !!r.target_open_ms, locked }
+  })
+  const scored = items.filter(x => x.drawn)
+  const inTime = scored.filter(x => x.ok).length, aiOk = scored.filter(x => x.locked).length
+  const margins = scored.filter(x => x.margin_to_open_s != null).map(x => x.margin_to_open_s!)
+  const summary = { n: scored.length, locked_in_time: inTime, locked_in_time_rate: scored.length ? +(inTime / scored.length).toFixed(3) : null, ai_success: aiOk, fallback: scored.length - aiOk,
+    margin_open_min_s: margins.length ? Math.min(...margins) : null, margin_open_avg_s: margins.length ? +(margins.reduce((a, b) => a + b, 0) / margins.length).toFixed(1) : null,
+    lead_ms: lead, interval_ms: interval, heartbeat_alive: Date.now() < heartbeatUntil, heartbeat_left_s: Math.max(0, Math.round((heartbeatUntil - Date.now()) / 1000)) }
+  return c.json({ ok: true, source, summary, items })
+})
+
 /** AI 建议回测方案：活跃 + 已退役（含规则文本、样本内/样本外战绩） */
 app.get('/api/arena/plans', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'

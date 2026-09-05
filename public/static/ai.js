@@ -33,7 +33,7 @@
     step(4)
     setTimeout(function () {
       $('loader').classList.add('hidden')
-      ;['cur', 'stats', 'hist-sec'].forEach(function (id) { var el = $(id); el.classList.remove('hidden'); el.classList.add('fade-in') })
+      ;['cur', 'stats', 'hist-sec'].forEach(function (id) { var el = $(id); el.classList.remove('hidden'); el.classList.add('fade-in') }); renderSync(S.sync)
     }, 250)
   }
 
@@ -112,6 +112,17 @@
     }
   }
 
+  // ---------------------------------------------------------------- 报单同步状态
+  function renderSync(sy) {
+    var el = $('sync-line'); if (!el) return
+    if (!sy || !sy.n) { el.classList.add('hidden'); return }
+    var rate = sy.in_time / sy.n, good = rate >= 0.9
+    el.innerHTML = '<span><i class="fas fa-heart-pulse mr-1 ' + (sy.heartbeat_alive ? 'text-emerald-400' : 'text-amber-400') + '"></i>服务端心跳 ' + (sy.heartbeat_alive ? '运行中' : '待唤醒') + '</span>' +
+      '<span><i class="fas fa-lock mr-1 ' + (good ? 'text-emerald-400' : 'text-amber-400') + '"></i>近 ' + sy.n + ' 期 <b class="' + (good ? 'text-emerald-300' : 'text-amber-300') + '">' + sy.in_time + '/' + sy.n + '</b> 在报单截止前锁定</span>' +
+      (sy.avg_lock_s != null ? '<span><i class="fas fa-stopwatch mr-1 text-sky-400"></i>上期开奖后平均 <b class="mono text-slate-200">' + sy.avg_lock_s + 's</b> 锁定（最慢 ' + sy.max_lock_s + 's）</span>' : '') +
+      '<span class="text-slate-600">开奖前 ' + Math.round((S.lead || 20000) / 1000) + 's 为截止</span>'
+    el.classList.remove('hidden')
+  }
   // ---------------------------------------------------------------- 战绩 + 历史
   function renderStats() {
     var r = S.record; if (!r) return
@@ -170,7 +181,8 @@
 
   // ---------------------------------------------------------------- 数据
   function applyPick(d) {
-    S.pick = d.pick; S.record = d.record; S.history = d.history || []; S.lead = d.lead_ms || 20000; S.provider = d.provider; S.model = d.model
+    S.pick = d.pick; S.record = d.record; S.history = d.history || []; S.lead = d.lead_ms || 20000; S.provider = d.provider; S.model = d.model; S.sync = d.sync
+    renderSync(d.sync)
     var hm = $('hd-model'); if (hm) hm.textContent = (d.provider ? d.provider + ' · ' : '') + (d.model || '') + ' · 开奖前 ' + Math.round(S.lead / 1000) + 's 锁定'
     renderCur(); renderStats(); renderHist()
   }

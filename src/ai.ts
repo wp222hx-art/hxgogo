@@ -45,6 +45,8 @@ export const aiProviderName = (env: AiEnv) => aiProvider(env)?.name || null
 /** 逐期预测的推理强度（仅 OpenAI 推理模型使用；DeepSeek 忽略） */
 export const aiEffort = (env: AiEnv): 'low' | 'medium' | 'high' => (['low', 'medium', 'high'].includes(env.AI_EFFORT || '') ? env.AI_EFFORT : 'low') as any
 export const aiLeadMs = (env: AiEnv) => { const n = Number(env.AI_LEAD_MS); return Number.isFinite(n) && n >= 5000 ? n : 20_000 }
+/** 思考模式最低预算：低于此值自动降级为非思考。实测 v4-flash think-low 在完整预测官上下文下 >25s，1 分钟厅（预算 ≤55s）不可行；三分厅以上才开 */
+export const THINK_MIN_BUDGET_MS = 90_000
 export const aiTimeoutMs = (env: AiEnv) => { const n = Number(env.AI_TIMEOUT_MS); return Number.isFinite(n) && n >= 3000 ? n : 25_000 }
 
 /** 统一的 chat 调用：屏蔽 DeepSeek / OpenAI 参数差异；json=true 时尽力要求 JSON 并稳健解析 */
@@ -76,11 +78,13 @@ export async function llmChat(env: AiEnv, opts: { system: string; user: string; 
   const ac = new AbortController(); const timer = setTimeout(() => ac.abort(), opts.timeoutMs ?? aiTimeoutMs(env))
   try {
     const res = await fetch(`${pv.base}/chat/completions`, { method: 'POST', signal: ac.signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${pv.key}` }, body: JSON.stringify(body) })
-    const j: any = await res.json().catch(() => ({}))
+    const text = await res.text()                       // 读体阶段的 abort 会在此抛出 → 走 catch 记 timeout，而不是被吞成空内容
+    let j: any; try { j = JSON.parse(text) } catch { return { ok: false, content: text.slice(0, 500), usage: {}, latency_ms: Date.now() - t0, error: `non-json response HTTP ${res.status}`, model: pv.model, provider: pv.name } }
     if (!res.ok || j.error) return { ok: false, content: JSON.stringify(j).slice(0, 2000), usage: {}, latency_ms: Date.now() - t0, error: j.error?.message || `HTTP ${res.status}`, model: pv.model, provider: pv.name }
     const msg = j.choices?.[0]?.message || {}
     const u = j.usage || {}
     const usage = { prompt_tokens: u.prompt_tokens, completion_tokens: u.completion_tokens, reasoning_tokens: u.completion_tokens_details?.reasoning_tokens, cache_hit: u.prompt_cache_hit_tokens }
+    if (!msg.content && msg.reasoning_content) return { ok: false, content: '', reasoning_content: msg.reasoning_content, usage, latency_ms: Date.now() - t0, error: 'thinking consumed all tokens (no final content)', model: pv.model, provider: pv.name }
     return { ok: true, content: msg.content || '', reasoning_content: msg.reasoning_content || undefined, usage, latency_ms: Date.now() - t0, model: pv.model, provider: pv.name, request: { ...body, messages: undefined } }
   } catch (e: any) {
     return { ok: false, content: '', usage: {}, latency_ms: Date.now() - t0, error: e.name === 'AbortError' ? 'timeout' : String(e.message || e), model: pv.model, provider: pv.name }
@@ -260,7 +264,8 @@ export async function aiHistory(db: D1Database, source: string, k = 6, beforeExp
 }
 
 /** 为目标期生成 AI 预测（含调用、落库）；返回 forecast（失败时 null，error 落库） */
-export async function forecastFor(db: D1Database, env: AiEnv, source: string, next: string, draws: Draw[], perf: PerfMap, weights: Record<string, any>, opts: { lockByMs?: number } = {}) {
+export async function forecastFor(db: D1Database, env: AiEnv, source: string, next: string, draws: Draw[], perf: PerfMap, weights: Record<string, any>, opts: { lockByMs?: number; trigger?: string } = {}) {
+  const startedMs = Date.now()
   const exists = await db.prepare('SELECT output, error FROM ai_forecasts WHERE source=? AND expect=?').bind(source, next).first<any>()
   if (exists) { if (exists.error) return null; try { return normalize(JSON.parse(exists.output)) } catch { return null } }
   const selfHist = await aiHistory(db, source, 6, next)
@@ -273,11 +278,15 @@ export async function forecastFor(db: D1Database, env: AiEnv, source: string, ne
   // 报单窗口：必须在 lockByMs（下期开奖 − AI_LEAD_MS）前锁定；剩余不足 3s 直接放弃 → 本期走兜底，保证截止前有单可报
   const budget = opts.lockByMs ? opts.lockByMs - Date.now() : aiTimeoutMs(env)
   let r: AiCallResult
+  // 思考模式在完整上下文下需 15–40s；预算不足 THINK_MIN_BUDGET 时本期自动降级为非思考（保证 AI 仍参与，而不是直接兜底）
+  let callEnv: AiEnv = env; let degraded = false
+  if (aiProvider(env)?.name === 'deepseek' && dsThinking(env) !== 'off' && budget < THINK_MIN_BUDGET_MS) { callEnv = { ...env, DEEPSEEK_THINKING: 'off' }; degraded = true }
   if (budget < 3000) r = { forecast: null, raw: '', usage: {}, latency_ms: 0, error: `skipped: lock window ${Math.round(budget / 1000)}s`, model: `${aiProviderName(env)}:${aiModel(env)}` }
-  else r = await callAi(env, ctx, { effort: aiEffort(env), timeoutMs: Math.min(aiTimeoutMs(env), budget) })
+  else r = await callAi(callEnv, ctx, { effort: aiEffort(env), timeoutMs: Math.min(aiTimeoutMs(env), budget) })
+  if (degraded) r.model += ':degraded'
   const f = r.forecast
-  await db.prepare(`INSERT OR IGNORE INTO ai_forecasts (source, expect, model, based_on, output, reasoning, regime, confidence, prompt_tokens, completion_tokens, latency_ms, created_ms, error, cot, reasoning_tokens) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(source, next, r.model, draws[0].expect, f ? JSON.stringify(f) : r.raw.slice(0, 4000), f?.reasoning || null, f?.regime || null, f?.confidence ?? null, r.usage.prompt_tokens ?? null, r.usage.completion_tokens ?? null, r.latency_ms, Date.now(), r.error || null, r.cot ? r.cot.slice(0, 8000) : null, r.usage.reasoning_tokens ?? null).run()
+  await db.prepare(`INSERT OR IGNORE INTO ai_forecasts (source, expect, model, based_on, output, reasoning, regime, confidence, prompt_tokens, completion_tokens, latency_ms, created_ms, error, cot, reasoning_tokens, lock_by_ms, started_ms, trigger) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(source, next, r.model, draws[0].expect, f ? JSON.stringify(f) : r.raw.slice(0, 4000), f?.reasoning || null, f?.regime || null, f?.confidence ?? null, r.usage.prompt_tokens ?? null, r.usage.completion_tokens ?? null, r.latency_ms, Date.now(), r.error || null, r.cot ? r.cot.slice(0, 8000) : null, r.usage.reasoning_tokens ?? null, opts.lockByMs ?? null, startedMs, opts.trigger || null).run()
   return f
 }
 
