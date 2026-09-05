@@ -102,18 +102,55 @@
   document.querySelector('.qk[data-hit]').addEventListener('click', function () { S.hitOnly = !S.hitOnly; this.classList.toggle('on', S.hitOnly); if (S.last) run(Object.assign({}, S.last, { hit: undefined }), $('q-msg').textContent.split(' · ')[0] || '') })
   $('tbody').addEventListener('click', function (e) { var tr = e.target.closest('tr[data-e]'); if (!tr) return; var h = S.rows.find(function (x) { return x.expect === tr.getAttribute('data-e') }); if (h) { $('tbody').querySelectorAll('tr.hl').forEach(function (r) { r.classList.remove('hl') }); tr.classList.add('hl'); showOne(h) } })
 
+  // ---------------------------------------------------------------- 连挂风险
+  var SK = { k: 4, n: 0 }
+  function cmpCls(actual, theory, lowerBetter) {
+    if (actual == null || theory == null) return 'text-slate-300'
+    var better = lowerBetter ? actual < theory : actual > theory
+    if (Math.abs(actual - theory) < 1e-9) return 'text-slate-300'
+    return better ? 'text-emerald-300' : 'text-rose-300'
+  }
+  function renderStreaks(d) {
+    $('sk-k').textContent = d.k
+    var rows = d.tiers || []
+    if (!d.periods) { $('sk-body').innerHTML = '<tr><td colspan="10" class="py-4 text-slate-500">暂无已结算记录</td></tr>'; return }
+    $('sk-body').innerHTML = rows.map(function (t) {
+      var th = t.theory, ac = t.actual
+      var dist = ['1', '2', '3', '4', '5', '6+'].map(function (k) { var v = ac.dist[k] || 0; var hot = (k === '6+' ? 6 : +k) >= d.k; return '<span class="mono px-1.5 py-0.5 rounded text-[11px] ' + (hot ? (v ? 'bg-rose-500/20 text-rose-200' : 'bg-slate-800 text-slate-600') : 'bg-slate-800 text-slate-300') + '" title="长度 ' + k + ' 的连挂段：' + v + ' 段">' + v + '</span>' }).join(' ')
+      return '<tr>' +
+        '<td class="l"><b class="' + (t.custom ? 'text-violet-300' : 'text-slate-200') + '">' + tierShort(t) + ' 注</b><div class="text-[10.5px] text-slate-500">' + t.periods + ' 期 · 命中 ' + pct(t.rate) + '</div></td>' +
+        '<td class="text-slate-400">' + pct(th.miss_p) + '</td>' +
+        '<td class="text-slate-300">' + pct(th.any_k_in_row, 2) + '</td>' +
+        '<td class="text-slate-300">' + pct(th.run_reaches_k, 2) + '</td>' +
+        '<td><b class="' + cmpCls(ac.run_reaches_k, th.run_reaches_k, true) + '">' + pct(ac.run_reaches_k, 2) + '</b><div class="text-[10.5px] text-slate-500">' + ac.runs_k + '/' + ac.runs + ' 段</div></td>' +
+        '<td><b class="text-slate-200">' + pct(ac.periods_in_k_share, 2) + '</b><div class="text-[10.5px] text-slate-500">' + ac.periods_in_k + ' 期</div></td>' +
+        '<td><span class="text-slate-500">' + th.expected_runs_k_per_100.toFixed(2) + '</span> → <b class="' + cmpCls(ac.runs_k_per_100, th.expected_runs_k_per_100, true) + '">' + (ac.runs_k_per_100 == null ? '—' : ac.runs_k_per_100.toFixed(2)) + '</b></td>' +
+        '<td class="' + (ac.longest >= d.k ? 'text-rose-300 font-bold' : 'text-slate-300') + '">' + ac.longest + '</td>' +
+        '<td class="' + (ac.current >= d.k ? 'text-rose-300 font-bold' : ac.current ? 'text-amber-300' : 'text-slate-500') + '">' + (ac.current || '·') + '</td>' +
+        '<td class="l">' + dist + '</td></tr>'
+    }).join('')
+    $('sk-note').setAttribute('data-range', d.first + '→' + d.last)
+  }
+  function fetchStreaks() {
+    axios.get('/api/ai/streaks', { params: { source: S.source, k: SK.k, n: SK.n || undefined } }).then(function (r) { renderStreaks(r.data) })
+      .catch(function (e) { $('sk-body').innerHTML = '<tr><td colspan="10" class="py-3 text-rose-400">' + esc(e.message) + '</td></tr>' })
+  }
+  $('sk-kbtns').addEventListener('click', function (e) { var b = e.target.closest('.qk'); if (!b) return; SK.k = +b.getAttribute('data-k'); $('sk-kbtns').querySelectorAll('.qk').forEach(function (x) { x.classList.toggle('on', x === b) }); fetchStreaks() })
+  $('sk-nbtns').addEventListener('click', function (e) { var b = e.target.closest('.qk'); if (!b) return; SK.n = +b.getAttribute('data-n'); $('sk-nbtns').querySelectorAll('.qk').forEach(function (x) { x.classList.toggle('on', x === b) }); fetchStreaks() })
+
   // ---------------------------------------------------------------- 启动
   axios.get('/api/sources').then(function (r) {
     var list = (r.data.sources || []).filter(function (s) { return s.key.indexOf('qkltj:') === 0 })
     var sel = $('source'); sel.innerHTML = list.map(function (s) { return '<option value="' + s.key + '">' + esc(s.name) + '</option>' }).join('')
     if (!list.some(function (s) { return s.key === S.source })) S.source = list[0] ? list[0].key : S.source
     sel.value = S.source
-    sel.addEventListener('change', function () { S.source = sel.value; try { localStorage.setItem('ai:source', S.source) } catch (e) {} S.detail = {}; fetchBg(); go() })
+    sel.addEventListener('change', function () { S.source = sel.value; try { localStorage.setItem('ai:source', S.source) } catch (e) {} S.detail = {}; fetchBg(); fetchStreaks(); go() })
     // 从 URL 带入 ?expect= / ?date=
     var u = new URLSearchParams(location.search); if (u.get('expect')) $('q-expect').value = u.get('expect'); if (u.get('date')) $('q-date').value = u.get('date')
-    fetchBg(); go()
+    fetchBg(); fetchStreaks(); go()
   })
   setInterval(fetchBg, 10000)
+  setInterval(fetchStreaks, 60000)
   // 有新开奖时自动刷新“最近 N 期”视图
   setInterval(function () { if (S.last && S.last.n && !S.last.expect && !S.last.date) run(S.last, '最近 ' + S.last.n + ' 期') }, 30000)
 })()

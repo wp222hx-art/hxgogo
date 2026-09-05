@@ -79,6 +79,24 @@ td.p { color:#4ade80; } td.m { color:#fb7185; }
     </div>
   </section>
 
+  <!-- 连挂风险 -->
+  <section class="card p-4" id="streak-sec">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+      <h2 class="font-bold text-sm"><i class="fas fa-wave-square mr-2 text-rose-400"></i>连挂风险 · 各投注档位连续 <span id="sk-k" class="mono text-rose-300">4</span> 期及以上不命中的概率</h2>
+      <div class="flex items-center gap-2 text-xs">
+        <span class="text-slate-500">连挂阈值</span>
+        <div class="flex gap-1" id="sk-kbtns"><button class="qk" data-k="3">≥3</button><button class="qk on" data-k="4">≥4</button><button class="qk" data-k="5">≥5</button><button class="qk" data-k="6">≥6</button></div>
+        <span class="text-slate-500 ml-2">样本</span>
+        <div class="flex gap-1" id="sk-nbtns"><button class="qk" data-n="200">近 200</button><button class="qk" data-n="500">近 500</button><button class="qk on" data-n="0">全部</button></div>
+      </div>
+    </div>
+    <div class="tw" style="max-height:none"><table id="sk-tbl"><thead><tr>
+      <th class="l">档位</th><th>单期不中</th><th title="任取连续 K 期全部不中的概率 = q^K">理论·任意 K 连挂</th><th title="一段连挂一旦开始，延续到 ≥K 期的概率 = q^(K-1)">理论·段达 K</th>
+      <th title="实测：所有连挂段中长度 ≥K 的比例">实测·段达 K</th><th title="实测：处于 ≥K 连挂之中的期数占比">实测·期占比</th><th title="每 100 期出现 ≥K 连挂段的次数（理论 vs 实测）">每 100 期次数</th><th>最长</th><th>当前</th><th class="l">连挂长度分布 1·2·3·4·5·6+</th>
+    </tr></thead><tbody id="sk-body"><tr><td colspan="10" class="py-4 text-slate-500">加载中…</td></tr></tbody></table></div>
+    <p class="text-[11px] text-slate-600 mt-2 leading-relaxed" id="sk-note">理论值基于逐期独立、每注 1/1000：单期不中 q = 1 − N/1000。<b class="text-slate-500">「任意 K 连挂」</b>= 随便挑连续 K 期全挂的概率 q<sup>K</sup>；<b class="text-slate-500">「段达 K」</b>= 已经挂了 1 期后继续挂到 ≥K 期的概率 q<sup>K−1</sup>（对应"我刚挂一期，接下来会不会连挂到 4"）。实测列用真实开奖切分连挂段统计，<span class="text-emerald-400">绿</span> = 实测优于理论（更少连挂），<span class="text-rose-400">红</span> = 差于理论。</p>
+  </section>
+
   <!-- 单期结果卡 -->
   <section class="card p-5 hidden" id="one">
     <div class="flex flex-wrap items-center gap-5">

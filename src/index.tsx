@@ -725,6 +725,50 @@ app.get('/api/ai/query', async (c) => {
   const summary = tiers.map(t => { const s = sum[t.key]; return { key: t.key, n_pick: t.n, custom: t.custom, n: s.n, hits: s.hits, rate: s.n ? Math.round(s.hits / s.n * 1000) / 1000 : null, breakeven: Math.round(t.n / ARENA_ODDS * 1000) / 1000, pnl: s.pnl } })
   return c.json({ ok: true, source, mode, query: q, tiers: tiers.map(t => ({ key: t.key, n_pick: t.n, custom: t.custom })), history, summary })
 })
+/**
+ * 连挂风险统计：AI 各投注档位（100/150/自定义/300/500）出现「连续 ≥K 期不命中」的概率。
+ *   理论：单期不中概率 q = 1 − N/1000；任意连续 K 期全挂 = q^K；一段连挂一旦开始、延续到 ≥K 期 = q^(K−1)
+ *   实测：按时间顺序切分连挂段，统计 ≥K 段占全部连挂段比例、处于 ≥K 连挂中的期占比、每 100 期发生次数、最长/当前连挂、长度分布
+ * ?source&n=（最近 N 期，默认全部）&k=4
+ */
+app.get('/api/ai/streaks', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const K = Math.max(2, Math.min(10, Number(c.req.query('k') || 4)))
+  const nQ = Number(c.req.query('n') || 0)
+  const customNs = parseCustomNs(c.var.ai.AI_CUSTOM_N)
+  const tiers = [...AI_SUBSETS.map(a => ({ key: a.key, n: a.n, custom: false })), ...customNs.map(x => ({ key: `ai-custom-${x}`, n: x, custom: true })), { key: 'ai', n: 500, custom: false }].sort((a, b) => a.n - b.n)
+  const key = `streaks|${source}|${nQ}|${K}|c${c.var.ai.AI_CUSTOM_N || ''}|a${arenaVer.get(source) || 0}`
+  const { v, cached } = await cachedArena(key, 20_000, async () => {
+    const sql = nQ > 0
+      ? `SELECT hit, rank, expect FROM (SELECT hit, rank, expect FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT ?) ORDER BY expect ASC`
+      : `SELECT hit, rank, expect FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL ORDER BY expect ASC`
+    const rows = (nQ > 0 ? await c.env.DB.prepare(sql).bind(source, nQ).all<any>() : await c.env.DB.prepare(sql).bind(source).all<any>()).results
+    const total = rows.length
+    const r4 = (x: number) => Math.round(x * 10000) / 10000
+    const out = tiers.map(t => {
+      const q = 1 - t.n / 1000
+      const runs: number[] = []; let cur = 0, longest = 0, hits = 0
+      const dist: Record<string, number> = { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0, '6+': 0 }
+      for (const r of rows) {
+        const hit = !!r.hit && r.rank != null && r.rank <= t.n
+        if (hit) { hits++; if (cur) runs.push(cur); cur = 0 } else { cur++; if (cur > longest) longest = cur }
+      }
+      const current = cur; if (cur) runs.push(cur)   // 末尾未闭合的连挂也计入段
+      for (const L of runs) dist[L >= 6 ? '6+' : String(L)]++
+      const runsK = runs.filter(L => L >= K)
+      const periodsInK = runsK.reduce((a, L) => a + L, 0)
+      return {
+        key: t.key, n_pick: t.n, custom: t.custom, periods: total, hits, rate: total ? r4(hits / total) : null,
+        theory: { miss_p: r4(q), any_k_in_row: r4(Math.pow(q, K)), run_reaches_k: r4(Math.pow(q, K - 1)), expected_runs_k_per_100: r4(100 * (1 - q) * Math.pow(q, K)) },
+        actual: { runs: runs.length, runs_k: runsK.length, run_reaches_k: runs.length ? r4(runsK.length / runs.length) : null, periods_in_k: periodsInK, periods_in_k_share: total ? r4(periodsInK / total) : null, runs_k_per_100: total ? r4(runsK.length / total * 100) : null, longest, current, dist },
+      }
+    })
+    return { k: K, periods: total, first: rows[0]?.expect || null, last: rows[rows.length - 1]?.expect || null, tiers: out }
+  })
+  c.header('X-Cache', cached ? 'HIT' : 'MISS')
+  return c.json({ ok: true, source, ...v })
+})
 /** 单期 AI 详情（展开时懒加载）：500 注号码、boost、推理、方案 */
 app.get('/api/ai/history/:expect', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
