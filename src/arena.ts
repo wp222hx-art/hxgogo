@@ -218,7 +218,22 @@ export async function loadPerf(db: D1Database, source: string, beforeExpect: str
   return perf
 }
 
-export const nextOf = (expect: string) => /^\d+$/.test(expect) ? String(BigInt(expect) + 1n) : ''
+/**
+ * 下一期期号。哈希分分彩 expect = YYYYMMDD + 当日序号 0001..1440，1440 之后要跨到次日 0001（而非 1441）。
+ * 其他格式（非 12 位）退化为数值 +1。
+ */
+export const nextOf = (expect: string) => {
+  if (!/^\d+$/.test(expect)) return ''
+  if (expect.length === 12) {
+    const seq = Number(expect.slice(8))
+    if (seq >= 1440) {
+      const d = new Date(Date.UTC(+expect.slice(0, 4), +expect.slice(4, 6) - 1, +expect.slice(6, 8)) + 86400_000)
+      return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}0001`
+    }
+    return expect.slice(0, 8) + String(seq + 1).padStart(4, '0')
+  }
+  return String(BigInt(expect) + 1n)
+}
 const arenaDone = new Map<string, string>()   // source → 已生成的下一期（进程内去重）
 
 /** 外部（AI）选手：给定上下文，返回 1000 维得分；null = 本期不参赛 */

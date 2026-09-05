@@ -13,6 +13,7 @@
 - **配置中心（填 key · 校验 · 报单窗口）**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/settings
 - **战绩榜优质策略推荐选号（滚动前三 · 融合 500 注）⭐**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/top3
 - **GitHub**: https://github.com/wp222hx-art/hxgogo
+- **逐期命中查询（简易页 · 后台运行状态）**: https://3000-il57p9yxvqhgd6vkrww2u-dfc00ec5.sandbox.novita.ai/query
 - **生产环境**: 待部署（Cloudflare Pages）
 
 ## 已完成功能
@@ -186,6 +187,19 @@
 - **模型据此调整**：头部档位 edge 持续高于尾部 → 排序有效，`pos_weights` 更有取舍、把最有把握的组合排到前面；头部 edge 为负而 500 注为正 → 前段过度自信，应分散。形成「推理 → 记录 → 结算 → 反馈 → 再推理」的数据飞轮，样本越多反馈越精
 - **可观测**：`GET /api/ai/tier-digest?source` 返回模型本期看到的完整摘要（当前：位次分布 49/36/49/80 vs 均匀 43/43/43/86，头部 1–100 略高于均匀，300 注档 z +1.53 最强）
 
+### 后台常驻运行：Keeper 守护进程（`keeper.cjs`，PM2 app `keeper`）⭐
+- **目标**：关闭所有网页后，「拉取开奖 → 结算 → AI 推理下一期（带档位战绩反馈）→ 记录 → 漏期补齐」仍持续运行，数据与学习不间断
+- **机制**：服务端心跳链（`heartbeat`，2s 一跳、20 分钟一段）原本靠任意 `/api/*` 请求续命；现在沙盒内由独立 PM2 进程 `keeper` 每 15s 打 `GET /api/keeper/tick` 续命（服务不可用时指数退避，最长 60s，永不退出）。`pm2 save` 已持久化，两进程随 PM2 一起拉起
+- **可观测**：`GET /api/keeper/status?source` → 心跳是否在跑 / 剩余秒 / 累计跳数 / 守护上次续命时刻 / 最近一次 AI 推理 / 24h 推理次数 / 累计结算命中；`/query` 页顶部有实时指示灯
+- **生产环境**：Cloudflare 无 cron 时，用任何外部 uptime 监控每 1–5 分钟打 `/api/keeper/tick` 即可获得同样效果
+- **修复**：`nextOf` 期号 +1 在当日 `1440` 后跨到次日 `0001`（此前会生成永不开奖的 `xxxx1441` 孤儿期，已清理）
+
+### 逐期命中查询 `/query`（简易页，模块 `src/page_query.ts` + `public/static/query.js`）⭐
+- **查询方式**：12 位期号 / 后 4 位当日序号（可配日期，默认最近一天）/ 日期（北京，整日最多 1440 期）/ 最近 50·100·300·1000 期；「只看命中」过滤；URL 支持 `?expect=` `?date=`
+- **单期卡**：期号、开奖时间、开奖号大字、AI 500 注命中与位次、各档位（100/150/自定义★/300/500）✓✗ 徽章、AI 判断与置信度；可展开该期 500 注网格（命中绿 / boost 粉）并一键复制
+- **列表**：紧凑表格 + 各档位命中格 + 窗口汇总芯片；点击行即切换单期卡；「最近 N 期」视图每 30s 自动刷新
+- **接口**：`GET /api/ai/query?source&expect|date|n&hit=1`（返回 mode / tiers / history / summary）
+
 ### `/ai` 逐期记录 · 紧凑表格（50 / 100 / 200 / 500 / 1000 期）
 - **布局**：单行 26px 高的等宽表格，列 = 期号（当日序号 + 月/日 时:分小字）· 开奖 · 各档位命中格（100/150/自定义★/300/500，绿 = 命中）· 位次 · 盈亏 · AI 判断（regime + 置信度，窄屏隐藏）；表头吸顶，表体最大 70vh 内滚动，1000 期一屏加载
 - **窗口切换**：右上 50/100/200/500/1000 按钮（记忆到 localStorage）；上方汇总芯片显示该窗口各档位命中率/次数/盈亏（≥保本线亮绿）；底部显示 500 注窗口合计
@@ -302,6 +316,9 @@
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
 | POST | `/api/ai/backfill-subsets?source=&n=300` | 由 ai 行回填 ai-100/150/300 + 当前自定义档位历史（幂等） |
+| GET | `/api/ai/query?source=&expect=&date=&n=&hit=1` | 逐期命中查询（期号 / 当日序号 / 日期 / 最近 N 期，可只看命中） |
+| GET | `/api/keeper/tick` | 守护续命：触发服务端心跳链持续运行（Keeper / 外部 uptime 每 15s–5min 调用） |
+| GET | `/api/keeper/status?source=` | 后台运行状态：心跳 / 守护 / 最近推理 / 24h 次数 / 累计结算 |
 | GET | `/api/ai/history?source=&n=50..1000` | AI 逐期记录紧凑摘要（各档位命中 0/1、位次、盈亏、regime）+ 窗口汇总 |
 | GET | `/api/ai/history/:expect?source=` | 单期 AI 详情（500 注、boost、推理、方案、模型耗时） |
 | GET | `/api/ai/tier-digest?source=` | AI 自学习摘要：各档位全量/近 60 期战绩 + 命中位次分布（即每期喷给模型的 `your_tier_performance`） |

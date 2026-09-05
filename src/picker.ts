@@ -4,6 +4,8 @@
 import { MARKETS, buildSeries, backtest, ensemble, type Draw } from './analysis'
 import { computeOutcomes5, POS_NAMES } from './engine5'
 import { parityKline } from './parity_kline'
+/** 12 位期号 +1（1440 → 次日 0001） */
+const nextExpect12 = (e: string) => { if (!/^\d+$/.test(e)) return ''; if (e.length !== 12) return String(BigInt(e) + 1n); const seq = Number(e.slice(8)); if (seq >= 1440) { const d = new Date(Date.UTC(+e.slice(0, 4), +e.slice(4, 6) - 1, +e.slice(6, 8)) + 86400_000); return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}0001` } return e.slice(0, 8) + String(seq + 1).padStart(4, '0') }
 
 const r4 = (x: number) => Math.round(x * 10000) / 10000
 const r3 = (x: number) => Math.round(x * 1000) / 1000
@@ -171,7 +173,7 @@ export function pick(draws: Draw[], o: Partial<PickOpts> = {}) {
   const latest = draws[0]?.expect || ''
   return {
     count: opt.count, digits: PICK_DIGITS, space: SPACE, params: { steps: opt.steps, wParity: opt.wParity, wSize: opt.wSize, wCombo: opt.wCombo, temp: opt.temp },
-    latest_expect: latest, next_expect: latest && /^\d+$/.test(latest) ? String(BigInt(latest) + 1n) : '',
+    latest_expect: latest, next_expect: nextExpect12(latest || ''),
     positions: positions.map(p => ({ pos: p.pos, posName: p.posName, dist: p.dist, order: p.order, top: p.order.slice(0, 3), parity: p.parity, size: p.size, hot: p.hot, cold: p.cold, gaps: p.gaps })),
     signals: sig.text,
     numbers,
