@@ -640,6 +640,47 @@ app.get('/api/arena/board', async (c) => {
 })
 
 /** 本期 AI 推荐（轻量、极快）：只读 DB；AI 未就绪时 status=thinking 并在后台触发推理，前端轮询。history = 最近 N 期 AI 500 注 + 结算 */
+/**
+ * AI 逐期记录（紧凑版）：只回摘要列，不带 500 注号码 / 推理文本，可一次取 50/100/200/500/1000 期。
+ * 每行：expect, actual, open_ms, hit, rank, pnl, regime, confidence, sub{tierKey:hit}；附该窗口各档位汇总。
+ */
+app.get('/api/ai/history', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const n = Math.max(10, Math.min(1000, Number(c.req.query('n') || 50)))
+  const customNs = parseCustomNs(c.var.ai.AI_CUSTOM_N)
+  const tiers = [...AI_SUBSETS.map(a => ({ key: a.key, n: a.n, custom: false })), ...customNs.map(x => ({ key: `ai-custom-${x}`, n: x, custom: true })), { key: 'ai', n: 500, custom: false }].sort((a, b) => a.n - b.n)
+  const key = `aihist|${source}|${n}|c${c.var.ai.AI_CUSTOM_N || ''}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
+  const { v, cached, age } = await cachedArena(key, 20_000, async () => {
+    const rows = (await c.env.DB.prepare(`SELECT a.expect, a.actual, a.hit, a.rank, a.pnl, a.created_ms, f.regime, f.confidence, f.error, d.open_ms
+      FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect LEFT JOIN draws d ON d.source=a.source AND d.expect=a.expect
+      WHERE a.source=? AND a.strategy='ai' AND a.scored_ms IS NOT NULL ORDER BY a.expect DESC LIMIT ?`).bind(source, n).all<any>()).results
+    const sum: Record<string, { n: number; hits: number; pnl: number }> = {}
+    for (const t of tiers) sum[t.key] = { n: 0, hits: 0, pnl: 0 }
+    const history = rows.map(r => {
+      const sub: Record<string, 0 | 1> = {}
+      for (const t of tiers) { const hit = !!r.hit && r.rank != null && r.rank <= t.n; sub[t.key] = hit ? 1 : 0; sum[t.key].n++; if (hit) sum[t.key].hits++; sum[t.key].pnl += hit ? ARENA_ODDS - t.n : -t.n }
+      return { expect: r.expect, actual: r.actual, open_ms: r.open_ms, hit: !!r.hit, rank: r.rank, pnl: r.pnl, regime: r.regime || null, confidence: r.confidence, fallback: !r.regime || !!r.error, sub }
+    })
+    const summary = tiers.map(t => { const s = sum[t.key]; const p = t.n / 1000; return { key: t.key, n_pick: t.n, custom: t.custom, n: s.n, hits: s.hits, rate: s.n ? Math.round(s.hits / s.n * 1000) / 1000 : null, breakeven: Math.round(t.n / ARENA_ODDS * 1000) / 1000, pnl: s.pnl, roi: s.n ? Math.round(s.pnl / (s.n * t.n) * 10000) / 10000 : null, z: s.n ? Math.round((s.hits - s.n * p) / Math.sqrt(s.n * p * (1 - p)) * 100) / 100 : null } })
+    return { tiers: tiers.map(t => ({ key: t.key, n_pick: t.n, custom: t.custom })), history, summary }
+  })
+  c.header('X-Cache', cached ? 'HIT' : 'MISS')
+  return c.json({ ok: true, source, n, cached, cache_age_ms: age, ...v })
+})
+/** 单期 AI 详情（展开时懒加载）：500 注号码、boost、推理、方案 */
+app.get('/api/ai/history/:expect', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const expect = c.req.param('expect')
+  const r = await c.env.DB.prepare(`SELECT a.expect, a.numbers, a.count, a.actual, a.hit, a.rank, a.pnl, a.created_ms, f.regime, f.confidence, f.reasoning, f.output, f.model, f.latency_ms, d.open_ms
+    FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect LEFT JOIN draws d ON d.source=a.source AND d.expect=a.expect
+    WHERE a.source=? AND a.strategy='ai' AND a.expect=?`).bind(source, expect).first<any>()
+  if (!r) return bad(c, 'not found', 404)
+  let o: any = null; try { o = JSON.parse(r.output) } catch {}
+  c.header('Cache-Control', 'public, max-age=3600')
+  return c.json({ ok: true, expect: r.expect, numbers: r.numbers, count: r.count, actual: r.actual, hit: !!r.hit, rank: r.rank, pnl: r.pnl, open_ms: r.open_ms, created_ms: r.created_ms, regime: r.regime, confidence: r.confidence, reasoning: r.reasoning, pick_plan: o?.pick_plan || '', boost: o?.boost || [], model: r.model, latency_ms: r.latency_ms })
+})
 app.get('/api/arena/pick', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')

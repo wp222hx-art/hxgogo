@@ -185,6 +185,12 @@
 - **模型据此调整**：头部档位 edge 持续高于尾部 → 排序有效，`pos_weights` 更有取舍、把最有把握的组合排到前面；头部 edge 为负而 500 注为正 → 前段过度自信，应分散。形成「推理 → 记录 → 结算 → 反馈 → 再推理」的数据飞轮，样本越多反馈越精
 - **可观测**：`GET /api/ai/tier-digest?source` 返回模型本期看到的完整摘要（当前：位次分布 49/36/49/80 vs 均匀 43/43/43/86，头部 1–100 略高于均匀，300 注档 z +1.53 最强）
 
+### `/ai` 逐期记录 · 紧凑表格（50 / 100 / 200 / 500 / 1000 期）
+- **布局**：单行 26px 高的等宽表格，列 = 期号（当日序号 + 月/日 时:分小字）· 开奖 · 各档位命中格（100/150/自定义★/300/500，绿 = 命中）· 位次 · 盈亏 · AI 判断（regime + 置信度，窄屏隐藏）；表头吸顶，表体最大 70vh 内滚动，1000 期一屏加载
+- **窗口切换**：右上 50/100/200/500/1000 按钮（记忆到 localStorage）；上方汇总芯片显示该窗口各档位命中率/次数/盈亏（≥保本线亮绿）；底部显示 500 注窗口合计
+- **展开懒加载**：点击行 → 插入详情行，按需拉取该期 500 注网格（命中绿、boost 粉）、模型/耗时、推理与方案、按档一键复制（含自定义★）；再点收起；详情缓存 1h
+- **接口**：`GET /api/ai/history?source&n≤1000`（摘要列 + tiers + summary，20s 缓存）· `GET /api/ai/history/:expect?source`（单期详情）；`/api/arena/pick` 不再承担长历史（`history=1`），首屏更快
+
 ### 前端加载体系优化（缓存 + 后台推理 + 进度反馈）
 **问题**：此前 `/api/arena/board` 与 `/api/arena/pick` 在请求路径内**同步等待大模型推理（6–15s）**，且 board JSON 约 290KB，页面首屏 2–15s 不等。
 **方案**（`src/index.tsx`）：
@@ -295,6 +301,8 @@
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
 | POST | `/api/ai/backfill-subsets?source=&n=300` | 由 ai 行回填 ai-100/150/300 + 当前自定义档位历史（幂等） |
+| GET | `/api/ai/history?source=&n=50..1000` | AI 逐期记录紧凑摘要（各档位命中 0/1、位次、盈亏、regime）+ 窗口汇总 |
+| GET | `/api/ai/history/:expect?source=` | 单期 AI 详情（500 注、boost、推理、方案、模型耗时） |
 | GET | `/api/ai/tier-digest?source=` | AI 自学习摘要：各档位全量/近 60 期战绩 + 命中位次分布（即每期喷给模型的 `your_tier_performance`） |
 | GET | `/api/draws/coverage?source=&days=7` | 开奖完整性报告：逐日 已记录/应有、链上补数、缺失期号、最近补齐日志 |
 | POST | `/api/draws/gapfill?source=&days=7&max=20` | 扫描缺失期并从 TRON 链按「分钟 +3s 首块」规则补齐（`src='chain'`） |

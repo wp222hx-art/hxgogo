@@ -22,9 +22,26 @@ body { background:#0b0f1a; }
 textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-radius:10px; padding:10px; font-family: ui-monospace, monospace; font-size:13px; line-height:1.6; resize:vertical; }
 .stat { background:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:10px 12px; } .stat .v { font-family: ui-monospace, monospace; font-size:20px; font-weight:800; }
 .streak { display:flex; gap:2px; } .streak i { width:10px; height:18px; border-radius:2px; background:#334155; } .streak i.h { background:#22c55e; }
-.hrow { background:#0f172a; border:1px solid #1e293b; border-radius:12px; } .hrow summary { list-style:none; cursor:pointer; display:grid; grid-template-columns: 110px 70px 1fr 90px 90px; gap:10px; align-items:center; padding:10px 14px; font-size:13px; }
-.hrow summary::-webkit-details-marker { display:none; } .hrow[open] summary { border-bottom:1px solid #1e293b; }
-.hrow.hit { border-color:#22c55e66; }
+/* 逐期记录 · 紧凑表格 */
+.hn { font-size:11px; padding:3px 9px; border-radius:6px; background:#0f172a; border:1px solid #1e293b; color:#94a3b8; font-family: ui-monospace, monospace; } .hn:hover { color:#e2e8f0; } .hn.on { background:#0e7490; border-color:#22d3ee; color:#fff; }
+.hsum { display:flex; flex-wrap:wrap; gap:6px; } .hsum .t { display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:3px 8px; border-radius:6px; background:#0f172a; border:1px solid #1e293b; color:#94a3b8; } .hsum .t b { font-family: ui-monospace, monospace; color:#e2e8f0; } .hsum .t.good b { color:#86efac; } .hsum .t.c { border-color:#7c3aed66; }
+.htbl-wrap { background:#0f172a; border:1px solid #1e293b; border-radius:12px; overflow:auto; max-height:70vh; }
+.htbl { width:100%; border-collapse:separate; border-spacing:0; font-size:12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.htbl thead th { position:sticky; top:0; z-index:1; background:#0b1220; color:#64748b; font-weight:500; font-size:10.5px; letter-spacing:.02em; padding:6px 8px; text-align:center; border-bottom:1px solid #1e293b; white-space:nowrap; }
+.htbl thead th.l { text-align:left; } .htbl thead th.r { text-align:right; } .htbl thead th.c { color:#a78bfa; }
+.htbl tbody tr.hr { cursor:pointer; height:26px; } .htbl tbody tr.hr:hover td { background:#111c33; } .htbl tbody tr.hr.open td { background:#111c33; }
+.htbl tbody tr.hr:nth-child(4n+1) td { border-top:1px solid #1e293b44; }
+.htbl td { padding:2px 8px; text-align:center; white-space:nowrap; border-bottom:1px solid #0b1220; line-height:1.3; }
+.htbl td.l { text-align:left; } .htbl td.r { text-align:right; }
+.htbl td.ex { color:#fcd34d; } .htbl td.ex small { color:#475569; margin-left:4px; font-size:10px; }
+.htbl td.ac { font-weight:800; color:#cbd5e1; letter-spacing:.06em; } tr.hit td.ac { color:#4ade80; }
+.htbl td.rk { color:#64748b; } tr.hit td.rk { color:#86efac; font-weight:700; }
+.htbl td.pn.p { color:#4ade80; } .htbl td.pn.m { color:#fb7185; }
+.htbl td.rg { color:#64748b; font-family: system-ui, sans-serif; font-size:11px; max-width:190px; overflow:hidden; text-overflow:ellipsis; text-align:left; } .htbl td.rg.fb { color:#475569; font-style:italic; }
+.cell { display:inline-block; width:18px; height:14px; border-radius:3px; background:#1e293b; vertical-align:middle; } .cell.h { background:#22c55e; } .cell.c { box-shadow: inset 0 0 0 1px #7c3aed88; }
+.htbl tr.det td { padding:10px 12px; background:#0b1220; text-align:left; white-space:normal; border-bottom:1px solid #1e293b; cursor:default; }
+.htbl .grid500 span { font-size:12px; padding:3px 0; }
+@media (max-width: 768px) { .htbl td.rg, .htbl th.rg { display:none; } }
 .badge { font-size:11px; padding:2px 8px; border-radius:999px; font-weight:700; } .badge.h { background:#22c55e; color:#000; } .badge.m { background:#1e293b; color:#94a3b8; }
 /* 进度条 */
 .prog { height:6px; border-radius:999px; background:#1e293b; overflow:hidden; } .prog > div { height:100%; border-radius:999px; background:linear-gradient(90deg,#f472b6,#a855f7); transition: width .4s ease; }
@@ -126,8 +143,17 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
 
   <!-- 逐期历史 -->
   <section id="hist-sec" class="hidden">
-    <div class="flex items-center justify-between mb-2"><h2 class="font-bold text-sm"><i class="fas fa-clock-rotate-left mr-2 text-cyan-400"></i>逐期记录 <span class="text-xs text-slate-500 font-normal">点击展开该期 500 注 · 绿 = 命中</span></h2><select id="hist-n" class="bg-slate-800 rounded-lg px-2 py-1 border border-slate-700 text-xs"><option value="12">最近 12 期</option><option value="30">最近 30 期</option><option value="60">最近 60 期</option></select></div>
-    <div id="hist" class="space-y-2"></div>
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+      <h2 class="font-bold text-sm"><i class="fas fa-clock-rotate-left mr-2 text-cyan-400"></i>逐期记录 <span class="text-xs text-slate-500 font-normal">点击行展开该期 500 注 · <span class="inline-block w-2 h-2 rounded-sm bg-emerald-500 align-middle"></span> 命中 · <span class="inline-block w-2 h-2 rounded-sm bg-slate-700 align-middle"></span> 未中</span></h2>
+      <div class="flex items-center gap-1" id="hist-n" role="tablist">
+        <button class="hn" data-n="50">50</button><button class="hn" data-n="100">100</button><button class="hn" data-n="200">200</button><button class="hn" data-n="500">500</button><button class="hn" data-n="1000">1000</button><span class="text-[11px] text-slate-500 ml-1">期</span>
+      </div>
+    </div>
+    <div id="hist-sum" class="hsum mb-2"></div>
+    <div class="htbl-wrap">
+      <table class="htbl" id="hist-tbl"><thead><tr id="hist-head"></tr></thead><tbody id="hist"></tbody></table>
+    </div>
+    <div id="hist-foot" class="text-[11px] text-slate-500 mt-1"></div>
   </section>
   <p class="text-[11px] text-slate-600 leading-relaxed">哈希开奖逐期独立，任何三位号理论概率恒为 1/1000；500 注理论命中率 50%，按 950× 赔率保本需 52.6%。AI 推荐是量化信号 + 大模型推理的综合倾向，由真实开奖逐期检验，不构成任何收益承诺。</p>
 </main>

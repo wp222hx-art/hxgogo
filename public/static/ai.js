@@ -208,38 +208,80 @@
   function tierN(k) { var m = /(\d+)$/.exec(k); return m ? +m[1] : 0 }
   function tierLabel(k) { return tierN(k) + (k.indexOf('custom') >= 0 ? '★' : '') }
   function tierKeys(sub) { return Object.keys(sub || {}).sort(function (a, b) { return tierN(a) - tierN(b) }) }
-  function subChips(h) {
-    var sub = h.subsets || {}; var keys = tierKeys(sub); if (!keys.length) return ''
-    return '<span class="block mt-1">' + keys.map(function (k) { return '<span class="chipsub' + (sub[k].hit ? ' h' : '') + (k.indexOf('custom') >= 0 ? ' c' : '') + '" title="' + k + '">' + tierLabel(k) + (sub[k].hit ? '✓' : '✗') + '</span>' }).join(' ') + '</span>'
+  // ---------------------------------------------------------------- 逐期记录（紧凑表格：50/100/200/500/1000 期，独立接口，展开懒加载详情）
+  var H = { n: 50, rows: [], tiers: [], summary: [], loading: false, ver: 0, cache: {} }
+  try { H.n = +(localStorage.getItem('ai:histn') || 50) || 50 } catch (e) {}
+  function tierShort(t) { return t.key === 'ai' ? '500' : String(t.n_pick) + (t.custom ? '★' : '') }
+  function renderHistHead() {
+    var th = '<th class="l">期号</th><th>开奖</th>' +
+      H.tiers.map(function (t) { return '<th' + (t.custom ? ' class="c"' : '') + ' title="前 ' + t.n_pick + ' 注' + (t.custom ? '（自定义）' : '') + '">' + tierShort(t) + '</th>' }).join('') +
+      '<th>位次</th><th class="r">盈亏</th><th class="rg l">AI 判断</th>'
+    $('hist-head').innerHTML = th
   }
-  function renderHist() {
-    var rows = S.history || []
-    if (!rows.length) { $('hist').innerHTML = '<div class="text-xs text-slate-500 py-4 text-center">还没有已开奖的 AI 推荐记录</div>'; return }
-    $('hist').innerHTML = rows.map(function (h, i) {
-      var reg = h.regime ? esc(h.regime) : '<span class="text-slate-600">（AI 未成功，兜底）</span>'
-      return '<details class="hrow ' + (h.hit ? 'hit' : '') + '" data-i="' + i + '">' +
-        '<summary><span class="mono text-amber-300">' + h.expect + '</span>' +
-        '<span class="mono font-black ' + (h.hit ? 'text-emerald-400' : 'text-slate-300') + '">' + (h.actual || '—') + '</span>' +
-        '<span class="truncate text-slate-400"><span class="mono text-slate-500 mr-2">' + bj(h.open_ms, true) + '</span>' + reg + (h.confidence ? ' <span class="text-slate-600">' + pct(h.confidence, 0) + '</span>' : '') + '</span>' +
-        '<span>' + (h.hit ? '<span class="badge h">命中 #' + h.rank + '</span>' : '<span class="badge m">未中</span>') + subChips(h) + '</span>' +
-        '<span class="mono text-right ' + (h.pnl > 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + fmtInt(h.pnl) + '</span></summary>' +
-        '<div class="p-3 hist-body"></div></details>'
+  function renderHistSum() {
+    var el = $('hist-sum'); if (!el) return
+    el.innerHTML = '<span class="t"><span class="text-slate-500">近 ' + H.rows.length + ' 期</span></span>' + H.summary.map(function (t) {
+      var good = t.rate != null && t.rate >= t.breakeven
+      return '<span class="t' + (good ? ' good' : '') + (t.custom ? ' c' : '') + '" title="保本 ' + pct(t.breakeven, 1) + ' · z ' + (t.z == null ? '—' : t.z) + '">' + tierShort(t) + ' <b>' + (t.rate == null ? '—' : pct(t.rate, 1)) + '</b><span class="text-slate-600">' + t.hits + '/' + t.n + '</span><b class="' + (t.pnl >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + fmtInt(t.pnl) + '</b></span>'
     }).join('')
   }
-  $('hist').addEventListener('toggle', function (e) {
-    var d = e.target; if (!d.open || d.getAttribute('data-r')) return
-    var h = S.history[+d.getAttribute('data-i')]; if (!h) return
-    d.setAttribute('data-r', '1')
-    var nums = String(h.numbers || '').trim().split(/\s+/)
-    var body = d.querySelector('.hist-body')
-    body.innerHTML = '<div class="text-xs text-slate-500 mb-2">北京时间 ' + hhmm(h.open_ms) + ' 开出 <b class="text-slate-200 mono">' + esc(h.actual) + '</b> · ' + h.count + ' 注' + (h.hit ? ' · 命中位次 #' + h.rank : '') +
-      ' <button class="ml-2 text-pink-300 hover:text-pink-200 h-copy" data-n="500"><i class="fas fa-copy mr-1"></i>复制 500</button>' +
-      tierKeys(h.subsets).filter(function (k) { return tierN(k) <= nums.length }).map(function (k) { return ' <button class="ml-1 ' + (k.indexOf('custom') >= 0 ? 'text-violet-300 hover:text-violet-200' : 'text-pink-300 hover:text-pink-200') + ' h-copy" data-n="' + tierN(k) + '">前 ' + tierLabel(k) + '</button>' }).join('') +
-      (h.subsets ? ' <span class="text-slate-600 ml-2">档位：' + tierKeys(h.subsets).map(function (k) { return tierLabel(k) + (h.subsets[k].hit ? '✓' : '✗') }).join(' ') + '</span>' : '') + '</div>' +
-      '<div class="grid500">' + gridHtml(nums, h.boost, h.actual) + '</div>' +
-      (h.reasoning || h.pick_plan ? '<div class="reason mt-3">' + (h.reasoning ? '<div><b>推理</b>：' + esc(h.reasoning) + '</div>' : '') + (h.pick_plan ? '<div class="mt-1"><b>方案</b>：' + esc(h.pick_plan) + '</div>' : '') + '</div>' : '')
-    body.querySelectorAll('.h-copy').forEach(function (b) { b.addEventListener('click', function (ev) { ev.preventDefault(); var k = +b.getAttribute('data-n'); copyText(joinNums(nums.slice(0, k), S.fmt), b) }) })
-  }, true)
+  function renderHist() {
+    var rows = H.rows || []
+    renderHistHead(); renderHistSum()
+    if (!rows.length) { $('hist').innerHTML = '<tr><td colspan="' + (H.tiers.length + 5) + '" class="py-4 text-slate-500">还没有已开奖的 AI 推荐记录</td></tr>'; $('hist-foot').textContent = ''; return }
+    var out = [], hits = 0, pnl = 0
+    for (var i = 0; i < rows.length; i++) {
+      var h = rows[i]; if (h.hit) hits++; pnl += h.pnl || 0
+      var cells = H.tiers.map(function (t) { return '<td><span class="cell' + (h.sub && h.sub[t.key] ? ' h' : '') + (t.custom ? ' c' : '') + '"></span></td>' }).join('')
+      out.push('<tr class="hr' + (h.hit ? ' hit' : '') + '" data-e="' + h.expect + '">' +
+        '<td class="ex l">' + h.expect.slice(8) + '<small>' + h.expect.slice(4, 6) + '/' + h.expect.slice(6, 8) + ' ' + hhmmShort(h.open_ms) + '</small></td>' +
+        '<td class="ac">' + (h.actual || '—') + '</td>' + cells +
+        '<td class="rk">' + (h.hit ? '#' + h.rank : '·') + '</td>' +
+        '<td class="pn r ' + (h.pnl > 0 ? 'p' : 'm') + '">' + fmtInt(h.pnl) + '</td>' +
+        '<td class="rg' + (h.fallback ? ' fb' : '') + '" title="' + esc(h.regime || '') + '">' + (h.fallback ? '兜底' : esc(h.regime || '')) + (h.confidence ? ' <span class="text-slate-600">' + pct(h.confidence, 0) + '</span>' : '') + '</td></tr>')
+    }
+    $('hist').innerHTML = out.join('')
+    $('hist-foot').innerHTML = '本窗口 500 注：命中 ' + hits + '/' + rows.length + '（' + pct(hits / rows.length, 1) + '，保本 52.6%）· 累计 <b class="mono ' + (pnl >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + fmtInt(pnl) + '</b> · 期号列显示当日序号，小字为 月/日 开奖时刻（北京）'
+  }
+  function hhmmShort(ms) { if (!ms) return ''; var d = new Date(ms + 8 * 3600e3); return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') }
+  function fetchHist(force) {
+    if (!S.source) return
+    var ver = ++H.ver; H.loading = true
+    $('hist-n').querySelectorAll('.hn').forEach(function (b) { b.classList.toggle('on', +b.getAttribute('data-n') === H.n) })
+    return axios.get('/api/ai/history', { params: { source: S.source, n: H.n, _: force ? Date.now() : undefined } }).then(function (r) {
+      if (ver !== H.ver) return
+      var d = r.data; if (!d.ok) throw new Error(d.error || 'history failed')
+      H.rows = d.history || []; H.tiers = d.tiers || []; H.summary = d.summary || []; H.loading = false
+      renderHist()
+    }).catch(function (e) { H.loading = false; $('hist').innerHTML = '<tr><td colspan="9" class="py-3 text-rose-400">' + esc(e.message) + '</td></tr>' })
+  }
+  $('hist-n').addEventListener('click', function (e) {
+    var b = e.target.closest('.hn'); if (!b) return
+    H.n = +b.getAttribute('data-n'); try { localStorage.setItem('ai:histn', H.n) } catch (err) {}
+    fetchHist(true)
+  })
+  // 展开：懒加载该期 500 注 + 推理；再次点击收起
+  $('hist').addEventListener('click', function (e) {
+    var tr = e.target.closest('tr.hr'); if (!tr) return
+    var expect = tr.getAttribute('data-e'), next = tr.nextElementSibling
+    if (next && next.classList.contains('det')) { next.remove(); tr.classList.remove('open'); return }
+    var det = document.createElement('tr'); det.className = 'det'
+    det.innerHTML = '<td colspan="' + (H.tiers.length + 5) + '"><span class="text-xs text-slate-500"><i class="fas fa-circle-notch fa-spin mr-1"></i>加载该期 500 注…</span></td>'
+    tr.after(det); tr.classList.add('open')
+    var fill = function (h) {
+      var nums = String(h.numbers || '').trim().split(/\s+/)
+      var td = det.firstElementChild
+      td.innerHTML = '<div class="text-xs text-slate-500 mb-2">北京时间 ' + hhmm(h.open_ms) + ' 开出 <b class="text-slate-200 mono">' + esc(h.actual) + '</b> · ' + h.count + ' 注' + (h.hit ? ' · 命中位次 #' + h.rank : ' · 未命中') + (h.model ? ' · ' + esc(h.model) + (h.latency_ms ? ' ' + (h.latency_ms / 1000).toFixed(1) + 's' : '') : '') +
+        ' <button class="ml-2 text-pink-300 hover:text-pink-200 h-copy" data-n="500"><i class="fas fa-copy mr-1"></i>复制 500</button>' +
+        H.tiers.filter(function (t) { return t.key !== 'ai' && t.n_pick <= nums.length }).map(function (t) { return ' <button class="ml-1 ' + (t.custom ? 'text-violet-300 hover:text-violet-200' : 'text-pink-300 hover:text-pink-200') + ' h-copy" data-n="' + t.n_pick + '">前 ' + tierShort(t) + '</button>' }).join('') + '</div>' +
+        '<div class="grid500">' + gridHtml(nums, h.boost, h.actual) + '</div>' +
+        (h.reasoning || h.pick_plan ? '<div class="reason mt-3">' + (h.reasoning ? '<div><b>推理</b>：' + esc(h.reasoning) + '</div>' : '') + (h.pick_plan ? '<div class="mt-1"><b>方案</b>：' + esc(h.pick_plan) + '</div>' : '') + '</div>' : '')
+      td.querySelectorAll('.h-copy').forEach(function (b) { b.addEventListener('click', function (ev) { ev.stopPropagation(); var k = +b.getAttribute('data-n'); copyText(joinNums(nums.slice(0, k), S.fmt), b) }) })
+    }
+    if (H.cache[expect]) { fill(H.cache[expect]); return }
+    axios.get('/api/ai/history/' + expect, { params: { source: S.source } }).then(function (r) { if (!r.data.ok) throw new Error(r.data.error); H.cache[expect] = r.data; if (det.isConnected) fill(r.data) })
+      .catch(function (err) { det.firstElementChild.innerHTML = '<span class="text-xs text-rose-400">' + esc(err.message) + '</span>' })
+  })
 
   // ---------------------------------------------------------------- 复制
   function copyText(text, btn) {
@@ -257,18 +299,19 @@
   $('copy-btn').addEventListener('click', function () { var n = activeNums(); if (n.length) copyText(joinNums(n, S.fmt), $('copy-btn')) })
   $('fmt').addEventListener('change', function () { S.fmt = $('fmt').value; try { localStorage.setItem('ai:fmt', S.fmt) } catch (e) {} if (S.pick) $('cur-text').value = joinNums(activeNums(), S.fmt) })
   $('cur-text').addEventListener('click', function () { this.select() })
-  $('hist-n').addEventListener('change', function () { S.hist = +$('hist-n').value; fetchPick(true) })
 
   // ---------------------------------------------------------------- 数据
   function applyPick(d) {
     S.pick = d.pick; S.record = d.record; S.history = d.history || []; S.lead = d.lead_ms || 20000; S.provider = d.provider; S.model = d.model; S.sync = d.sync
     renderSync(d.sync)
     var hm = $('hd-model'); if (hm) hm.textContent = (d.provider ? d.provider + ' · ' : '') + (d.model || '') + ' · 开奖前 ' + Math.round(S.lead / 1000) + 's 锁定'
-    renderCur(); renderStats(); renderSubStats(); renderHist()
+    renderCur(); renderStats(); renderSubStats()
+    var lastExp = (d.history && d.history[0] && d.history[0].expect) || null
+    if (lastExp && lastExp !== H.lastExp) { H.lastExp = lastExp; fetchHist(false) }
   }
   function fetchPick(force) {
     var ver = ++S.ver
-    return axios.get('/api/arena/pick', { params: { source: S.source, history: S.hist, _: force ? Date.now() : undefined } }).then(function (r) {
+    return axios.get('/api/arena/pick', { params: { source: S.source, history: 1, _: force ? Date.now() : undefined } }).then(function (r) {
       if (ver !== S.ver) return
       var d = r.data; if (!d.ok) throw new Error(d.error || 'pick failed')
       applyPick(d)
@@ -336,7 +379,7 @@
       var saved = null; try { saved = localStorage.getItem('ai:source') } catch (e) {}
       S.source = (S.sources.some(function (s) { return s.key === saved }) ? saved : (S.sources[0] && S.sources[0].key))
       sel.value = S.source
-      sel.addEventListener('change', function () { S.source = sel.value; try { localStorage.setItem('ai:source', S.source) } catch (e) {} $('loader').classList.remove('hidden'); ['cur', 'stats', 'hist-sec'].forEach(function (id) { $(id).classList.add('hidden') }); boot() })
+      sel.addEventListener('change', function () { S.source = sel.value; try { localStorage.setItem('ai:source', S.source) } catch (e) {} $('loader').classList.remove('hidden'); H.lastExp = null; H.cache = {}; ['cur', 'stats', 'hist-sec'].forEach(function (id) { $(id).classList.add('hidden') }); boot() })
       boot()
       setInterval(tickCountdown, 500)
       setInterval(function () { if (document.visibilityState === 'visible') fetchStatus(false) }, 20000)
