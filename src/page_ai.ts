@@ -39,11 +39,11 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
   <div class="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
     <div class="flex items-center gap-2 font-bold text-lg">
       <span class="w-8 h-8 rounded-lg bg-gradient-to-br from-pink-400 to-purple-600 grid place-items-center text-black text-sm">AI</span>
-      <span>AI <span class="text-pink-400">推荐</span> <span class="text-xs font-normal text-slate-500 ml-1">每期 500 注 · 三位号（万/千/百）</span> <span id="hd-model" class="text-[10px] font-normal text-slate-600 ml-1"></span></span>
+      <span>AI <span class="text-pink-400">推荐</span> <span class="text-xs font-normal text-slate-500 ml-1">每期 500 注 · 三位号（万/千/百）</span> <span id="hd-model" class="hidden lg:inline text-[10px] font-normal text-slate-600 ml-1"></span></span>
     </div>
-    <nav class="flex items-center gap-2 text-xs">
+    <nav class="flex items-center gap-2 text-xs whitespace-nowrap">
       <select id="source-sel" class="bg-slate-800 rounded-lg px-3 py-1.5 border border-slate-700"></select>
-      <a href="/top3" class="inline-flex bg-amber-400 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-trophy mr-1"></i>优质策略</a>
+      <a href="/top3" class="inline-flex whitespace-nowrap bg-amber-400 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-trophy mr-1"></i>优质策略</a>
       <a href="/settings" title="配置中心" class="inline-flex bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-gear text-sky-400"></i></a>
       <a href="/arena" class="hidden md:inline-flex bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-trophy mr-1 text-emerald-400"></i>竞技场</a>
       <a href="/analysis" class="hidden md:inline-flex bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-chart-line mr-1 text-cyan-400"></i>量化</a>
@@ -53,6 +53,7 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
 </header>
 
 <main class="max-w-5xl mx-auto px-4 py-5 space-y-4">
+  <div id="stale-bar" class="hidden bg-rose-600/20 border border-rose-500/50 text-rose-200 text-sm rounded-xl px-4 py-2"></div>
   <!-- 加载进度（数据到达前的唯一可见内容） -->
   <section id="loader" class="hero p-5">
     <div class="flex items-center justify-between text-sm mb-2"><span id="ld-text" class="text-slate-200"><i class="fas fa-brain text-pink-400 mr-2"></i>正在连接…</span><span id="ld-pct" class="mono text-slate-400">0%</span></div>
@@ -105,6 +106,13 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
 
   <!-- 战绩概览 -->
   <section id="stats" class="grid grid-cols-2 md:grid-cols-4 gap-3 hidden"></section>
+
+  <!-- 注数回测：只投前 N 注 -->
+  <section id="stake-sec" class="hidden bg-[#0f172a] border border-slate-800 rounded-xl p-4">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-2"><h2 class="font-bold text-sm"><i class="fas fa-sliders mr-2 text-amber-400"></i>投注注数回测 <span class="text-xs text-slate-500 font-normal">若每期只投 AI 排名前 N 注（号码按 AI 得分排序，前 N 个即上方列表前 N 个），历史命中率 / ROI 会怎样</span></h2><span id="stake-best" class="text-xs"></span></div>
+    <div id="stake" class="overflow-auto"></div>
+    <div class="text-[11px] text-slate-600 mt-2">保本命中率 = N/950。edge = 实际命中率 − 保本线。用已结算期的命中位次直接推算，非模拟。样本越少 z 越不可信，请以 z 与期数一并判断。</div>
+  </section>
 
   <!-- 逐期历史 -->
   <section id="hist-sec" class="hidden">

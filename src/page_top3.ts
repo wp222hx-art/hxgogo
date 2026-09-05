@@ -53,6 +53,7 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
 </header>
 
 <main class="max-w-5xl mx-auto px-4 py-5 space-y-4">
+  <div id="stale-bar" class="hidden bg-rose-600/20 border border-rose-500/50 text-rose-200 text-sm rounded-xl px-4 py-2"></div>
   <section id="loader" class="hero p-5">
     <div class="flex items-center justify-between text-sm mb-2"><span id="ld-text"><i class="fas fa-trophy text-amber-400 mr-2"></i>正在读取战绩榜…</span><span id="ld-pct" class="mono text-slate-400">0%</span></div>
     <div class="prog" id="ld-bar"><div style="width:0%"></div></div>

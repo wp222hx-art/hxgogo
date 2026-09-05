@@ -549,7 +549,7 @@ async function aiKick(db: D1Database, env: AiEnv, source: string, trigger = 'pag
     const rows = await loadDraws(db, source, 800)
     // 报单截止 = 下期理论开奖时刻 − AI_LEAD_MS（默认 20s）：留出足够的下单时间；超时则本期由兜底策略顶上
     const lockByMs = rows.length ? (rows[0] as any).open_ms + SOURCES[source].intervalMs - aiLeadMs(env) : undefined
-    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights, { lockByMs, trigger }); return f ? aiScores(f, ctx.vec) : null })
+    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights, { lockByMs, trigger }); return f ? aiScores(f, ctx.vec, ctx.perf) : null })
     if (done) invalidateArena(source)
   } catch (e) { console.error('ai kick', e) } finally { aiBusy.delete(source) }
 }
@@ -706,6 +706,38 @@ app.get('/api/ai/self-check', async (c) => {
     pending_expect: pending?.expect || null, pending_based_on: pending?.based_on || null, expected_next: expectedNext, pending_ok: pendingOk,
     server_now_bj: new Date(now() + 8 * 3600_000).toISOString().slice(0, 19).replace('T', ' '), tz_note: '上游 openTime 为北京时间(UTC+8)；本库 open_ms 为对应 UTC 毫秒；页面按浏览器本地时区显示' }
   return c.json({ ok: true, source, summary, rows })
+})
+
+/** D 方案 · 注数回测：若每期只投该策略排名前 N 注（N=100..600），命中率 / 盈亏 / ROI 如何。
+ *  用已结算期的 rank（命中位次）直接推算：rank ≤ N 即命中；pnl = hit ? 950 − N : −N。保本命中率 = N/950 */
+app.get('/api/arena/stake-curve', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const keys = String(c.req.query('strategies') || 'ai,top3,meta,markov,quant,random').split(',').filter(Boolean).slice(0, 8)
+  const Ns = [100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600]
+  const limit = Math.min(3000, Number(c.req.query('limit') || 2000))
+  const out: any[] = []
+  for (const k of keys) {
+    const rows = (await c.env.DB.prepare(`SELECT hit, rank, count FROM arena_rounds WHERE source=? AND strategy=? AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT ?`).bind(source, k, limit).all<any>()).results
+    if (!rows.length) continue
+    const curve = Ns.map(N => {
+      // N > 该期实际注数时无法推断 → 只统计 count ≥ N 的期；N ≤ 500 时全部可用
+      const usable = rows.filter(r => r.count >= N); const n = usable.length
+      const hits = usable.filter(r => r.hit && r.rank != null && r.rank <= N).length
+      const pnl = hits * (ARENA_ODDS - N) - (n - hits) * N
+      const p = N / 1000, z = n ? (hits - n * p) / Math.sqrt(n * p * (1 - p)) : 0
+      return { N, n, hits, rate: n ? +(hits / n).toFixed(4) : null, breakeven: +(N / ARENA_ODDS).toFixed(4), edge: n ? +((hits / n) - N / ARENA_ODDS).toFixed(4) : null, z: +z.toFixed(2), pnl, roi: n ? +(pnl / (n * N)).toFixed(4) : null }
+    }).filter(x => x.n >= 30)
+    const best = curve.slice().sort((a, b) => (b.roi ?? -9) - (a.roi ?? -9))[0] || null
+    out.push({ strategy: k, periods: rows.length, curve, best_N: best?.N ?? null, best_roi: best?.roi ?? null })
+  }
+  return c.json({ ok: true, source, odds: ARENA_ODDS, strategies: out })
+})
+/** 拉取告警 */
+app.get('/api/sync/alerts', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  const rows = (await c.env.DB.prepare(`SELECT id, kind, detail, created_ms, resolved_ms FROM sync_alerts WHERE source=? ORDER BY id DESC LIMIT 30`).bind(source).all<any>()).results
+  return c.json({ ok: true, source, open: rows.filter(r => !r.resolved_ms).length, alerts: rows })
 })
 
 /** 报单同步审计：每期 AI 锁定时刻 vs 报单截止 vs 实际开奖；heartbeat 状态 */

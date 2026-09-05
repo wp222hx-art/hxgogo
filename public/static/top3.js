@@ -61,9 +61,10 @@
   function renderLb() {
     var lb = S.data.leaderboard || []; var max = Math.max.apply(null, lb.map(function (x) { return Math.abs(x.z) }).concat([1]))
     var members = (S.data.current && S.data.current.members || []).map(function (m) { return m.key })
-    $('lb').innerHTML = '<div class="lb text-slate-500"><span>#</span><span>策略</span><span class="text-right">滚动 z</span><span class="text-right">近 40 期</span><span class="text-right">累计</span></div>' + lb.map(function (x, i) {
+    var rl = S.data.rules || {}
+    $('lb').innerHTML = '<div class="text-[11px] text-slate-500 mb-2">入选门槛：样本 ≥ ' + (rl.min_n || 10) + ' 期 且 滚动 z > ' + (rl.min_z == null ? 0 : rl.min_z) + '；取前三，合格者不足三个则只融合合格者，全无则退回组合最优；AI 入选但未到达时最多等 ' + Math.round((rl.ai_wait_ms || 15000) / 1000) + 's</div><div class="lb text-slate-500"><span>#</span><span>策略</span><span class="text-right">滚动 z</span><span class="text-right">近 40 期</span><span class="text-right">累计</span></div>' + lb.map(function (x, i) {
       var top = members.indexOf(x.key) >= 0
-      return '<div class="lb' + (top ? ' top' : '') + '"><span class="mono text-slate-500">' + (i + 1) + '</span><span class="truncate"><i class="inline-block w-2 h-2 rounded-full mr-1" style="background:' + x.color + '"></i>' + esc(x.short) + (top ? ' <span class="chip" style="background:#fbbf24;color:#000">入选</span>' : '') + '</span>' +
+      return '<div class="lb' + (top ? ' top' : '') + '"><span class="mono text-slate-500">' + (i + 1) + '</span><span class="truncate"><i class="inline-block w-2 h-2 rounded-full mr-1" style="background:' + x.color + '"></i>' + esc(x.short) + (top ? ' <span class="chip" style="background:#fbbf24;color:#000">入选</span>' : x.eligible === false ? ' <span class="chip" style="color:#64748b">z≤0 不合格</span>' : '') + '</span>' +
         '<span class="mono text-right ' + (x.z > 0 ? 'text-emerald-300' : 'text-slate-400') + '">' + (x.z > 0 ? '+' : '') + x.z + '</span><span class="mono text-right">' + pct(x.rate) + '<span class="text-slate-600 text-[10px]"> /' + x.n + '</span></span><span class="mono text-right ' + (x.total && x.total.pnl >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + (x.total ? fmtInt(x.total.pnl) : '—') + '</span></div>'
     }).join('')
   }
@@ -112,6 +113,7 @@
     return axios.get('/api/sync/status', { params: { source: S.source, tick: tick ? 1 : undefined } }).then(function (r) {
       var st = r.data && r.data.status && r.data.status[S.source]; if (!st) return null
       var prev = S.status; S.status = st
+      var sb = $('stale-bar'); if (sb) { if (st.stale || st.fail_streak >= 3) { sb.classList.remove('hidden'); sb.innerHTML = '<i class="fas fa-triangle-exclamation mr-2"></i>数据源异常：' + (st.stale ? '距最新开奖已 ' + Math.round(st.lag_ms / 1000) + 's 无新期' : '') + (st.fail_streak >= 3 ? ' · 连续 ' + st.fail_streak + ' 次拉取失败' : '') + ' · 自动重试中' } else sb.classList.add('hidden') }
       if (prev && prev.latest_expect !== st.latest_expect) fetchData(true)
       return st
     }).catch(function () { return null })

@@ -4,7 +4,7 @@
 //  2) 每期都把它自己上几期的预测与真实结果喂回去（自我复盘闭环），形成不间断迭代；
 //  3) AI 的号码进入 arena_rounds（strategy='ai'），与随机对照组同台结算——它是否有信号由数据说话。
 import { type Draw } from './analysis'
-import { STRATEGIES, ARENA_N, type PerfMap, type ExtraPlan } from './arena'
+import { STRATEGIES, ARENA_N, rollingZ, type PerfMap, type ExtraPlan } from './arena'
 import { normalizeRule, describeRule, simulateRule, listAiPlans, saveAiPlans, retirePlans, type PlanRule, MAX_ACTIVE_AI_PLANS } from './ai_plans'
 
 export interface AiEnv {
@@ -142,7 +142,8 @@ function digest(draws: Draw[]) {
 function perfDigest(perf: PerfMap, weights: Record<string, any>) {
   return STRATEGIES.filter(s => !s.ai).map(s => {
     const rows = (perf[s.key] || []).slice(-40); const n = rows.length, h = rows.reduce((a, r) => a + r.hit, 0)
-    return { key: s.key, name: s.name, rolling40: n ? { n, hits: h, rate: r3(h / n), z: r3((h - n * 0.5) / Math.sqrt(n * 0.25 || 1)) } : null, meta_weight: weights[s.key]?.w ?? null, last10: rows.slice(-10).map(r => r.hit).join('') }
+    const z = n ? (h - n * 0.5) / Math.sqrt(n * 0.25 || 1) : 0
+    return { key: s.key, name: s.name, rolling40: n ? { n, hits: h, rate: r3(h / n), z: r3(z) } : null, blend_eligible: n > 0 && z > 0, meta_weight: weights[s.key]?.w ?? null, last10: rows.slice(-10).map(r => r.hit).join('') }
   })
 }
 
@@ -153,6 +154,7 @@ const SYSTEM = `你是「HashArena 竞技场」的 AI 预测官，负责对一�
 你清楚：哈希逐期独立，任何号码理论概率恒为 1/1000；你的任务不是宣称能预测，而是在同一 walk-forward 规则下，综合所有统计信号、各策略近期战绩以及你自己过往预测的复盘，给出你认为「倾向最高」的分布，让真实开奖来检验。
 要求：
 - 只输出 JSON，字段：regime(string, ≤40字), confidence(0-1), pos_weights(3×10 数组，每位 0-9 的相对权重 0-100，不要全部相同), strategy_blend(对象，key 为基础策略 key，值 0-100), boost(≤30 个三位号字符串), avoid(≤30 个三位号字符串), reasoning(中文 ≤200 字，说明依据与本期与上期思路的差异), pick_plan(中文 ≤150 字，面向投注者的选号方案：三位各自重点覆盖哪几个数字、主要参考哪些策略、加注/回避的逻辑，这 500 注就是按你的权重实际生成的), next_focus(≤60 字，下期复盘要验证的假设)。
+- strategy_blend 只对 blend_eligible=true（滚动 z>0）的策略生效，其余会被系统清零；请把融合权重集中在有正信号的策略上，没有合格策略时可以给空对象。
 - pos_weights 是你对 500 注构成的直接控制：权重高的数字会在该位获得更多注数。要有取舍（每位建议 3-5 个重点数字权重明显高于其余），但不要把任何数字压到 0。
 - 认真利用「你上几期的预测与结果」：如果连续失误，要调整思路（例如从追热切换为回补、降低对某策略的信任）；如果命中，说明哪部分假设成立。
 - 不要复述数据，直接给出判断。本期有严格时限（须在开奖前锁定），请直接输出 JSON，不要任何多余文字。`
@@ -220,12 +222,18 @@ export async function aiPick(db: D1Database, source: string, current: { expect: 
   if (fRow && !fRow.error) { try { forecast = normalize(JSON.parse(fRow.output)) } catch {} }
   const aiRow = current.strategies.find(s => s.strategy === 'ai')
   const metaRow = current.strategies.find(s => s.strategy === 'meta')
+  // A 方案 · 自我守门：AI 最近 AI_GUARD_K 期滚动 z 低于 AI_GUARD_Z → 本期推荐改用组合最优（AI 号码仍照常入榜结算，守门只影响「推荐给用户的那份」）
+  const g = (await db.prepare(`SELECT hit, count FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT ?`).bind(source, AI_GUARD_K).all<any>()).results
+  const gn = g.length, gh = g.reduce((a, r) => a + (r.hit ? 1 : 0), 0), gexp = g.reduce((a, r) => a + r.count / SPACE, 0), gvar = g.reduce((a, r) => a + (r.count / SPACE) * (1 - r.count / SPACE), 0)
+  const guardZ = gn >= 20 && gvar > 0 ? r3((gh - gexp) / Math.sqrt(gvar)) : null
+  const guarded = guardZ != null && guardZ < AI_GUARD_Z && !!metaRow
   const status: 'ready' | 'thinking' | 'fallback' = aiRow ? 'ready' : (fRow?.error ? 'fallback' : 'thinking')
-  const row = aiRow || (status === 'fallback' ? metaRow : null)
+  const row = guarded && status !== 'thinking' ? metaRow! : (aiRow || (status === 'fallback' ? metaRow : null))
   const numbers = row ? row.numbers.split(' ') : []
   return {
     expect: current.expect, based_on: current.based_on, status,
     strategy_used: row ? row.strategy : null, fallback: status === 'fallback', error: fRow?.error || null,
+    guard: { k: AI_GUARD_K, min_z: AI_GUARD_Z, z: guardZ, n: gn, active: guarded },
     numbers, count: numbers.length, coverage: row?.coverage ?? null,
     forecast, model: fRow?.model || null, latency_ms: fRow?.latency_ms ?? null, created_ms: fRow?.created_ms ?? null,
     tokens: fRow ? (fRow.prompt_tokens || 0) + (fRow.completion_tokens || 0) : null,
@@ -235,18 +243,26 @@ export async function aiPick(db: D1Database, source: string, current: { expect: 
 
 // ------------------------------------------------------------ 预测 → 1000 维得分
 /** vec：各基础策略的 1000 维概率向量（来自 generateRound 内部） */
-export function aiScores(f: AiForecast, vec: Record<string, number[]>): number[] {
+/** AI 落地参数（A 方案）：
+ *  - POS_POW 1.0：不再对模型的每位权重做 0.8 次幂温和化，让 AI 的判断更直接地决定 500 注构成（AI 是唯一 z>0 且累计为正的选手）
+ *  - 只融合 z>0 的基础策略：strategy_blend 里对滚动 z ≤ 0 的策略权重清零（12 个策略里 8 个是负期望，不让它们拖后腿）；全部 ≤0 时用均匀分布代替
+ *  - OWN_SHARE 0.65：自有分布 vs 策略融合分布的几何权重从 0.5/0.5 调为 0.65/0.35 */
+export const AI_POS_POW = 1.0, AI_OWN_SHARE = 0.65
+/** 守门：AI 最近 K 期滚动 z < MIN_Z 时，推荐面板改用组合最优 */
+export const AI_GUARD_K = 40, AI_GUARD_Z = -1.0
+export function aiScores(f: AiForecast, vec: Record<string, number[]>, perf?: PerfMap): number[] {
   const norm = (a: number[]) => { const s = a.reduce((x, y) => x + y, 0) || 1; return a.map(x => x / s) }
-  // 每位权重：加 5 的地板防止 0 概率，再做 0.8 次幂温和化（避免模型过度自信）
-  const pd = f.pos_weights.map(row => norm(row.map(v => Math.pow(v + 5, 0.8))))
+  const pd = f.pos_weights.map(row => norm(row.map(v => Math.pow(v + 5, AI_POS_POW))))
   const own = new Array<number>(SPACE); for (let i = 0; i < SPACE; i++) own[i] = pd[0][Math.floor(i / 100)] * pd[1][Math.floor(i / 10) % 10] * pd[2][i % 10]
-  const bsum = Object.values(f.strategy_blend).reduce((a, b) => a + b, 0)
+  // 只保留 z>0 的策略（有 perf 时）；perf 缺省（旧调用）则不过滤
+  const blendW: Record<string, number> = {}
+  for (const [k, w] of Object.entries(f.strategy_blend)) { if (!vec[k] || w <= 0) continue; if (perf && rollingZ(perf, k).z <= 0) continue; blendW[k] = w }
+  const bsum = Object.values(blendW).reduce((a, b) => a + b, 0)
   const blend = new Array<number>(SPACE).fill(0)
-  if (bsum > 0) for (const [k, w] of Object.entries(f.strategy_blend)) { const v = vec[k]; if (!v) continue; for (let i = 0; i < SPACE; i++) blend[i] += (w / bsum) * v[i] }
+  if (bsum > 0) for (const [k, w] of Object.entries(blendW)) { const v = vec[k]; for (let i = 0; i < SPACE; i++) blend[i] += (w / bsum) * v[i] }
   else for (let i = 0; i < SPACE; i++) blend[i] = 1 / SPACE
-  // 几何融合：自有分布 × 策略融合分布（各占一半），再叠加 boost/avoid
   const out = new Array<number>(SPACE)
-  for (let i = 0; i < SPACE; i++) out[i] = Math.sqrt(own[i] * blend[i])
+  for (let i = 0; i < SPACE; i++) out[i] = Math.pow(own[i], AI_OWN_SHARE) * Math.pow(blend[i], 1 - AI_OWN_SHARE)
   for (const n of f.boost) out[Number(n)] *= 1.6
   for (const n of f.avoid) out[Number(n)] *= 0.4
   return norm(out)

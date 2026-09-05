@@ -24,6 +24,7 @@ export const STRATEGIES: StrategyDef[] = [
   { key: 'parity-size', name: '单双大小倾向', short: '单双大小', desc: '近 60 期各位单双、大小经验频率乘积 → 数字权重', color: '#eab308' },
   { key: 'bayes', name: '贝叶斯衰减后验', short: '贝叶斯', desc: 'Dirichlet(1) 先验 + 指数衰减计数（半衰期 30 期）后验', color: '#a855f7' },
   { key: 'markov', name: '马尔可夫转移', short: '马尔可夫', desc: '各位一阶转移矩阵：上期数字 → 本期数字条件频率（近 300 期）', color: '#f97316' },
+  { key: 'pos3-bias', name: '百位偏差追踪', short: '百位偏差', desc: '假设检验型：全历史卡方发现百位分布偏离均匀（p≈0.05），只在百位按全样本频率加权（收缩 50%），万/千均匀。若 200 期后 z>1.5 说明上游存在系统性偏差', color: '#14b8a6' },
   { key: 'random', name: '随机对照组', short: '随机对照', desc: '以期号为种子随机取 500 注，理论命中率 50%，用于对照所有策略', color: '#64748b', control: true },
   { key: 'meta', name: '组合最优 · 自适应加权', short: '组合最优', desc: '只用「目标期之前」已结算战绩，按滚动 z 分数给各策略加权，融合概率后取 Top 500', color: '#22c55e', meta: true },
   { key: 'follow', name: '跟随最强 · 动态切换', short: '跟最强', desc: '每期整份复制「之前」滚动 40 期 z 最高的基础策略（样本 <10 期时退化为组合最优）', color: '#ec4899', meta: true },
@@ -59,6 +60,13 @@ function bayesDist(hist: Draw[], halfLife = 30) {
   const lam = Math.log(2) / halfLife
   return [0, 1, 2].map(pos => { const c = Array(10).fill(1); hist.slice(0, 300).forEach((d, age) => { c[digitsOf(d)[pos]] += Math.exp(-lam * age) }); return norm(c) })
 }
+/** 百位偏差追踪：万/千均匀，百位 = 全样本频率向均匀收缩 50%（只利用长期偏差，不追短期热冷） */
+function pos3BiasDist(hist: Draw[]) {
+  const c = Array(10).fill(0); for (const d of hist) c[digitsOf(d)[2]]++
+  const n = hist.length || 1
+  const freq = c.map(x => x / n), shrunk = freq.map(f => 0.5 * f + 0.5 * 0.1)
+  return [Array(10).fill(0.1), Array(10).fill(0.1), norm(shrunk)]
+}
 function markovDist(hist: Draw[], win = 300) {
   return [0, 1, 2].map(pos => {
     const last = digitsOf(hist[0])[pos]; const c = Array(10).fill(0.5)
@@ -90,6 +98,7 @@ export function strategyScores(key: string, hist: Draw[], ctx: { W: ReturnType<t
     case 'parity-size': return enumerate(paritySizeDist(hist))
     case 'bayes': return enumerate(bayesDist(hist))
     case 'markov': return enumerate(markovDist(hist))
+    case 'pos3-bias': return enumerate(pos3BiasDist(hist))
     case 'random': { const rnd = seeded(ctx.seed); return norm([...Array(SPACE)].map(() => 0.5 + rnd())) }
   }
   throw new Error('unknown strategy ' + key)
@@ -102,6 +111,12 @@ export type PerfMap = Record<string, PerfRow[]>   // 各策略已结算记录（
 export const META_K = 40           // 滚动窗口期数
 export const META_SHRINK = 20      // 样本收缩：n/(n+20) 权重信任度
 
+/** 某策略在 perf 中最近 k 期的滚动 z（命中 − 期望）/√Σp(1−p) */
+export function rollingZ(perf: PerfMap, key: string, k = META_K) {
+  const r = (perf[key] || []).slice(-k); const n = r.length
+  const hits = r.reduce((s, x) => s + x.hit, 0), exp = r.reduce((s, x) => s + x.p, 0), varr = r.reduce((s, x) => s + x.p * (1 - x.p), 0)
+  return { n, hits, rate: n ? hits / n : null, z: n && varr > 0 ? (hits - exp) / Math.sqrt(varr) : 0 }
+}
 /** 按滚动 z 分数给基础策略加权：w = shrink·exp(0.6·clamp(z,-2,2)) + (1-shrink)·1，再归一化 */
 export function metaWeights(perf: PerfMap) {
   const raw: Record<string, { w: number; n: number; hits: number; exp: number; z: number; lift: number }> = {}

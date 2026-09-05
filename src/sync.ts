@@ -32,16 +32,28 @@ function parseOpenTime(s: string): number {
   return new Date(s.replace(' ', 'T') + '+08:00').getTime()
 }
 
-export async function fetchQkltj(code: string, rows: number): Promise<any[]> {
-  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 12_000)
+async function fetchOnce(code: string, rows: number, timeoutMs: number): Promise<any[]> {
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    const res = await fetch(`https://api.qkltj.com/api/draw-result?code=${code}&rows=${rows}`, { signal: ctrl.signal, headers: { accept: 'application/json' }, cf: { cacheTtl: 0 } } as any)
+    const res = await fetch(`https://api.qkltj.com/api/draw-result?code=${code}&rows=${rows}&_=${Date.now()}`, { signal: ctrl.signal, headers: { accept: 'application/json', 'cache-control': 'no-cache' }, cf: { cacheTtl: 0 } } as any)
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const j = await res.json() as any
     if (j.code !== 0 || !Array.isArray(j.data)) throw new Error(j.msg || 'bad payload')
     return j.data
   } finally { clearTimeout(t) }
 }
+/** 拉取上游：三连重试（超时 5s/6s/8s，间隔 0.8s/1.6s 退避）。总耗时上限 ~22s，仍留在 1 分钟节拍内 */
+export const FETCH_RETRIES = [5_000, 6_000, 8_000]
+export async function fetchQkltj(code: string, rows: number): Promise<any[]> {
+  let lastErr: any
+  for (let i = 0; i < FETCH_RETRIES.length; i++) {
+    try { return await fetchOnce(code, rows, FETCH_RETRIES[i]) }
+    catch (e: any) { lastErr = e; if (i < FETCH_RETRIES.length - 1) await new Promise(r => setTimeout(r, 800 * (i + 1))) }
+  }
+  throw new Error(`upstream failed after ${FETCH_RETRIES.length} tries: ${lastErr?.name === 'AbortError' ? 'timeout' : String(lastErr?.message || lastErr)}`)
+}
+/** 断流判定：距最新开奖超过 2 个周期 + 发布延迟 → stale */
+export const staleAfterMs = (intervalMs: number) => 2 * intervalMs + PUBLISH_DELAY_MS
 
 export interface SyncResult {
   source: string; skipped?: boolean; reason?: string
@@ -131,15 +143,32 @@ export async function syncSource(db: D1Database, source: string, force = false):
     const curLatestExpect = latestOpen >= (cnt.m || 0) ? latestExpect : (meta?.latest_expect ?? latestExpect)
     const nextDue = curLatestOpen ? curLatestOpen + cfg.intervalMs : now + CATCHUP_MS
     const isAudit = mode === 'force' || mode === 'audit' || !meta || meta.total === 0
-    await db.prepare(`UPDATE sync_meta SET total=?, last_error=NULL, latest_expect=?, latest_open_ms=?, next_due_ms=?, last_ok_ms=?, last_inserted=?, last_rows=?, last_latency_ms=?
+    await db.prepare(`UPDATE sync_meta SET total=?, last_error=NULL, fail_streak=0, latest_expect=?, latest_open_ms=?, next_due_ms=?, last_ok_ms=?, last_inserted=?, last_rows=?, last_latency_ms=?
         ${isAudit ? ', last_audit_ms=?, audit_rows=?, audit_diff=?, audit_fixed=?' : ''} WHERE source=?`)
       .bind(...[cnt.c, curLatestExpect, curLatestOpen, nextDue, Date.now(), inserted, data.length, latency, ...(isAudit ? [Date.now(), data.length, updated, updated] : []), source]).run()
+    await resolveAlerts(db, source, now)
     if (inserted || updated || force) { bump(source); cacheInvalidator?.(source) }
     return { source, mode, fetched: data.length, inserted, updated, unchanged, latest_expect: curLatestExpect, latest_open_ms: curLatestOpen, next_due_ms: nextDue, latency_ms: latency, consistent: updated === 0, diffs }
   } catch (e: any) {
-    await db.prepare('UPDATE sync_meta SET last_error=? WHERE source=?').bind(String(e.message || e), source).run()
-    return { source, mode, inserted: 0, error: String(e.message || e) }
+    const msg = String(e.message || e)
+    await db.prepare('UPDATE sync_meta SET last_error=?, fail_streak=fail_streak+1, last_fail_ms=? WHERE source=?').bind(msg, now, source).run()
+    const m2 = await db.prepare('SELECT fail_streak FROM sync_meta WHERE source=?').bind(source).first<any>()
+    // 连续 3 次失败 → 记一条告警（同一未解决告警不重复）
+    if ((m2?.fail_streak || 0) >= 3) {
+      const open = await db.prepare(`SELECT id FROM sync_alerts WHERE source=? AND kind='fetch_fail' AND resolved_ms IS NULL`).bind(source).first()
+      if (!open) await db.prepare(`INSERT INTO sync_alerts (source, kind, detail, created_ms) VALUES (?,?,?,?)`).bind(source, 'fetch_fail', `连续 ${m2.fail_streak} 次拉取失败：${msg}`, now).run()
+    }
+    return { source, mode, inserted: 0, error: msg }
   }
+}
+/** 成功后调用：关闭未解决告警并记 recovered */
+async function resolveAlerts(db: D1Database, source: string, now: number) {
+  const open = (await db.prepare(`SELECT id, kind, detail FROM sync_alerts WHERE source=? AND resolved_ms IS NULL`).bind(source).all<any>()).results
+  if (!open.length) return
+  await db.batch([
+    db.prepare(`UPDATE sync_alerts SET resolved_ms=? WHERE source=? AND resolved_ms IS NULL`).bind(now, source),
+    db.prepare(`INSERT INTO sync_alerts (source, kind, detail, created_ms, resolved_ms) VALUES (?,?,?,?,?)`).bind(source, 'recovered', `已恢复（关闭 ${open.length} 条告警）`, now, now),
+  ])
 }
 
 /** 同步状态（供 /api/sync/status 与前端状态条） */
@@ -157,7 +186,7 @@ export async function syncStatus(db: D1Database, source: string) {
     last_sync_ms: meta?.last_sync_ms ?? null, last_ok_ms: meta?.last_ok_ms ?? null, last_latency_ms: meta?.last_latency_ms ?? null,
     last_inserted: meta?.last_inserted ?? 0, last_rows: meta?.last_rows ?? 0, total: meta?.total ?? 0,
     audit: { last_ms: meta?.last_audit_ms ?? null, rows: meta?.audit_rows ?? 0, diff: meta?.audit_diff ?? 0, fixed: meta?.audit_fixed ?? 0, every_ms: AUDIT_EVERY_MS },
-    last_error: meta?.last_error ?? null, fresh, version: dataVersion(source),
+    last_error: meta?.last_error ?? null, fresh, stale: lag != null && lag > staleAfterMs(cfg.intervalMs), fail_streak: meta?.fail_streak || 0, version: dataVersion(source),
   }
 }
 

@@ -126,6 +126,14 @@
 - **页面**：本期期号 / 倒计时（北京时间）/ 三张成员卡（名次 · 滚动 z · 近 40 期命中率 · 融合权重 · 其 500 注中多少进入融合）/ **四个可切换列表**（融合 500 注 + 三位成员各 500 注）→ 一键复制（空格 / 逗号 / 每行）/ 网格中金色 = 三策略共识、浅金 = 两策略共识 / 战绩卡（融合策略已实盘期数 · 命中率 vs 52.6% · 累计盈亏 · 近 20 期）/「为什么是这三个」完整排行（入选标记）/ 逐期战绩（每行 = 期号 · 实开 · 北京时间 · 三位成员各自中/未 · 融合命中#名次 · 盈亏；展开看该期 500 注 + 成员权重 + 复制）
 - **实测**：本期 `…1207` 前三 = 量化均衡(z+1.48, w49%) / 量化聚焦(+0.82, 33%) / 马尔可夫(−0.16, 18%)，融合 500 注中三策略共识 284 注；融合策略实盘 712 期命中率 49.2%（与理论 50% 一致——「跟随最强」并不自动带来超额，这正是要用数据说话的地方）
 
+### 策略优化 v2（基于 5,082 期审计数据的四项改动 + 拉取保险）
+**审计结论**：12 个策略中只有 AI 在保本线之上（52.85%，z=+1.58，累计 +）；开奖数字万/千位完全均匀（卡方 8.3/4.2），**百位卡方 17.09 刚过 5% 临界**；上期→本期转移无记忆效应（卡方 84.7 < 103）；今日 1,323 期 0 漏期。
+- **A · AI 成主角**（`src/ai.ts`）：`AI_POS_POW` 0.8→**1.0**（不再温和化模型的每位权重）；`strategy_blend` **只保留滚动 z>0 的策略**（perf 传入 `aiScores`，8 个负期望策略被清零；提示词告知模型 `blend_eligible`）；自有分布/策略融合几何权重 0.5/0.5→**0.65/0.35**；**守门** `AI_GUARD_K=40, AI_GUARD_Z=−1.0`：AI 近 40 期滚动 z 低于 −1 时，推荐面板自动改用组合最优（AI 号码仍照常入榜结算），`pick.guard{z,n,active}` 返回并在页面标注
+- **B · top3 门槛 + AI 入候选**（`src/top3.ts`）：候选扩为除随机对照外全部 12 个策略（含 AI）；**只有 z>0 且样本 ≥10 的策略才可入选**，合格者不足 3 个则只融合合格者，全无则退回组合最优；AI 入选但本期未到达时最多等 `TOP3_AI_WAIT_MS=15s`（从基础策略生成起算），超时剔除 AI 只融合已到者。实测时序：meta 22:22:16 → AI 22:22:22 → top3 22:22:27（上期开奖后 13s 锁定，距开奖 47s）；本期成员 AI(z+2.20, w41%) / meta(+1.58, 32%) / markov(+1.27, 27%)，三策略共识 240 注。排行表标注「z≤0 不合格」
+- **C · 百位偏差追踪策略 `pos3-bias`**（`src/arena.ts`）：假设检验型——万/千均匀，百位按全样本频率向均匀收缩 50% 加权。已回放 197 期：52.79%，z=+0.78，累计 +300（方向与假设一致但尚不显著；若 200+ 期后 z>1.5 即可确认上游存在系统性偏差）
+- **D · 注数回测 `GET /api/arena/stake-curve?strategies=`**：用已结算期的命中位次直接推算「若只投前 N 注」的命中率/edge/z/盈亏/ROI（保本 = N/950）。**AI 788 期：前 150 注 ROI +4.48%（z +1.18）、前 100 注 +3.68%、前 500 注 +0.79%**；markov 前 100 注 +6.23%（z +1.7）但 200 注以上转负；top3/meta/random 全线为负。`/ai` 页新增「投注注数回测」表，★ 标注 ROI 最优 N
+- **S · 拉取保险**（`src/sync.ts`）：`fetchQkltj` **三连重试**（超时 5/6/8s，退避 0.8/1.6s，URL 加时间戳防缓存）；`sync_meta.fail_streak` 连续 ≥3 次失败写 `sync_alerts(fetch_fail)`，恢复后自动关闭并记 `recovered`；`syncStatus` 新增 `stale`（距最新开奖 >2 周期+15s）与 `fail_streak`；`/ai` `/top3` 页顶部红条在 stale 或连续失败时提示「自动重试中，当前为最后一期有效数据」；`GET /api/sync/alerts`
+
 ### 配置中心 `/settings`（AI 供应商 key 填写 + 真实校验，表 `app_config`，模块 `src/config.ts`）
 - **页面填写、即时生效**：DeepSeek 卡片内置 **V4 模型目录卡**（点选即填，含版本/定价/各思考档耗时）+ **思考模式四档按钮**（off/low/high/max，带适用厅型提示）+ **请求体实时预览**（展示将发出的 `chat/completions` JSON，含 `thinking` / `reasoning_effort` / `response_format`）；OpenAI 兼容一组（key、Base URL、模型、effort）；供应商选择（自动 / 强制 deepseek / 强制 openai）、`AI_LEAD_MS` 报单窗口、`AI_TIMEOUT_MS`、`AI_REPORT_EVERY`。保存到 D1 `app_config`，**优先级高于环境变量**，15s 内全站生效（`/api/*` 中间件每请求解析一次 `effectiveEnv` → `c.var.ai`，后台 `aiKick` 同样使用）
 - **密钥安全**：只存服务端；`GET /api/config` 只返回打码值（`sk-a…9xYz`）与来源标签（页面配置 / 环境变量 / 未设置）；密钥输入框留空 = 不修改
@@ -260,7 +268,9 @@
 | GET | `/api/arena/plans?source=` | **AI 建议回测**：active[]（规则 DSL + 人话描述 + 样本内/样本外统计）/ retired[]（含 retire_reason）/ builtin（内置 6 套 key） |
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
-| GET | `/api/top3/pick?source=&history=12\|30\|60` | 优质策略推荐：`current{expect, based_on, status, created_ms, members[]{key,name,short,color,desc,z,rate,n,hits,w,numbers[500]}, fused[500], count, overlap[], consensus_all}` + `record{n,hits,rate,pnl,streak[20]}` + `leaderboard[]{key,short,z,n,rate,total}` + `history[]{expect,numbers,actual,hit,rank,pnl,open_ms,members[]{key,short,z,w,hit,rank}}`；缓存 20s |
+| GET | `/api/arena/stake-curve?source=&strategies=ai,top3,…&limit=2000` | 注数回测：`strategies[]{strategy, periods, curve[]{N, n, hits, rate, breakeven, edge, z, pnl, roi}, best_N, best_roi}` |
+| GET | `/api/sync/alerts?source=` | 拉取告警：`open` 未解决数 + `alerts[]{kind fetch_fail\|recovered, detail, created_ms, resolved_ms}` |
+| GET | `/api/top3/pick?source=&history=12\|30\|60` | 优质策略推荐：`current{expect, based_on, status, created_ms, members[]{key,name,short,color,desc,z,rate,n,hits,w,numbers[500]}, fused[500], count, overlap[], consensus_all}` + `record{n,hits,rate,pnl,streak[20]}` + `leaderboard[]{key,short,z,n,rate,eligible,total}` + `rules{min_n,min_z,ai_wait_ms,candidates}` + `history[]{expect,numbers,actual,hit,rank,pnl,open_ms,members[]{key,short,z,w,hit,rank}}`；缓存 20s |
 | POST | `/api/top3/backfill?source=&n=100` | 回放补齐 top3 历史（幂等） |
 | GET | `/api/ai/self-check?source=&n=10` | 与上游 API 逐字段对账：`summary{upstream_latest, local_latest, in_sync, compared, all_match, mismatches, pending_expect, pending_based_on, expected_next, pending_ok, upstream_ms, server_now_bj}` + `rows[]{expect, upstream{opennumber,openTime,block}, local{…}, ai{based_on, actual, hit, rank, scored, locked_bj}, ok, diffs[]}` |
 | GET | `/api/ai/sync-audit?source=&n=30` | 报单同步审计：`summary{n, locked_in_time, locked_in_time_rate, ai_success, fallback, margin_open_min_s, margin_open_avg_s, lead_ms, heartbeat_alive}` + `items[]{expect, model, trigger, latency_ms, started_after_prev_s, locked_after_prev_s, margin_to_lock_s, margin_to_open_s, ok, error, hit}` |

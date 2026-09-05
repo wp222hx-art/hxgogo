@@ -33,7 +33,7 @@
     step(4)
     setTimeout(function () {
       $('loader').classList.add('hidden')
-      ;['cur', 'stats', 'hist-sec'].forEach(function (id) { var el = $(id); el.classList.remove('hidden'); el.classList.add('fade-in') }); renderSync(S.sync)
+      ;['cur', 'stats', 'hist-sec'].forEach(function (id) { var el = $(id); el.classList.remove('hidden'); el.classList.add('fade-in') }); renderSync(S.sync); fetchStake()
     }, 250)
   }
 
@@ -70,8 +70,9 @@
   }
   function reasonHtml(p) {
     var f = p.forecast, b = p.breakdown
-    if (!f && !b) return '<div class="text-slate-500">' + (p.fallback ? '本期 AI 调用未成功（' + esc(p.error || '超时') + '），已用「组合最优 meta」策略兜底，保证每期形成选择。' : '推理内容暂无。') + '</div>'
-    var h = []
+    var gtxt = p.guard && p.guard.z != null ? '<div class="text-slate-500 mb-1"><b>守门</b>：AI 近 ' + p.guard.n + ' 期滚动 z = ' + (p.guard.z > 0 ? '+' : '') + p.guard.z + (p.guard.active ? ' <span class="text-amber-300">低于 ' + p.guard.min_z + '，本期推荐已切换为组合最优（AI 号码仍在榜上结算）</span>' : ' <span class="text-emerald-400">≥ ' + p.guard.min_z + '，AI 推荐生效</span>') + '</div>' : ''
+    if (!f && !b) return gtxt + '<div class="text-slate-500">' + (p.fallback ? '本期 AI 调用未成功（' + esc(p.error || '超时') + '），已用「组合最优 meta」策略兜底，保证每期形成选择。' : '推理内容暂无。') + '</div>'
+    var h = [gtxt]
     if (f) {
       h.push('<div><b>盘面判断</b>：' + esc(f.regime) + ' <span class="text-slate-500">· 自评把握 ' + pct(f.confidence, 0) + '</span></div>')
       if (f.reasoning) h.push('<div class="mt-1"><b>推理</b>：' + esc(f.reasoning) + '</div>')
@@ -106,7 +107,7 @@
       $('cur-reason').innerHTML = '<div class="text-slate-500">推理中…</div>'
     } else {
       wait.classList.add('hidden'); btn.disabled = !p.numbers.length; S.waitStart = 0
-      $('cur-state').textContent = p.status === 'fallback' ? '兜底（AI 调用失败）' : 'AI 已锁定'
+      $('cur-state').textContent = p.guard && p.guard.active ? '守门生效 · 改用组合最优' : p.status === 'fallback' ? '兜底（AI 调用失败）' : 'AI 已锁定'
       $('cur-meta').textContent = p.count + ' 注 · 覆盖 ' + pct(p.coverage || p.count / 1000, 1) + (p.created_ms ? ' · 北京时间 ' + hhmm(p.created_ms) + ' 锁定' : '')
       $('cur-text').value = joinNums(p.numbers, S.fmt)
       $('cur-grid').innerHTML = gridHtml(p.numbers, p.forecast && p.forecast.boost)
@@ -145,6 +146,19 @@
       .finally(function () { btn.disabled = false; btn.innerHTML = '<i class="fas fa-scale-balanced mr-1"></i>与上游 API 对账' })
   }
   var chk = $('chk-btn'); if (chk) chk.addEventListener('click', selfCheck)
+  // ---------------------------------------------------------------- 注数回测
+  function fetchStake() {
+    axios.get('/api/arena/stake-curve', { params: { source: S.source, strategies: 'ai' } }).then(function (r) {
+      var s = (r.data.strategies || [])[0]; var el = $('stake'), sec = $('stake-sec'); if (!s || !el) return
+      sec.classList.remove('hidden')
+      var rows = s.curve.map(function (c) {
+        var pos = c.edge > 0
+        return '<tr class="' + (c.N === s.best_N ? 'bg-amber-400/10' : '') + '"><td class="mono font-bold">' + c.N + (c.N === s.best_N ? ' <span class="text-amber-300">★</span>' : '') + '</td><td class="mono">' + pct(c.rate) + '</td><td class="mono text-slate-500">' + pct(c.breakeven) + '</td><td class="mono ' + (pos ? 'text-emerald-300' : 'text-rose-300') + '">' + (c.edge > 0 ? '+' : '') + pct(c.edge, 2) + '</td><td class="mono ' + (c.z >= 1.5 ? 'text-emerald-300' : c.z > 0 ? 'text-slate-200' : 'text-rose-300') + '">' + (c.z > 0 ? '+' : '') + c.z + '</td><td class="mono ' + (c.pnl >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + fmtInt(c.pnl) + '</td><td class="mono font-bold ' + (c.roi >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + (c.roi > 0 ? '+' : '') + pct(c.roi, 2) + '</td></tr>'
+      }).join('')
+      el.innerHTML = '<table class="w-full text-[12px]"><thead class="text-slate-500 text-[11px]"><tr><th class="text-left py-1">前 N 注</th><th class="text-left">命中率</th><th class="text-left">保本</th><th class="text-left">edge</th><th class="text-left">z</th><th class="text-left">累计盈亏</th><th class="text-left">ROI</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      $('stake-best').innerHTML = s.best_N ? '样本 ' + s.periods + ' 期 · ROI 最优：<b class="text-amber-300 mono">前 ' + s.best_N + ' 注</b>（' + (s.best_roi > 0 ? '+' : '') + pct(s.best_roi, 2) + '）' : ''
+    }).catch(function () {})
+  }
   // ---------------------------------------------------------------- 战绩 + 历史
   function renderStats() {
     var r = S.record; if (!r) return
@@ -232,7 +246,8 @@
     return axios.get('/api/sync/status', { params: { source: S.source, tick: tick ? 1 : undefined } }).then(function (r) {
       var st = r.data && r.data.status && r.data.status[S.source]; if (!st) return null
       var prev = S.status; S.status = st
-      if (prev && prev.latest_expect !== st.latest_expect) { S.waitStart = 0; fetchPick(true) }
+      var sb = $('stale-bar'); if (sb) { if (st.stale || st.fail_streak >= 3) { sb.classList.remove('hidden'); sb.innerHTML = '<i class="fas fa-triangle-exclamation mr-2"></i>数据源异常：' + (st.stale ? '距最新开奖已 ' + Math.round(st.lag_ms / 1000) + 's 无新期' : '') + (st.fail_streak >= 3 ? ' · 连续 ' + st.fail_streak + ' 次拉取失败（' + esc(st.last_error || '') + '）' : '') + ' · 系统每 4s 自动重试，当前显示为最后一期有效数据' } else sb.classList.add('hidden') }
+      if (prev && prev.latest_expect !== st.latest_expect) { S.waitStart = 0; fetchPick(true); setTimeout(fetchStake, 3000) }
       return st
     }).catch(function () { return null })
   }
