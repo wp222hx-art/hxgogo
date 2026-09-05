@@ -135,6 +135,12 @@
 
 **实测（修复后连续 5 期无人值守，v4-flash 非思考）**：上期开奖后 **2–5s 开始**、**7.6–10.7s 锁定**、距 20s 截止余量 **+29~32s**、距实际开奖 **48–52s**；5/5 截止前锁定。
 
+### 数据一致性自校验（与上游 API 逐字段对账）
+- **`GET /api/ai/self-check?source=&n=10`**：此刻直接拉 `api.qkltj.com` 原始数据，与本库 `draws`（号码 / openTime / block / hash）、AI 结算（`arena_rounds.actual` 是否等于上游前三位）逐期比对；并检查 AI 待开期是否恰为「上游最新期 + 1」且 `based_on` = 上游最新期。返回 `summary{upstream_latest, local_latest, in_sync, all_match, mismatches, pending_expect, expected_next, pending_ok, server_now_bj}` + `rows[]`
+- **`/ai` 页「与上游 API 对账」按钮**：一键展示比对表（期号 · 上游开奖(北京) · 上游号码 · 本库号码 · AI 结算 · AI 锁定(北京) · ✓/差异）
+- **时区统一**：上游 `openTime` 是北京时间（UTC+8）；此前 `/ai` 页用浏览器本地时区渲染 `created_ms` / `open_ms`，在非 +8 时区的浏览器（或沙箱 UTC）下会显示成「10:58」而上游是「18:58」，看起来像「时间对不上」。现全部改为**明确标注「北京时间」**并按 UTC+8 渲染；倒计时旁显示「预计北京时间 HH:MM:SS 开奖」；逐期记录每行带北京时间开奖时刻
+- **实测**：连续 10 期 号码/时间/区块/hash 全部一致；AI 待开期 = 上游最新 + 1 ✓；AI 每期在上期开奖后 ~7–10s（北京时间 xx:xx:2x）锁定，距该期开奖 50s+
+
 ### 前端加载体系优化（缓存 + 后台推理 + 进度反馈）
 **问题**：此前 `/api/arena/board` 与 `/api/arena/pick` 在请求路径内**同步等待大模型推理（6–15s）**，且 board JSON 约 290KB，页面首屏 2–15s 不等。
 **方案**（`src/index.tsx`）：
@@ -244,6 +250,7 @@
 | GET | `/api/arena/plans?source=` | **AI 建议回测**：active[]（规则 DSL + 人话描述 + 样本内/样本外统计）/ retired[]（含 retire_reason）/ builtin（内置 6 套 key） |
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
+| GET | `/api/ai/self-check?source=&n=10` | 与上游 API 逐字段对账：`summary{upstream_latest, local_latest, in_sync, compared, all_match, mismatches, pending_expect, pending_based_on, expected_next, pending_ok, upstream_ms, server_now_bj}` + `rows[]{expect, upstream{opennumber,openTime,block}, local{…}, ai{based_on, actual, hit, rank, scored, locked_bj}, ok, diffs[]}` |
 | GET | `/api/ai/sync-audit?source=&n=30` | 报单同步审计：`summary{n, locked_in_time, locked_in_time_rate, ai_success, fallback, margin_open_min_s, margin_open_avg_s, lead_ms, heartbeat_alive}` + `items[]{expect, model, trigger, latency_ms, started_after_prev_s, locked_after_prev_s, margin_to_lock_s, margin_to_open_s, ok, error, hit}` |
 | GET | `/api/config` | 配置快照：`items{KEY:{value(密钥打码), source db\|env\|none, set, updated_ms}}` + `effective{provider, model, base}` |
 | PUT | `/api/config` | body `{KEY: value \| null}`（白名单键；null/空 = 删除页面配置；数值范围校验） |

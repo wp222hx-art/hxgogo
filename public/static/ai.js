@@ -41,7 +41,9 @@
   var fmtInt = function (n) { return (n > 0 ? '+' : '') + Number(n || 0).toLocaleString('zh-CN') }
   var pct = function (x, d) { return (x * 100).toFixed(d == null ? 1 : d) + '%' }
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] }) }
-  var hhmm = function (ms) { if (!ms) return ''; var d = new Date(ms); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) }
+  // 统一用北京时间（UTC+8，即上游 openTime 的时区）显示，避免浏览器时区导致「时间对不上」
+  var bj = function (ms, withSec) { if (!ms) return ''; var d = new Date(ms + 8 * 3600000); var s = ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2); return withSec ? s + ':' + ('0' + d.getUTCSeconds()).slice(-2) : s }
+  var hhmm = function (ms) { return bj(ms, true) }
   function joinNums(arr, fmt) { return fmt === 'comma' ? arr.join(',') : fmt === 'line' ? arr.join('\n') : arr.join(' ') }
   function lsKey() { return 'ai:pick:' + S.source }
   function saveLocal(data) { try { localStorage.setItem(lsKey(), JSON.stringify({ t: Date.now(), data: data })) } catch (e) {} }
@@ -105,7 +107,7 @@
     } else {
       wait.classList.add('hidden'); btn.disabled = !p.numbers.length; S.waitStart = 0
       $('cur-state').textContent = p.status === 'fallback' ? '兜底（AI 调用失败）' : 'AI 已锁定'
-      $('cur-meta').textContent = p.count + ' 注 · 覆盖 ' + pct(p.coverage || p.count / 1000, 1) + (p.created_ms ? ' · ' + hhmm(p.created_ms) + ' 生成' : '')
+      $('cur-meta').textContent = p.count + ' 注 · 覆盖 ' + pct(p.coverage || p.count / 1000, 1) + (p.created_ms ? ' · 北京时间 ' + hhmm(p.created_ms) + ' 锁定' : '')
       $('cur-text').value = joinNums(p.numbers, S.fmt)
       $('cur-grid').innerHTML = gridHtml(p.numbers, p.forecast && p.forecast.boost)
       $('cur-reason').innerHTML = reasonHtml(p)
@@ -123,6 +125,26 @@
       '<span class="text-slate-600">开奖前 ' + Math.round((S.lead || 20000) / 1000) + 's 为截止</span>'
     el.classList.remove('hidden')
   }
+  // ---------------------------------------------------------------- 对账：与上游 API 实时比对
+  function selfCheck() {
+    var btn = $('chk-btn'), out = $('chk-out'); if (!btn) return
+    btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-1"></i>拉取上游 API 比对中…'; out.classList.remove('hidden'); out.innerHTML = ''
+    axios.get('/api/ai/self-check', { params: { source: S.source, n: 10 } }).then(function (r) {
+      var d = r.data, sm = d.summary
+      var head = '<div class="flex flex-wrap gap-x-4 gap-y-1 mb-2">' +
+        '<span><i class="fas ' + (sm.in_sync ? 'fa-circle-check text-emerald-400' : 'fa-triangle-exclamation text-amber-400') + ' mr-1"></i>上游最新 <b class="mono">' + sm.upstream_latest + '</b> · 本库 <b class="mono">' + sm.local_latest + '</b> ' + (sm.in_sync ? '一致' : '<span class="text-amber-300">不一致</span>') + '</span>' +
+        '<span><i class="fas ' + (sm.all_match ? 'fa-circle-check text-emerald-400' : 'fa-triangle-exclamation text-rose-400') + ' mr-1"></i>近 ' + sm.compared + ' 期 号码/时间/区块/hash ' + (sm.all_match ? '全部一致' : '<span class="text-rose-300">' + sm.mismatches + ' 期不一致</span>') + '</span>' +
+        '<span><i class="fas ' + (sm.pending_ok ? 'fa-circle-check text-emerald-400' : 'fa-triangle-exclamation text-amber-400') + ' mr-1"></i>AI 待开期 <b class="mono">' + sm.pending_expect + '</b>（应为 ' + sm.expected_next + '）' + (sm.pending_ok ? ' ✓' : '') + '</span>' +
+        '<span class="text-slate-500">上游耗时 ' + sm.upstream_ms + 'ms · 服务器北京时间 ' + sm.server_now_bj.slice(11) + '</span></div>'
+      var rows = d.rows.map(function (x) {
+        return '<tr class="' + (x.ok ? '' : 'text-rose-300') + '"><td class="mono">' + x.expect + '</td><td class="mono">' + x.upstream.openTime.slice(11) + '</td><td class="mono">' + x.upstream.opennumber + '</td><td class="mono">' + (x.local ? x.local.opennumber : '—') + '</td>' +
+          '<td class="mono">' + (x.ai ? x.ai.actual + (x.ai.hit ? ' <span class="text-emerald-400">中#' + x.ai.rank + '</span>' : ' <span class="text-slate-500">未中</span>') : '—') + '</td><td class="mono text-slate-500">' + (x.ai ? x.ai.locked_bj : '—') + '</td><td>' + (x.ok ? '<i class="fas fa-check text-emerald-400"></i>' : esc(x.diffs.join('；'))) + '</td></tr>'
+      }).join('')
+      out.innerHTML = head + '<div class="overflow-auto"><table class="w-full text-[11px]"><thead class="text-slate-500"><tr><th class="text-left">期号</th><th class="text-left">上游开奖(北京)</th><th class="text-left">上游号码</th><th class="text-left">本库号码</th><th class="text-left">AI 结算</th><th class="text-left">AI 锁定(北京)</th><th class="text-left">比对</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    }).catch(function (e) { out.innerHTML = '<span class="text-rose-300">对账失败：' + esc(e.message) + '</span>' })
+      .finally(function () { btn.disabled = false; btn.innerHTML = '<i class="fas fa-scale-balanced mr-1"></i>与上游 API 对账' })
+  }
+  var chk = $('chk-btn'); if (chk) chk.addEventListener('click', selfCheck)
   // ---------------------------------------------------------------- 战绩 + 历史
   function renderStats() {
     var r = S.record; if (!r) return
@@ -142,7 +164,7 @@
       return '<details class="hrow ' + (h.hit ? 'hit' : '') + '" data-i="' + i + '">' +
         '<summary><span class="mono text-amber-300">' + h.expect + '</span>' +
         '<span class="mono font-black ' + (h.hit ? 'text-emerald-400' : 'text-slate-300') + '">' + (h.actual || '—') + '</span>' +
-        '<span class="truncate text-slate-400">' + reg + (h.confidence ? ' <span class="text-slate-600">' + pct(h.confidence, 0) + '</span>' : '') + '</span>' +
+        '<span class="truncate text-slate-400"><span class="mono text-slate-500 mr-2">' + bj(h.open_ms, true) + '</span>' + reg + (h.confidence ? ' <span class="text-slate-600">' + pct(h.confidence, 0) + '</span>' : '') + '</span>' +
         '<span>' + (h.hit ? '<span class="badge h">命中 #' + h.rank + '</span>' : '<span class="badge m">未中</span>') + '</span>' +
         '<span class="mono text-right ' + (h.pnl > 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + fmtInt(h.pnl) + '</span></summary>' +
         '<div class="p-3 hist-body"></div></details>'
@@ -154,7 +176,7 @@
     d.setAttribute('data-r', '1')
     var nums = String(h.numbers || '').trim().split(/\s+/)
     var body = d.querySelector('.hist-body')
-    body.innerHTML = '<div class="text-xs text-slate-500 mb-2">' + hhmm(h.open_ms) + ' 开出 <b class="text-slate-200 mono">' + esc(h.actual) + '</b> · ' + h.count + ' 注' + (h.hit ? ' · 命中位次 #' + h.rank : '') +
+    body.innerHTML = '<div class="text-xs text-slate-500 mb-2">北京时间 ' + hhmm(h.open_ms) + ' 开出 <b class="text-slate-200 mono">' + esc(h.actual) + '</b> · ' + h.count + ' 注' + (h.hit ? ' · 命中位次 #' + h.rank : '') +
       ' <button class="ml-2 text-pink-300 hover:text-pink-200 h-copy"><i class="fas fa-copy mr-1"></i>复制该期 500 注</button></div>' +
       '<div class="grid500">' + gridHtml(nums, h.boost, h.actual) + '</div>' +
       (h.reasoning || h.pick_plan ? '<div class="reason mt-3">' + (h.reasoning ? '<div><b>推理</b>：' + esc(h.reasoning) + '</div>' : '') + (h.pick_plan ? '<div class="mt-1"><b>方案</b>：' + esc(h.pick_plan) + '</div>' : '') + '</div>' : '')
@@ -219,6 +241,7 @@
     var st = S.status, el = $('cur-cd')
     if (!st) { el.textContent = '—'; return }
     var target = (st.expected_publish_ms || st.next_due_ms || 0) + PUBLISH_DELAY
+    var ob = $('cur-open-bj'); if (ob) ob.textContent = '· 预计北京时间 ' + bj(st.expected_publish_ms || st.next_due_ms, true) + ' 开奖'
     var left = target - Date.now()
     if (left > 0) {
       var s = Math.ceil(left / 1000); el.textContent = (s >= 60 ? Math.floor(s / 60) + ':' : '') + ('0' + (s % 60)).slice(-2) + (s >= 60 ? '' : 's')

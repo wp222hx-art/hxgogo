@@ -5,7 +5,7 @@ import { getNowBlock, findFirstBlockAtOrAfter, type TronBlock } from './tron'
 import { page } from './page'
 import { analysisPage } from './page_analysis'
 import { computeOutcomes5, judge5, isBet5Type, ODDS5, type Bet5Type } from './engine5'
-import { SOURCES, isSource, syncSource, loadDraws, syncStatus, dataVersion, onInvalidate } from './sync'
+import { SOURCES, isSource, syncSource, loadDraws, syncStatus, dataVersion, onInvalidate, fetchQkltj } from './sync'
 import { MARKETS, marketByKey, buildSeries, backtest, ensemble, stats as drawStats, MECHANISMS } from './analysis'
 import { kline, marketKlines } from './kline'
 import { recommend } from './recommend'
@@ -669,6 +669,43 @@ app.get('/api/arena/pick', async (c) => {
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
   return c.json({ ok: true, source, provider: aiProviderName(c.var.ai), model: aiModel(c.var.ai), effort: aiEffort(c.var.ai), lead_ms: aiLeadMs(c.var.ai), interval_ms: SOURCES[source].intervalMs, ...v, cached, cache_age_ms: age, compute_ms: now() - t0 })
 })
+/** 自校验：此刻直接拉上游 API 原始数据，与本库 draws、AI 推荐（待开期/历史结算）逐字段比对 */
+app.get('/api/ai/self-check', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source) || !SOURCES[source].code) return bad(c, 'unknown or local source')
+  const n = Math.min(30, Number(c.req.query('n') || 10))
+  const t0 = now(); const db = c.env.DB
+  let upstream: any[] = []; let upErr: string | null = null
+  try { upstream = await fetchQkltj(SOURCES[source].code, n) } catch (e: any) { upErr = String(e.message || e) }
+  const upMs = now() - t0
+  // 顺带同步一次（到点才会真的打网络），保证比对的是最新态
+  if (!upErr) { try { await syncSource(db, source); await arenaTick(db, source) } catch {} }
+  const local = (await db.prepare('SELECT expect, opennumber, open_time, open_ms, block, hash FROM draws WHERE source=? ORDER BY expect DESC LIMIT ?').bind(source, n).all<any>()).results
+  const ai = (await db.prepare(`SELECT a.expect, a.based_on, a.actual, a.hit, a.rank, a.scored_ms, a.created_ms, f.error FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect WHERE a.source=? AND a.strategy='ai' ORDER BY a.expect DESC LIMIT ?`).bind(source, n + 1).all<any>()).results
+  const byExpect = new Map(local.map(r => [r.expect, r]))
+  const rows = upstream.map(u => {
+    const l = byExpect.get(u.expect)
+    const a = ai.find(x => x.expect === u.expect)
+    const first3 = String(u.opennumber || '').split(',').slice(0, 3).join('')
+    const diffs: string[] = []
+    if (!l) diffs.push('本库缺此期')
+    else { if (l.opennumber !== u.opennumber) diffs.push(`号码 ${l.opennumber}≠${u.opennumber}`); if (l.open_time !== u.openTime) diffs.push(`时间 ${l.open_time}≠${u.openTime}`); if (String(l.block) !== String(u.block)) diffs.push(`区块 ${l.block}≠${u.block}`); if (l.hash !== u.hash) diffs.push('hash 不一致') }
+    if (a) { if (a.scored_ms && a.actual !== first3) diffs.push(`AI 结算实开 ${a.actual}≠${first3}`); if (!a.scored_ms) diffs.push('AI 该期未结算') }
+    return { expect: u.expect, upstream: { opennumber: u.opennumber, openTime: u.openTime, block: u.block }, local: l ? { opennumber: l.opennumber, open_time: l.open_time, block: l.block } : null, ai: a ? { based_on: a.based_on, actual: a.actual, hit: !!a.hit, rank: a.rank, scored: !!a.scored_ms, locked_bj: new Date(a.created_ms + 8 * 3600_000).toISOString().slice(11, 19), error: a.error } : null, ok: diffs.length === 0, diffs }
+  })
+  // 待开期：AI 是否正指向「上游最新期 + 1」
+  const latestUp = upstream[0]?.expect || null
+  const pending = ai.find(x => !x.scored_ms)
+  const expectedNext = latestUp ? nextOf(latestUp) : null
+  const pendingOk = !!pending && pending.expect === expectedNext && pending.based_on === latestUp
+  const localLatest = local[0]?.expect || null
+  const summary = { upstream_latest: latestUp, local_latest: localLatest, in_sync: latestUp === localLatest, upstream_ms: upMs, upstream_error: upErr,
+    compared: rows.length, all_match: rows.every(r => r.ok), mismatches: rows.filter(r => !r.ok).length,
+    pending_expect: pending?.expect || null, pending_based_on: pending?.based_on || null, expected_next: expectedNext, pending_ok: pendingOk,
+    server_now_bj: new Date(now() + 8 * 3600_000).toISOString().slice(0, 19).replace('T', ' '), tz_note: '上游 openTime 为北京时间(UTC+8)；本库 open_ms 为对应 UTC 毫秒；页面按浏览器本地时区显示' }
+  return c.json({ ok: true, source, summary, rows })
+})
+
 /** 报单同步审计：每期 AI 锁定时刻 vs 报单截止 vs 实际开奖；heartbeat 状态 */
 app.get('/api/ai/sync-audit', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'

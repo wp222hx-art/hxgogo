@@ -74,7 +74,7 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
         <div class="text-xs text-slate-500 mt-1" id="cur-sub"></div>
       </div>
       <div class="text-right">
-        <div class="text-xs text-slate-400">距开奖</div>
+        <div class="text-xs text-slate-400">距开奖 <span class="text-slate-600" id="cur-open-bj"></span></div>
         <div class="text-2xl font-black mono text-slate-100" id="cur-cd">—</div>
         <div class="text-[11px] text-slate-500" id="cur-state"></div>
         <div class="text-[11px] text-slate-400 mt-1" id="cur-lock"></div>
@@ -95,8 +95,12 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
     <details class="mt-3" id="cur-why"><summary class="text-xs text-pink-300 cursor-pointer select-none"><i class="fas fa-lightbulb mr-1"></i>为什么是这 500 注（AI 推理）</summary><div class="reason mt-2" id="cur-reason"></div></details>
   </section>
 
-  <!-- 报单同步状态 -->
+  <!-- 报单同步状态 + 对账 -->
   <section id="sync-line" class="hidden text-xs text-slate-400 flex flex-wrap items-center gap-x-4 gap-y-1 px-1"></section>
+  <section id="chk-sec" class="text-xs">
+    <div class="flex items-center gap-3"><button id="chk-btn" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 rounded-lg"><i class="fas fa-scale-balanced mr-1"></i>与上游 API 对账</button><span class="text-slate-500">此刻直接拉 api.qkltj.com 原始数据，逐期比对期号 · 开奖时间 · 号码 · 区块 · hash 与 AI 结算</span></div>
+    <div id="chk-out" class="hidden mt-2 bg-[#0f172a] border border-slate-800 rounded-xl p-3 text-slate-300"></div>
+  </section>
 
   <!-- 战绩概览 -->
   <section id="stats" class="grid grid-cols-2 md:grid-cols-4 gap-3 hidden"></section>
