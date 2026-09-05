@@ -8,7 +8,7 @@ import { STRATEGIES, META_K, ARENA_N, nextOf, loadPerf, pnlOf, rollingZ, type Pe
 
 const r3 = (x: number) => Math.round(x * 1000) / 1000
 // 候选：除随机对照外的全部策略（含 AI —— AI 已有 700+ 期样本且每期 ~8s 到达；若本期 AI 缺席，融合时自动只用其余合格成员）
-const CANDIDATES = STRATEGIES.filter(s => !s.control).map(s => s.key)
+const CANDIDATES = STRATEGIES.filter(s => !s.control && !s.derived).map(s => s.key)   // 派生子集（ai-100 等）注数不同，不参与前三排名
 export const TOP3_KEY = 'top3'
 export const TOP3_MIN_N = 10
 /** z 门槛：只有滚动 z > 0 的策略才有资格进入融合；不足 3 个时不补位（融合 1–3 个合格者），全无合格者时退回组合最优 */

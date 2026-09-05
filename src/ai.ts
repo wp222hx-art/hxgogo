@@ -4,7 +4,7 @@
 //  2) 每期都把它自己上几期的预测与真实结果喂回去（自我复盘闭环），形成不间断迭代；
 //  3) AI 的号码进入 arena_rounds（strategy='ai'），与随机对照组同台结算——它是否有信号由数据说话。
 import { type Draw } from './analysis'
-import { STRATEGIES, ARENA_N, rollingZ, type PerfMap, type ExtraPlan } from './arena'
+import { STRATEGIES, ARENA_N, AI_SUBSETS, rollingZ, type PerfMap, type ExtraPlan } from './arena'
 import { normalizeRule, describeRule, simulateRule, listAiPlans, saveAiPlans, retirePlans, type PlanRule, MAX_ACTIVE_AI_PLANS } from './ai_plans'
 
 export interface AiEnv {
@@ -140,7 +140,7 @@ function digest(draws: Draw[]) {
 }
 
 function perfDigest(perf: PerfMap, weights: Record<string, any>) {
-  return STRATEGIES.filter(s => !s.ai).map(s => {
+  return STRATEGIES.filter(s => !s.ai && !s.derived).map(s => {
     const rows = (perf[s.key] || []).slice(-40); const n = rows.length, h = rows.reduce((a, r) => a + r.hit, 0)
     const z = n ? (h - n * 0.5) / Math.sqrt(n * 0.25 || 1) : 0
     return { key: s.key, name: s.name, rolling40: n ? { n, hits: h, rate: r3(h / n), z: r3(z) } : null, blend_eligible: n > 0 && z > 0, meta_weight: weights[s.key]?.w ?? null, last10: rows.slice(-10).map(r => r.hit).join('') }
@@ -230,8 +230,15 @@ export async function aiPick(db: D1Database, source: string, current: { expect: 
   const status: 'ready' | 'thinking' | 'fallback' = aiRow ? 'ready' : (fRow?.error ? 'fallback' : 'thinking')
   const row = guarded && status !== 'thinking' ? metaRow! : (aiRow || (status === 'fallback' ? metaRow : null))
   const numbers = row ? row.numbers.split(' ') : []
+  // AI 精选：前 N 注（与 numbers 同序，前缀）+ 各档累计战绩 + 近 20 期
+  const subsets = await Promise.all(AI_SUBSETS.map(async sub => {
+    const st = await db.prepare(`SELECT COUNT(*) n, SUM(hit) h, SUM(pnl) pnl FROM arena_rounds WHERE source=? AND strategy=? AND scored_ms IS NOT NULL`).bind(source, sub.key).first<any>()
+    const streak = (await db.prepare(`SELECT hit FROM arena_rounds WHERE source=? AND strategy=? AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT 20`).bind(source, sub.key).all<any>()).results.map(r => r.hit ? 1 : 0)
+    const n = st?.n || 0, h = st?.h || 0, p = sub.n / SPACE
+    return { key: sub.key, n_pick: sub.n, name: sub.name, short: sub.short, color: sub.color, breakeven: r3(sub.n / 950), numbers: row && row.strategy === 'ai' ? numbers.slice(0, sub.n) : [], record: n ? { n, hits: h, rate: r3(h / n), pnl: st.pnl || 0, z: r3((h - n * p) / Math.sqrt(n * p * (1 - p))), roi: r3((st.pnl || 0) / (n * sub.n)), streak } : null }
+  }))
   return {
-    expect: current.expect, based_on: current.based_on, status,
+    expect: current.expect, based_on: current.based_on, status, subsets,
     strategy_used: row ? row.strategy : null, fallback: status === 'fallback', error: fRow?.error || null,
     guard: { k: AI_GUARD_K, min_z: AI_GUARD_Z, z: guardZ, n: gn, active: guarded },
     numbers, count: numbers.length, coverage: row?.coverage ?? null,
@@ -376,4 +383,28 @@ export async function aiPlansMaintain(db: D1Database, source: string, board: any
 export { MAX_ACTIVE_AI_PLANS }
 export async function latestReport(db: D1Database, source: string) {
   return db.prepare('SELECT expect, model, report, created_ms, latency_ms FROM ai_reports WHERE source=? ORDER BY expect DESC LIMIT 1').bind(source).first<any>()
+}
+
+/** 回填 AI 精选（前 N 注）历史：从已存的 ai 500 注派生，rank ≤ N 即命中；幂等 */
+export async function backfillAiSubsets(db: D1Database, source: string, max = 300) {
+  const ODDS = 950
+  const rows = (await db.prepare(`SELECT a.expect, a.based_on, a.mode, a.numbers, a.actual, a.rank, a.scored_ms, a.created_ms FROM arena_rounds a
+    WHERE a.source=? AND a.strategy='ai' AND NOT EXISTS (SELECT 1 FROM arena_rounds b WHERE b.source=a.source AND b.expect=a.expect AND b.strategy=?) ORDER BY a.expect DESC LIMIT ?`).bind(source, AI_SUBSETS[0].key, max).all<any>()).results
+  const stmts: D1PreparedStatement[] = []
+  for (const r of rows) {
+    const nums: string[] = String(r.numbers).split(' ')
+    for (const sub of AI_SUBSETS) {
+      const sel = nums.slice(0, sub.n)
+      if (r.scored_ms) {
+        const hit = r.rank != null && r.rank <= sub.n
+        stmts.push(db.prepare(`INSERT OR IGNORE INTO arena_rounds (source, expect, strategy, mode, based_on, numbers, count, coverage, weight, created_ms, actual, hit, rank, pnl, scored_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .bind(source, r.expect, sub.key, r.mode, r.based_on, sel.join(' '), sel.length, sel.length / SPACE, 1, r.created_ms, r.actual, hit ? 1 : 0, hit ? r.rank : null, hit ? ODDS - sel.length : -sel.length, r.scored_ms))
+      } else {
+        stmts.push(db.prepare(`INSERT OR IGNORE INTO arena_rounds (source, expect, strategy, mode, based_on, numbers, count, coverage, weight, created_ms) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+          .bind(source, r.expect, sub.key, r.mode, r.based_on, sel.join(' '), sel.length, sel.length / SPACE, 1, r.created_ms))
+      }
+    }
+  }
+  for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40))
+  return rows.length
 }

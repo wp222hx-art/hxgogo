@@ -15,7 +15,7 @@ const norm = (a: number[]) => { const s = a.reduce((x, y) => x + y, 0) || 1; ret
 const no3 = (i: number) => String(i).padStart(3, '0')
 const digitsOf = (d: Draw) => [d.n1, d.n2, d.n3]
 
-export interface StrategyDef { key: string; name: string; short: string; desc: string; color: string; control?: boolean; meta?: boolean; ai?: boolean }
+export interface StrategyDef { key: string; name: string; short: string; desc: string; color: string; control?: boolean; meta?: boolean; ai?: boolean; derived?: string; n?: number /* 派生：取 derived 策略排序前 n 注 */ }
 export const STRATEGIES: StrategyDef[] = [
   { key: 'quant', name: '量化集成·均衡', short: '量化均衡', desc: '20 机制集成 × 单双/大小倾斜 × 组合级信号（前三和/龙虎/形态），temp 1.5 分散取号', color: '#06b6d4' },
   { key: 'quant-focus', name: '量化集成·聚焦', short: '量化聚焦', desc: '同量化集成，temp 1.0，更集中押注高倾向号', color: '#0ea5e9' },
@@ -30,8 +30,13 @@ export const STRATEGIES: StrategyDef[] = [
   { key: 'follow', name: '跟随最强 · 动态切换', short: '跟最强', desc: '每期整份复制「之前」滚动 40 期 z 最高的基础策略（样本 <10 期时退化为组合最优）', color: '#ec4899', meta: true },
   { key: 'vote', name: '多策略共识投票', short: '共识投票', desc: '按被多少个基础策略同时选中排序（并列以组合最优概率决胜），取 Top 500', color: '#84cc16', meta: true },
   { key: 'ai', name: 'AI 预测官 · 大模型推理', short: 'AI 预测', desc: '大模型阅读全部统计信号 + 各策略滚动战绩 + 自己近期预测复盘 → 输出每位权重/策略融合/加减号 → Top 500（仅实盘，每期自动调用）', color: '#f472b6', ai: true },
+  // AI 精选：同一份 AI 排序的前 N 注（保本命中率 N/950），作为独立选手同规则结算——验证「AI 的信号是否集中在头部」
+  { key: 'ai-100', name: 'AI 精选 100 注', short: 'AI·100', desc: 'AI 排序前 100 注（保本 10.5%），每注 1，命中 +850 / 未中 −100', color: '#fb7185', ai: true, derived: 'ai', n: 100 },
+  { key: 'ai-150', name: 'AI 精选 150 注', short: 'AI·150', desc: 'AI 排序前 150 注（保本 15.8%），回测 ROI 最优档', color: '#f43f5e', ai: true, derived: 'ai', n: 150 },
+  { key: 'ai-300', name: 'AI 精选 300 注', short: 'AI·300', desc: 'AI 排序前 300 注（保本 31.6%）', color: '#e11d48', ai: true, derived: 'ai', n: 300 },
 ]
 export const BASE_KEYS = STRATEGIES.filter(s => !s.control && !s.meta && !s.ai).map(s => s.key)
+export const AI_SUBSETS = STRATEGIES.filter(s => s.derived === 'ai') as (StrategyDef & { n: number })[]
 /** 回放时不包含 AI（避免大量模型调用；且 AI 只在真实开奖前预测才有意义） */
 const REPLAY_KEYS = STRATEGIES.filter(s => !s.ai).map(s => s.key)
 
@@ -256,7 +261,9 @@ export async function externalRound(db: D1Database, source: string, draws: Draw[
   const gen = generateRound(draws, `${source}|${next}`, perf)
   const scores = await scorer({ next, hist: draws, perf, weights: gen.weights, vec: gen.vec })
   if (!scores) return false
-  await insertRounds(db, source, next, latest, 'live', [roundFromScores(key, scores)])
+  const main = roundFromScores(key, scores)
+  const derived = STRATEGIES.filter(s => s.derived === key && s.n).map(s => ({ strategy: s.key, numbers: main.numbers.slice(0, s.n!), coverage: r4(main.numbers.slice(0, s.n!).reduce((a, i) => a + scores[i], 0)), weight: 1 }))
+  await insertRounds(db, source, next, latest, 'live', [main, ...derived])
   return true
 }
 

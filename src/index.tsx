@@ -12,10 +12,10 @@ import { recommend } from './recommend'
 import { parityKline } from './parity_kline'
 import { pick } from './picker'
 import { recordPick, pickTrack } from './pick_track'
-import { autoArena, arenaBoard, arenaRound, replayArena, settleArena, externalRound, nextOf, STRATEGIES, ARENA_N, ARENA_ODDS, ARENA_MIN_HIST } from './arena'
+import { autoArena, arenaBoard, arenaRound, replayArena, settleArena, externalRound, nextOf, STRATEGIES, AI_SUBSETS, ARENA_N, ARENA_ODDS, ARENA_MIN_HIST } from './arena'
 import { arenaPage } from './page_arena'
 import { aiPage } from './page_ai'
-import { aiEnabled, aiModel, aiEffort, aiProviderName, aiLeadMs, forecastFor, aiScores, aiHistory, generateReport, latestReport, aiExtraPlans, aiPlansMaintain, aiPick, type AiEnv } from './ai'
+import { aiEnabled, aiModel, aiEffort, aiProviderName, aiLeadMs, backfillAiSubsets, forecastFor, aiScores, aiHistory, generateReport, latestReport, aiExtraPlans, aiPlansMaintain, aiPick, type AiEnv } from './ai'
 import { listAiPlans } from './ai_plans'
 import { effectiveEnv, saveConfig, configView, validateProvider, CONFIG_KEYS } from './config'
 import { top3Round, top3View, top3Backfill, TOP3_KEY } from './top3'
@@ -658,7 +658,8 @@ app.get('/api/arena/pick', async (c) => {
     const rows = (await db.prepare(`SELECT a.expect, a.numbers, a.count, a.actual, a.hit, a.rank, a.pnl, a.created_ms, f.regime, f.confidence, f.reasoning, f.output, d.open_ms
       FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect LEFT JOIN draws d ON d.source=a.source AND d.expect=a.expect
       WHERE a.source=? AND a.strategy='ai' AND a.scored_ms IS NOT NULL ORDER BY a.expect DESC LIMIT ?`).bind(source, hist).all<any>()).results
-    const history = rows.map(r => { let o: any = null; try { o = JSON.parse(r.output) } catch {} return { expect: r.expect, numbers: r.numbers, count: r.count, actual: r.actual, hit: !!r.hit, rank: r.rank, pnl: r.pnl, open_ms: r.open_ms, regime: r.regime, confidence: r.confidence, reasoning: r.reasoning, pick_plan: o?.pick_plan || '', boost: o?.boost || [] } })
+    const history = rows.map(r => { let o: any = null; try { o = JSON.parse(r.output) } catch {} const sub: Record<string, { hit: boolean; pnl: number }> = {}; for (const x of AI_SUBSETS) sub[x.key] = { hit: !!r.hit && r.rank != null && r.rank <= x.n, pnl: (!!r.hit && r.rank != null && r.rank <= x.n) ? ARENA_ODDS - x.n : -x.n }
+      return { expect: r.expect, numbers: r.numbers, count: r.count, actual: r.actual, hit: !!r.hit, rank: r.rank, pnl: r.pnl, open_ms: r.open_ms, regime: r.regime, confidence: r.confidence, reasoning: r.reasoning, pick_plan: o?.pick_plan || '', boost: o?.boost || [], subsets: sub } })
     // 最近 20 期命中序列（新→旧）供迷你条形图
     const streak = (await db.prepare(`SELECT hit FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT 20`).bind(source).all<any>()).results.map(r => r.hit ? 1 : 0)
     // 报单同步：近 20 期 AI 是否在截止前锁定、平均锁定用时
@@ -901,6 +902,13 @@ app.get('/ai', (c) => c.html(aiPage()))
 app.get('/settings', (c) => c.html(settingsPage()))
 app.get('/top3', (c) => c.html(top3Page()))
 
+/** 回填 AI 精选（100/150/300 注）历史 */
+app.post('/api/ai/backfill-subsets', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const done = await backfillAiSubsets(c.env.DB, source, Math.min(500, Number(c.req.query('n') || 300))); if (done) invalidateArena(source)
+  return c.json({ ok: true, source, backfilled: done })
+})
 /** 回放补齐 top3 历史（幂等；每次最多 N 期） */
 app.post('/api/top3/backfill', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'

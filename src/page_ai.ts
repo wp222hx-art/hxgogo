@@ -15,6 +15,10 @@ body { background:#0b0f1a; }
 .grid500 span { font-family: ui-monospace, monospace; font-size:13px; text-align:center; padding:4px 0; border-radius:5px; background:rgba(148,163,184,.10); color:#e2e8f0; }
 .grid500 span.boost { background:#f472b6; color:#000; font-weight:700; }
 .grid500 span.hit { background:#22c55e; color:#000; font-weight:800; }
+.grid500 span.dim { opacity:.35; }
+.tab { font-size:12px; padding:6px 12px; border-radius:10px; border:1px solid #1e293b; background:#0f172a; color:#94a3b8; cursor:pointer; } .tab.on { background:#f472b6; color:#000; border-color:#f472b6; font-weight:700; } .tab small { opacity:.7; margin-left:4px; }
+.sc { background:#0b1220; border:1px solid #1e293b; border-radius:12px; padding:10px 12px; } .sc.on { border-color:#f472b6; }
+.chipsub { display:inline-flex; align-items:center; gap:3px; font-size:10px; padding:1px 6px; border-radius:999px; background:#1e293b; color:#94a3b8; } .chipsub.h { background:#22c55e33; color:#86efac; }
 textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-radius:10px; padding:10px; font-family: ui-monospace, monospace; font-size:13px; line-height:1.6; resize:vertical; }
 .stat { background:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:10px 12px; } .stat .v { font-family: ui-monospace, monospace; font-size:20px; font-weight:800; }
 .streak { display:flex; gap:2px; } .streak i { width:10px; height:18px; border-radius:2px; background:#334155; } .streak i.h { background:#22c55e; }
@@ -82,7 +86,9 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
         <div class="text-[11px] text-slate-400 mt-1" id="cur-lock"></div>
       </div>
     </div>
-    <div class="flex flex-wrap items-center gap-2 mt-4">
+    <!-- 精选档位：同一份 AI 排序，前 N 注 -->
+    <div class="flex flex-wrap items-center gap-2 mt-4" id="sub-tabs"></div>
+    <div class="flex flex-wrap items-center gap-2 mt-3">
       <button id="copy-btn" class="bg-pink-500 hover:bg-pink-400 text-black font-bold px-5 py-2.5 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed"><i class="fas fa-copy mr-2"></i>一键复制 500 注</button>
       <select id="fmt" class="bg-slate-800 rounded-lg px-2 py-2 border border-slate-700 text-xs"><option value="space">空格分隔</option><option value="comma">逗号分隔</option><option value="line">每行一个</option></select>
       <span id="copied" class="hidden text-emerald-400 text-sm"><i class="fas fa-check mr-1"></i>已复制到剪贴板</span>
@@ -104,8 +110,12 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
     <div id="chk-out" class="hidden mt-2 bg-[#0f172a] border border-slate-800 rounded-xl p-3 text-slate-300"></div>
   </section>
 
-  <!-- 战绩概览 -->
+  <!-- 战绩概览：500 注 + 三档精选 -->
   <section id="stats" class="grid grid-cols-2 md:grid-cols-4 gap-3 hidden"></section>
+  <section id="sub-stats" class="hidden bg-[#0f172a] border border-slate-800 rounded-xl p-4">
+    <h2 class="font-bold text-sm mb-2"><i class="fas fa-filter mr-2 text-rose-400"></i>AI 精选档位战绩 <span class="text-xs text-slate-500 font-normal">每档作为独立策略逐期结算（每注 1，命中 +950−N，未中 −N）；保本 = N/950</span></h2>
+    <div class="grid md:grid-cols-4 gap-3" id="sub-cards"></div>
+  </section>
 
   <!-- 注数回测：只投前 N 注 -->
   <section id="stake-sec" class="hidden bg-[#0f172a] border border-slate-800 rounded-xl p-4">

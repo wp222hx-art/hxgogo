@@ -159,6 +159,13 @@
 - **时区统一**：上游 `openTime` 是北京时间（UTC+8）；此前 `/ai` 页用浏览器本地时区渲染 `created_ms` / `open_ms`，在非 +8 时区的浏览器（或沙箱 UTC）下会显示成「10:58」而上游是「18:58」，看起来像「时间对不上」。现全部改为**明确标注「北京时间」**并按 UTC+8 渲染；倒计时旁显示「预计北京时间 HH:MM:SS 开奖」；逐期记录每行带北京时间开奖时刻
 - **实测**：连续 10 期 号码/时间/区块/hash 全部一致；AI 待开期 = 上游最新 + 1 ✓；AI 每期在上期开奖后 ~7–10s（北京时间 xx:xx:2x）锁定，距该期开奖 50s+
 
+### AI 精选档位：前 100 / 150 / 300 注（策略 key `ai-100` `ai-150` `ai-300`）
+- **定义**：与 AI 500 注是**同一份排序**的前缀（AI 得分从高到低），不重跑模型。`STRATEGIES` 新增三条 `derived:'ai', n` 派生定义；`externalRound` 写入 `ai` 时同批写入三档；每档作为**独立策略同规则结算**：每注 1，命中 +（950 − N），未中 −N，保本命中率 = N/950（10.5% / 15.8% / 31.6%）
+- **每期记录**：`arena_rounds` 里每期有 `ai` `ai-100` `ai-150` `ai-300` 四行；`/api/arena/pick` 返回 `pick.subsets[]{key, n_pick, breakeven, numbers[N], record{n, hits, rate, pnl, z, roi, streak[20]}}`，`history[].subsets{ai-100:{hit,pnl},…}` 标注每期各档是否命中
+- **历史回填** `POST /api/ai/backfill-subsets`：由已存 `ai` 行的 `rank` 直接推算（rank ≤ N 即命中），已回填 876 期
+- **页面 `/ai`**：500 注上方新增四个档位标签（全部 500 / 前 100 / 前 150 / 前 300，各带保本线与实盘命中率）→ 一键复制按钮随档位变为「复制 N 注」；网格仍显示全部 500，超出所选档位的号码变暗；「AI 精选档位战绩」四张卡（命中率 vs 保本 · 期数 · z · 累计 · ROI · 近 20 期）；逐期记录每行带 `100✓ 150✗ 300✓` 芯片，展开后可分别复制该期前 100/150/300/500
+- **当前实盘（876 期）**：500 注 53.1%（+3,750，ROI +0.86%）· 前 100 注 10.8%（z +0.83，ROI **+3.00%**）· 前 150 注 16.0%（z +0.81，+1.20%）· 前 300 注 31.8%（z +1.19，+0.90%）。四档全部在保本线之上，但 z 均 <2，尚未达统计显著；派生策略不参与 top3 排名与 AI 融合候选（注数不同、且与 ai 完全相关）
+
 ### 前端加载体系优化（缓存 + 后台推理 + 进度反馈）
 **问题**：此前 `/api/arena/board` 与 `/api/arena/pick` 在请求路径内**同步等待大模型推理（6–15s）**，且 board JSON 约 290KB，页面首屏 2–15s 不等。
 **方案**（`src/index.tsx`）：
@@ -268,6 +275,7 @@
 | GET | `/api/arena/plans?source=` | **AI 建议回测**：active[]（规则 DSL + 人话描述 + 样本内/样本外统计）/ retired[]（含 retire_reason）/ builtin（内置 6 套 key） |
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
+| POST | `/api/ai/backfill-subsets?source=&n=300` | 由 ai 行回填 ai-100/150/300 历史（幂等） |
 | GET | `/api/arena/stake-curve?source=&strategies=ai,top3,…&limit=2000` | 注数回测：`strategies[]{strategy, periods, curve[]{N, n, hits, rate, breakeven, edge, z, pnl, roi}, best_N, best_roi}` |
 | GET | `/api/sync/alerts?source=` | 拉取告警：`open` 未解决数 + `alerts[]{kind fetch_fail\|recovered, detail, created_ms, resolved_ms}` |
 | GET | `/api/top3/pick?source=&history=12\|30\|60` | 优质策略推荐：`current{expect, based_on, status, created_ms, members[]{key,name,short,color,desc,z,rate,n,hits,w,numbers[500]}, fused[500], count, overlap[], consensus_all}` + `record{n,hits,rate,pnl,streak[20]}` + `leaderboard[]{key,short,z,n,rate,eligible,total}` + `rules{min_n,min_z,ai_wait_ms,candidates}` + `history[]{expect,numbers,actual,hit,rank,pnl,open_ms,members[]{key,short,z,w,hit,rank}}`；缓存 20s |
@@ -277,7 +285,7 @@
 | GET | `/api/config` | 配置快照：`items{KEY:{value(密钥打码), source db\|env\|none, set, updated_ms}}` + `effective{provider, model, base}` |
 | PUT | `/api/config` | body `{KEY: value \| null}`（白名单键；null/空 = 删除页面配置；数值范围校验） |
 | POST | `/api/config/validate` | body 可带草稿 `{AI_PROVIDER, DEEPSEEK_API_KEY, …, rounds}`；返回 `result{ok, provider, model, base, stage auth\|chat, error, models[], model_listed, chat_latency_ms[], chat_avg_ms, usage, sample, balance, warn}` |
-| GET | `/api/arena/pick?source=&history=12\|30\|60` | **本期 AI 推荐（/ai 页数据源，缓存 20s）**：顶层 `provider / model / lead_ms / interval_ms`；`pick{expect, based_on, status ready/thinking/fallback, numbers[500], coverage, forecast{regime, confidence, reasoning, pick_plan, pos_weights, strategy_blend, boost, avoid, next_focus}, breakdown{pos_count, pos_focus, shape, wan, sum_big, blend, boost_in, avoid_out, consensus[]}, model, latency_ms, tokens, created_ms}` + `record{n, hits, rate, pnl, streak[20]}` + `sync{n, in_time, avg_lock_s, max_lock_s, heartbeat_alive}` + `history[]{expect, numbers, count, actual, hit, rank, pnl, open_ms, regime, confidence, reasoning, pick_plan, boost}` + `cached / cache_age_ms / compute_ms`；响应头 `X-Cache` |
+| GET | `/api/arena/pick?source=&history=12\|30\|60` | **本期 AI 推荐（/ai 页数据源，缓存 20s）**：顶层 `provider / model / lead_ms / interval_ms`；`pick{expect, based_on, status ready/thinking/fallback, numbers[500], coverage, guard{k,min_z,z,n,active}, subsets[]{key,n_pick,breakeven,numbers,record}, forecast{regime, confidence, reasoning, pick_plan, pos_weights, strategy_blend, boost, avoid, next_focus}, breakdown{pos_count, pos_focus, shape, wan, sum_big, blend, boost_in, avoid_out, consensus[]}, model, latency_ms, tokens, created_ms}` + `record{n, hits, rate, pnl, streak[20]}` + `sync{n, in_time, avg_lock_s, max_lock_s, heartbeat_alive}` + `history[]{expect, numbers, count, actual, hit, rank, pnl, open_ms, regime, confidence, reasoning, pick_plan, boost}` + `cached / cache_age_ms / compute_ms`；响应头 `X-Cache` |
 
 > `/api/arena/board` 的 `plans[]` 现包含 `ai:true` 行（`plan_id / report_expect / rationale / forward{bets,hits,rate,z,pnl,roi,max_dd} / since_index`），`ai` 字段新增 `report_every` / `plans_retired_now`（本期 pick 已移至 `/api/arena/pick`，board 不再内嵌）；board 也带 `cached / cache_age_ms / compute_ms / timing`。
 | GET | `/api/analysis/recommend?source=&steps=` | **本期推荐**：5 玩法 19 组 81 候选概率 + 幸运数字综合榜 + 预见性策略 |
