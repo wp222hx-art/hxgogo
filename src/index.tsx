@@ -15,7 +15,7 @@ import { recordPick, pickTrack } from './pick_track'
 import { autoArena, arenaBoard, arenaRound, replayArena, settleArena, externalRound, nextOf, STRATEGIES, ARENA_N, ARENA_ODDS, ARENA_MIN_HIST } from './arena'
 import { arenaPage } from './page_arena'
 import { aiPage } from './page_ai'
-import { aiEnabled, aiModel, aiEffort, forecastFor, aiScores, aiHistory, generateReport, latestReport, aiExtraPlans, aiPlansMaintain, aiPick, type AiEnv } from './ai'
+import { aiEnabled, aiModel, aiEffort, aiProviderName, aiLeadMs, forecastFor, aiScores, aiHistory, generateReport, latestReport, aiExtraPlans, aiPlansMaintain, aiPick, type AiEnv } from './ai'
 import { listAiPlans } from './ai_plans'
 
 type Bindings = { DB: D1Database } & AiEnv
@@ -541,7 +541,9 @@ async function aiKick(db: D1Database, env: AiEnv, source: string) {
   aiBusy.add(source)
   try {
     const rows = await loadDraws(db, source, 800)
-    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights); return f ? aiScores(f, ctx.vec) : null })
+    // 报单截止 = 下期理论开奖时刻 − AI_LEAD_MS（默认 20s）：留出足够的下单时间；超时则本期由兜底策略顶上
+    const lockByMs = rows.length ? (rows[0] as any).open_ms + SOURCES[source].intervalMs - aiLeadMs(env) : undefined
+    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights, { lockByMs }); return f ? aiScores(f, ctx.vec) : null })
     if (done) invalidateArena(source)
   } catch (e) { console.error('ai kick', e) } finally { aiBusy.delete(source) }
 }
@@ -609,7 +611,7 @@ app.get('/api/arena/board', async (c) => {
 app.get('/api/arena/pick', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
-  if (!aiEnabled(c.env)) return c.json({ ok: false, error: 'AI 未配置（需 OPENAI_API_KEY / OPENAI_BASE_URL）' }, 400)
+  if (!aiEnabled(c.env)) return c.json({ ok: false, error: 'AI 未配置（需 DEEPSEEK_API_KEY 或 OPENAI_API_KEY+OPENAI_BASE_URL）' }, 400)
   const hist = Math.min(60, Number(c.req.query('history') || 12))
   if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)
   await arenaTick(c.env.DB, source)
@@ -633,7 +635,7 @@ app.get('/api/arena/pick', async (c) => {
     return { pick, record: st && st.n ? { n: st.n, hits: st.h || 0, rate: Math.round((st.h || 0) / st.n * 1000) / 1000, pnl: st.pnl || 0, streak } : null, history }
   })
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
-  return c.json({ ok: true, source, model: aiModel(c.env), effort: aiEffort(c.env), ...v, cached, cache_age_ms: age, compute_ms: now() - t0 })
+  return c.json({ ok: true, source, provider: aiProviderName(c.env), model: aiModel(c.env), effort: aiEffort(c.env), lead_ms: aiLeadMs(c.env), interval_ms: SOURCES[source].intervalMs, ...v, cached, cache_age_ms: age, compute_ms: now() - t0 })
 })
 /** AI 建议回测方案：活跃 + 已退役（含规则文本、样本内/样本外战绩） */
 app.get('/api/arena/plans', async (c) => {
@@ -665,7 +667,7 @@ app.get('/api/arena/report', async (c) => {
 app.post('/api/arena/report', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
-  if (!aiEnabled(c.env)) return bad(c, 'AI 未配置（需要 OPENAI_API_KEY / OPENAI_BASE_URL）', 503)
+  if (!aiEnabled(c.env)) return bad(c, 'AI 未配置（需 DEEPSEEK_API_KEY 或 OPENAI_API_KEY+OPENAI_BASE_URL）', 503)
   try {
     const board = await arenaBoard(c.env.DB, source, { mode: 'all', limit: 300, extraPlans: await aiExtraPlans(c.env.DB, source) })
     const r = await generateReport(c.env.DB, c.env, source, board)

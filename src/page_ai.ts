@@ -39,7 +39,7 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
   <div class="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
     <div class="flex items-center gap-2 font-bold text-lg">
       <span class="w-8 h-8 rounded-lg bg-gradient-to-br from-pink-400 to-purple-600 grid place-items-center text-black text-sm">AI</span>
-      <span>AI <span class="text-pink-400">推荐</span> <span class="text-xs font-normal text-slate-500 ml-1">每期 500 注 · 三位号（万/千/百）</span></span>
+      <span>AI <span class="text-pink-400">推荐</span> <span class="text-xs font-normal text-slate-500 ml-1">每期 500 注 · 三位号（万/千/百）</span> <span id="hd-model" class="text-[10px] font-normal text-slate-600 ml-1"></span></span>
     </div>
     <nav class="flex items-center gap-2 text-xs">
       <select id="source-sel" class="bg-slate-800 rounded-lg px-3 py-1.5 border border-slate-700"></select>
@@ -76,6 +76,7 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
         <div class="text-xs text-slate-400">距开奖</div>
         <div class="text-2xl font-black mono text-slate-100" id="cur-cd">—</div>
         <div class="text-[11px] text-slate-500" id="cur-state"></div>
+        <div class="text-[11px] text-slate-400 mt-1" id="cur-lock"></div>
       </div>
     </div>
     <div class="flex flex-wrap items-center gap-2 mt-4">

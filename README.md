@@ -130,7 +130,9 @@
 - **不间断迭代**：命中/失误在下一期作为「你上几期的预测与结果」喂回模型，系统提示明确要求连续失误时切换思路；页面「逐期预测 · 复盘」时间线展示每期的局势判断、把握、推理摘要、验证假设与实际开奖/命中名次
 - **AI 分析官**：按钮 `POST /api/arena/report` 把 12 策略完整战绩、组合最优权重、6 套投资策略模拟、AI 预测官逐期表现、近 30 期结算一并交给模型，输出 Markdown 报告（一句话结论 / 各策略解读 / AI 复盘 / 权重建议 / 下一阶段择时·仓位·止损规则），系统提示强制「不编造数据、明示理论期望为负与样本不足」；同一结算期只生成一次（缓存于 `ai_reports`）
 - **成本 / 稳健性**：每期 1 次调用（`INSERT OR IGNORE`，失败落 `error` 不重试）；`AI_EFFORT=low` 默认（约 8-15 秒，1 分钟一期的厅安全），35 秒超时则本期轮空；回放模式不含 AI（避免历史刷费与前视）；未配置密钥时 AI 行自动隐藏、其余策略照常
-- **环境变量**：`OPENAI_API_KEY` / `OPENAI_BASE_URL`（必需，缺一则 AI 关闭）、`AI_MODEL`（默认 gpt-5-mini）、`AI_EFFORT`（low/medium/high）、`AI_REPORT_EVERY`（自动报告节奏，默认 0 = 关闭；设 30 开启）。本地写在 `.dev.vars`（已 gitignore），生产用 `wrangler pages secret put`
+- **模型供应商（DeepSeek 优先，OpenAI 备用）**：`src/ai.ts` 的 `aiProvider()` 统一选择供应商，`llmChat()` 屏蔽参数差异（DeepSeek 用 `max_tokens`/`temperature`/`response_format`；OpenAI 推理模型用 `reasoning_effort`/`max_completion_tokens`），`parseJson()` 容忍围栏/废话。**默认：配置了 `DEEPSEEK_API_KEY` 即走 DeepSeek `deepseek-chat`（V3 非思考模式，2–6s），否则退回 OpenAI**；`AI_PROVIDER=deepseek|openai` 可强制
+- **报单窗口（20 秒硬截止）**：`AI_LEAD_MS`（默认 20000）—— AI 必须在「下期理论开奖时刻 − 20s」之前锁定 500 注；`aiKick` 把 `lockByMs` 传给 `forecastFor`，调用超时被裁剪为 `min(AI_TIMEOUT_MS, 剩余预算)`，预算不足 3s 则直接跳过（`error=skipped: lock window`）并由「组合最优」500 注兜底——**保证截止前一定有单可报**。`/ai` 页倒计时下方实时显示「报单窗口 剩 Ns / AI 须在 Ns 内锁定 / 超出截止·将用兜底」
+- **环境变量**：`DEEPSEEK_API_KEY`（推荐）、`DEEPSEEK_BASE_URL`（默认 https://api.deepseek.com）、`DEEPSEEK_MODEL`（默认 deepseek-chat；`deepseek-reasoner` 不建议用于 1 分钟厅）；备用 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `AI_MODEL` / `AI_EFFORT`；`AI_LEAD_MS`（报单窗口，默认 20000）、`AI_TIMEOUT_MS`（单次调用上限，默认 25000）、`AI_REPORT_EVERY`（自动报告节奏，默认 0 = 关闭）。本地写在 `.dev.vars`（已 gitignore），生产用 `wrangler pages secret put`
 
 ### AI 建议自动回测 · 二阶闭环（`/arena` `#ai-plans-section`，表 `ai_plans`，模块 `src/ai_plans.ts`）
 「AI 提建议 → 系统验证 → 结果反馈给 AI」：分析官报告里的择时/仓位/止损建议不再只是文字，而是被自动编译成**可回测的投资策略**，和内置 6 套模拟同台比较，并把样本外结果喂回下一份报告。
@@ -212,7 +214,7 @@
 | GET | `/api/arena/plans?source=` | **AI 建议回测**：active[]（规则 DSL + 人话描述 + 样本内/样本外统计）/ retired[]（含 retire_reason）/ builtin（内置 6 套 key） |
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
-| GET | `/api/arena/pick?source=&history=12\|30\|60` | **本期 AI 推荐（/ai 页数据源，缓存 20s）**：`pick{expect, based_on, status ready/thinking/fallback, numbers[500], coverage, forecast{regime, confidence, reasoning, pick_plan, pos_weights, strategy_blend, boost, avoid, next_focus}, breakdown{pos_count, pos_focus, shape, wan, sum_big, blend, boost_in, avoid_out, consensus[]}, model, latency_ms, tokens, created_ms}` + `record{n, hits, rate, pnl, streak[20]}` + `history[]{expect, numbers, count, actual, hit, rank, pnl, open_ms, regime, confidence, reasoning, pick_plan, boost}` + `cached / cache_age_ms / compute_ms`；响应头 `X-Cache` |
+| GET | `/api/arena/pick?source=&history=12\|30\|60` | **本期 AI 推荐（/ai 页数据源，缓存 20s）**：顶层 `provider / model / lead_ms / interval_ms`；`pick{expect, based_on, status ready/thinking/fallback, numbers[500], coverage, forecast{regime, confidence, reasoning, pick_plan, pos_weights, strategy_blend, boost, avoid, next_focus}, breakdown{pos_count, pos_focus, shape, wan, sum_big, blend, boost_in, avoid_out, consensus[]}, model, latency_ms, tokens, created_ms}` + `record{n, hits, rate, pnl, streak[20]}` + `history[]{expect, numbers, count, actual, hit, rank, pnl, open_ms, regime, confidence, reasoning, pick_plan, boost}` + `cached / cache_age_ms / compute_ms`；响应头 `X-Cache` |
 
 > `/api/arena/board` 的 `plans[]` 现包含 `ai:true` 行（`plan_id / report_expect / rationale / forward{bets,hits,rate,z,pnl,roi,max_dd} / since_index`），`ai` 字段新增 `report_every` / `plans_retired_now`（本期 pick 已移至 `/api/arena/pick`，board 不再内嵌）；board 也带 `cached / cache_age_ms / compute_ms / timing`。
 | GET | `/api/analysis/recommend?source=&steps=` | **本期推荐**：5 玩法 19 组 81 候选概率 + 幸运数字综合榜 + 预见性策略 |
@@ -240,7 +242,7 @@ pm2 start ecosystem.config.cjs      # http://localhost:3000
 - **步骤**: `wrangler d1 create webapp-production` → 填 `database_id` → `npm run db:migrate:prod` → `npm run deploy`
 - **技术栈**: Hono + TypeScript + TailwindCSS(CDN) + D1 + OpenAI 兼容 LLM（gpt-5-mini，Worker 内直接 fetch）
 - **生产密钥**: `wrangler pages secret put OPENAI_API_KEY` / `OPENAI_BASE_URL`（可选 `AI_MODEL` / `AI_EFFORT`）
-- **最后更新**: 2026-09-03
+- **最后更新**: 2026-09-05
 
 ## 未实现 / 下一步建议
 - [x] 选号器战绩追踪（已完成，见上）

@@ -7,11 +7,67 @@ import { type Draw } from './analysis'
 import { STRATEGIES, ARENA_N, type PerfMap, type ExtraPlan } from './arena'
 import { normalizeRule, describeRule, simulateRule, listAiPlans, saveAiPlans, retirePlans, type PlanRule, MAX_ACTIVE_AI_PLANS } from './ai_plans'
 
-export interface AiEnv { OPENAI_API_KEY?: string; OPENAI_BASE_URL?: string; AI_MODEL?: string; AI_EFFORT?: string }
-export const aiEnabled = (env: AiEnv) => !!(env.OPENAI_API_KEY && env.OPENAI_BASE_URL)
-export const aiModel = (env: AiEnv) => env.AI_MODEL || 'gpt-5-mini'
-/** 逐期预测的推理强度：该厅 1 分钟一期，默认 low（~5-10s）；报告固定 medium */
+export interface AiEnv {
+  // DeepSeek（优先）：只需 key，base 默认官方；模型默认 deepseek-chat（V3 非思考模式，延迟最低）
+  DEEPSEEK_API_KEY?: string; DEEPSEEK_BASE_URL?: string; DEEPSEEK_MODEL?: string   // 默认 deepseek-chat；可选 deepseek-reasoner（慢，不建议 1 分钟厅）
+  // OpenAI 兼容（备用）
+  OPENAI_API_KEY?: string; OPENAI_BASE_URL?: string
+  AI_PROVIDER?: string       // 'deepseek' | 'openai'，缺省：有 DEEPSEEK_API_KEY 则 deepseek，否则 openai
+  AI_MODEL?: string; AI_EFFORT?: string
+  AI_LEAD_MS?: string        // 报单窗口：AI 必须在「下期开奖时刻 − AI_LEAD_MS」之前锁定，默认 20000
+  AI_TIMEOUT_MS?: string     // 单次调用上限，默认 25000（会被报单截止进一步裁剪）
+}
+export interface AiProvider { name: 'deepseek' | 'openai'; key: string; base: string; model: string }
+export function aiProvider(env: AiEnv): AiProvider | null {
+  const want = (env.AI_PROVIDER || '').toLowerCase()
+  const ds = env.DEEPSEEK_API_KEY ? { name: 'deepseek' as const, key: env.DEEPSEEK_API_KEY, base: (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/$/, ''), model: env.DEEPSEEK_MODEL || (env.AI_MODEL && /^deepseek/i.test(env.AI_MODEL) ? env.AI_MODEL : 'deepseek-chat') } : null
+  const oa = env.OPENAI_API_KEY && env.OPENAI_BASE_URL ? { name: 'openai' as const, key: env.OPENAI_API_KEY, base: env.OPENAI_BASE_URL.replace(/\/$/, ''), model: (env.AI_MODEL && !/^deepseek/i.test(env.AI_MODEL) ? env.AI_MODEL : 'gpt-5-mini') } : null
+  if (want === 'deepseek') return ds
+  if (want === 'openai') return oa
+  return ds || oa
+}
+export const aiEnabled = (env: AiEnv) => !!aiProvider(env)
+export const aiModel = (env: AiEnv) => aiProvider(env)?.model || null
+export const aiProviderName = (env: AiEnv) => aiProvider(env)?.name || null
+/** 逐期预测的推理强度（仅 OpenAI 推理模型使用；DeepSeek 忽略） */
 export const aiEffort = (env: AiEnv): 'low' | 'medium' | 'high' => (['low', 'medium', 'high'].includes(env.AI_EFFORT || '') ? env.AI_EFFORT : 'low') as any
+export const aiLeadMs = (env: AiEnv) => { const n = Number(env.AI_LEAD_MS); return Number.isFinite(n) && n >= 5000 ? n : 20_000 }
+export const aiTimeoutMs = (env: AiEnv) => { const n = Number(env.AI_TIMEOUT_MS); return Number.isFinite(n) && n >= 3000 ? n : 25_000 }
+
+/** 统一的 chat 调用：屏蔽 DeepSeek / OpenAI 参数差异；json=true 时尽力要求 JSON 并稳健解析 */
+export interface ChatResult { ok: boolean; content: string; usage: { prompt_tokens?: number; completion_tokens?: number }; latency_ms: number; error?: string; model: string; provider: string }
+export async function llmChat(env: AiEnv, opts: { system: string; user: string; json?: boolean; maxTokens?: number; effort?: 'low' | 'medium' | 'high'; timeoutMs?: number; temperature?: number }): Promise<ChatResult> {
+  const pv = aiProvider(env); const t0 = Date.now()
+  if (!pv) return { ok: false, content: '', usage: {}, latency_ms: 0, error: 'AI 未配置', model: '', provider: '' }
+  const messages = [{ role: 'system', content: opts.system }, { role: 'user', content: opts.user }]
+  const body: any = { model: pv.model, messages }
+  if (pv.name === 'deepseek') {
+    body.max_tokens = Math.min(8000, opts.maxTokens ?? 1500)
+    if (opts.temperature != null) body.temperature = opts.temperature
+    if (opts.json && !/reasoner/i.test(pv.model)) body.response_format = { type: 'json_object' }   // deepseek-reasoner 不支持 JSON 模式，靠解析兜底
+  } else {
+    body.reasoning_effort = opts.effort ?? 'low'
+    body.max_completion_tokens = opts.maxTokens ?? 6000
+    if (opts.json) body.response_format = { type: 'json_object' }
+  }
+  const ac = new AbortController(); const timer = setTimeout(() => ac.abort(), opts.timeoutMs ?? aiTimeoutMs(env))
+  try {
+    const res = await fetch(`${pv.base}/chat/completions`, { method: 'POST', signal: ac.signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${pv.key}` }, body: JSON.stringify(body) })
+    const j: any = await res.json().catch(() => ({}))
+    if (!res.ok || j.error) return { ok: false, content: JSON.stringify(j).slice(0, 2000), usage: {}, latency_ms: Date.now() - t0, error: j.error?.message || `HTTP ${res.status}`, model: pv.model, provider: pv.name }
+    return { ok: true, content: j.choices?.[0]?.message?.content || '', usage: j.usage || {}, latency_ms: Date.now() - t0, model: pv.model, provider: pv.name }
+  } catch (e: any) {
+    return { ok: false, content: '', usage: {}, latency_ms: Date.now() - t0, error: e.name === 'AbortError' ? 'timeout' : String(e.message || e), model: pv.model, provider: pv.name }
+  } finally { clearTimeout(timer) }
+}
+/** 从模型文本里稳健取出 JSON（容忍 ```json 围栏、前后废话） */
+export function parseJson(raw: string): any {
+  const s = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '')
+  try { return JSON.parse(s) } catch {}
+  const a = s.indexOf('{'), b = s.lastIndexOf('}')
+  if (a >= 0 && b > a) return JSON.parse(s.slice(a, b + 1))
+  throw new Error('no json object')
+}
 const SPACE = 1000
 const no3 = (i: number) => String(i).padStart(3, '0')
 const r3 = (x: number) => Math.round(x * 1000) / 1000
@@ -66,30 +122,18 @@ export interface AiCallResult { forecast: AiForecast | null; raw: string; usage:
 const SYSTEM = `你是「HashArena 竞技场」的 AI 预测官，负责对一个基于区块哈希的三位数（万/千/百，000-999）开奖序列做量化推理，并给出结构化预测。
 你清楚：哈希逐期独立，任何号码理论概率恒为 1/1000；你的任务不是宣称能预测，而是在同一 walk-forward 规则下，综合所有统计信号、各策略近期战绩以及你自己过往预测的复盘，给出你认为「倾向最高」的分布，让真实开奖来检验。
 要求：
-- 只输出 JSON，字段：regime(string, ≤40字), confidence(0-1), pos_weights(3×10 数组，每位 0-9 的相对权重 0-100，不要全部相同), strategy_blend(对象，key 为基础策略 key，值 0-100), boost(≤30 个三位号字符串), avoid(≤30 个三位号字符串), reasoning(中文 ≤300 字，说明依据与本期与上期思路的差异), pick_plan(中文 ≤200 字，面向投注者的选号方案：三位各自重点覆盖哪几个数字、主要参考哪些策略、加注/回避的逻辑，这 500 注就是按你的权重实际生成的), next_focus(≤60 字，下期复盘要验证的假设)。
+- 只输出 JSON，字段：regime(string, ≤40字), confidence(0-1), pos_weights(3×10 数组，每位 0-9 的相对权重 0-100，不要全部相同), strategy_blend(对象，key 为基础策略 key，值 0-100), boost(≤30 个三位号字符串), avoid(≤30 个三位号字符串), reasoning(中文 ≤200 字，说明依据与本期与上期思路的差异), pick_plan(中文 ≤150 字，面向投注者的选号方案：三位各自重点覆盖哪几个数字、主要参考哪些策略、加注/回避的逻辑，这 500 注就是按你的权重实际生成的), next_focus(≤60 字，下期复盘要验证的假设)。
 - pos_weights 是你对 500 注构成的直接控制：权重高的数字会在该位获得更多注数。要有取舍（每位建议 3-5 个重点数字权重明显高于其余），但不要把任何数字压到 0。
 - 认真利用「你上几期的预测与结果」：如果连续失误，要调整思路（例如从追热切换为回补、降低对某策略的信任）；如果命中，说明哪部分假设成立。
-- 不要复述数据，直接给出判断。`
+- 不要复述数据，直接给出判断。本期有严格时限（须在开奖前锁定），请直接输出 JSON，不要任何多余文字。`
 
 export async function callAi(env: AiEnv, ctx: any, opts: { timeoutMs?: number; effort?: 'low' | 'medium' | 'high' } = {}): Promise<AiCallResult> {
-  const model = aiModel(env); const t0 = Date.now()
-  const ac = new AbortController(); const timer = setTimeout(() => ac.abort(), opts.timeoutMs ?? 40_000)
-  try {
-    const res = await fetch(`${env.OPENAI_BASE_URL!.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST', signal: ac.signal,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-      body: JSON.stringify({ model, reasoning_effort: opts.effort ?? 'medium', response_format: { type: 'json_object' }, max_completion_tokens: 6000,
-        messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: JSON.stringify(ctx) }] }),
-    })
-    const j: any = await res.json()
-    if (!res.ok || j.error) return { forecast: null, raw: JSON.stringify(j).slice(0, 2000), usage: {}, latency_ms: Date.now() - t0, error: j.error?.message || `HTTP ${res.status}`, model }
-    const raw = j.choices?.[0]?.message?.content || ''
-    let forecast: AiForecast | null = null
-    try { forecast = normalize(JSON.parse(raw)) } catch (e: any) { return { forecast: null, raw, usage: j.usage || {}, latency_ms: Date.now() - t0, error: 'bad json: ' + e.message, model } }
-    return { forecast, raw, usage: j.usage || {}, latency_ms: Date.now() - t0, model }
-  } catch (e: any) {
-    return { forecast: null, raw: '', usage: {}, latency_ms: Date.now() - t0, error: e.name === 'AbortError' ? 'timeout' : String(e.message || e), model }
-  } finally { clearTimeout(timer) }
+  const r = await llmChat(env, { system: SYSTEM, user: JSON.stringify(ctx), json: true, maxTokens: aiProvider(env)?.name === 'deepseek' ? 1500 : 6000, effort: opts.effort ?? 'low', timeoutMs: opts.timeoutMs, temperature: 0.7 })
+  const model = `${r.provider}:${r.model}`
+  if (!r.ok) return { forecast: null, raw: r.content, usage: {}, latency_ms: r.latency_ms, error: r.error, model }
+  let forecast: AiForecast | null = null
+  try { forecast = normalize(parseJson(r.content)) } catch (e: any) { return { forecast: null, raw: r.content, usage: r.usage, latency_ms: r.latency_ms, error: 'bad json: ' + e.message, model } }
+  return { forecast, raw: r.content, usage: r.usage, latency_ms: r.latency_ms, model }
 }
 
 function normalize(o: any): AiForecast {
@@ -189,7 +233,7 @@ export async function aiHistory(db: D1Database, source: string, k = 6, beforeExp
 }
 
 /** 为目标期生成 AI 预测（含调用、落库）；返回 forecast（失败时 null，error 落库） */
-export async function forecastFor(db: D1Database, env: AiEnv, source: string, next: string, draws: Draw[], perf: PerfMap, weights: Record<string, any>) {
+export async function forecastFor(db: D1Database, env: AiEnv, source: string, next: string, draws: Draw[], perf: PerfMap, weights: Record<string, any>, opts: { lockByMs?: number } = {}) {
   const exists = await db.prepare('SELECT output, error FROM ai_forecasts WHERE source=? AND expect=?').bind(source, next).first<any>()
   if (exists) { if (exists.error) return null; try { return normalize(JSON.parse(exists.output)) } catch { return null } }
   const selfHist = await aiHistory(db, source, 6, next)
@@ -199,7 +243,11 @@ export async function forecastFor(db: D1Database, env: AiEnv, source: string, ne
     strategy_leaderboard_rolling40: perfDigest(perf, weights),
     your_recent_forecasts_newest_first: selfHist.map(h => ({ expect: h.expect, regime: h.regime, confidence: h.confidence, next_focus: h.next_focus, boost: h.boost.slice(0, 10), result: h.actual ? { actual: h.actual, hit: !!h.hit, rank: h.rank, pnl: h.pnl } : 'pending', reasoning: (h.reasoning || '').slice(0, 200) })),
   }
-  const r = await callAi(env, ctx, { effort: aiEffort(env), timeoutMs: 35_000 })
+  // 报单窗口：必须在 lockByMs（下期开奖 − AI_LEAD_MS）前锁定；剩余不足 3s 直接放弃 → 本期走兜底，保证截止前有单可报
+  const budget = opts.lockByMs ? opts.lockByMs - Date.now() : aiTimeoutMs(env)
+  let r: AiCallResult
+  if (budget < 3000) r = { forecast: null, raw: '', usage: {}, latency_ms: 0, error: `skipped: lock window ${Math.round(budget / 1000)}s`, model: `${aiProviderName(env)}:${aiModel(env)}` }
+  else r = await callAi(env, ctx, { effort: aiEffort(env), timeoutMs: Math.min(aiTimeoutMs(env), budget) })
   const f = r.forecast
   await db.prepare(`INSERT OR IGNORE INTO ai_forecasts (source, expect, model, based_on, output, reasoning, regime, confidence, prompt_tokens, completion_tokens, latency_ms, created_ms, error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .bind(source, next, r.model, draws[0].expect, f ? JSON.stringify(f) : r.raw.slice(0, 4000), f?.reasoning || null, f?.regime || null, f?.confidence ?? null, r.usage.prompt_tokens ?? null, r.usage.completion_tokens ?? null, r.latency_ms, Date.now(), r.error || null).run()
@@ -233,14 +281,11 @@ export async function generateReport(db: D1Database, env: AiEnv, source: string,
     available_metrics: RULE_HINT,
     last_30_settlement: board.periods.slice(-30).map((p: any) => ({ expect: p.expect.slice(-4), actual: p.actual, hits: Object.entries(p.hit).filter(([, v]) => v).map(([k]) => k) })),
   }
-  const t0 = Date.now(); const model = aiModel(env)
-  const res = await fetch(`${env.OPENAI_BASE_URL!.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-    body: JSON.stringify({ model, reasoning_effort: 'medium', max_completion_tokens: 6000, messages: [{ role: 'system', content: REPORT_SYSTEM }, { role: 'user', content: JSON.stringify(ctx) }] }),
-  })
-  const j: any = await res.json()
-  if (!res.ok || j.error) throw new Error(j.error?.message || `HTTP ${res.status}`)
-  const report = j.choices?.[0]?.message?.content || ''
+  const t0 = Date.now()
+  const r = await llmChat(env, { system: REPORT_SYSTEM, user: JSON.stringify(ctx), maxTokens: aiProvider(env)?.name === 'deepseek' ? 3000 : 6000, effort: 'medium', timeoutMs: 90_000 })
+  if (!r.ok) throw new Error(r.error || 'llm failed')
+  const model = `${r.provider}:${r.model}`; const j: any = { usage: r.usage }
+  const report = r.content
   await db.prepare('INSERT OR REPLACE INTO ai_reports (source, expect, model, report, prompt_tokens, completion_tokens, latency_ms, created_ms) VALUES (?,?,?,?,?,?,?,?)')
     .bind(source, latest, model, report, j.usage?.prompt_tokens ?? null, j.usage?.completion_tokens ?? null, Date.now() - t0, Date.now()).run()
   // 二阶闭环：把报告里的投资规则抽取成结构化 DSL → 落库 → 之后每次战绩榜自动 walk-forward 回测（样本外从 latest 之后开始）
@@ -260,14 +305,9 @@ const RULE_HINT = {
 const RULE_SYSTEM = `你是规则编译器。把一份 HashArena 分析报告中「下一阶段投资策略」部分的可执行建议，编译成 1-3 条结构化规则 JSON。只输出 JSON：{"rules":[{"name":"≤16字","rationale":"≤80字依据","target":{"kind":"fixed|best_z|worst_z|best_rate","strategy":"仅fixed","window":40,"min_n":10,"fallback":"策略key或null(观望)"},"conditions":[{"metric":"roll_z","strategy":"cold","window":40,"op":">","value":0.5}],"any_conditions":[],"sizing":{"base":1,"high":1.5,"low":0.5,"high_if":[...],"low_if":[...]},"risk":{"stop_after_misses":3,"pause_periods":10,"max_drawdown":10000}}]}
 约束：只能使用给定 metrics/ops/strategies/target_kinds；条件必须能在「该期之前的已结算数据」上计算；sizing/risk 可省略；不要输出解释。`
 export async function extractRules(env: AiEnv, report: string): Promise<PlanRule[]> {
-  const res = await fetch(`${env.OPENAI_BASE_URL!.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-    body: JSON.stringify({ model: aiModel(env), reasoning_effort: 'low', response_format: { type: 'json_object' }, max_completion_tokens: 3000,
-      messages: [{ role: 'system', content: RULE_SYSTEM }, { role: 'user', content: JSON.stringify({ schema_hint: RULE_HINT, report }) }] }),
-  })
-  const j: any = await res.json()
-  if (!res.ok || j.error) throw new Error(j.error?.message || `HTTP ${res.status}`)
-  const o = JSON.parse(j.choices?.[0]?.message?.content || '{}')
+  const r = await llmChat(env, { system: RULE_SYSTEM, user: JSON.stringify({ schema_hint: RULE_HINT, report }), json: true, maxTokens: 2000, effort: 'low', timeoutMs: 60_000 })
+  if (!r.ok) throw new Error(r.error || 'llm failed')
+  const o = parseJson(r.content || '{}')
   return (Array.isArray(o.rules) ? o.rules : []).map(normalizeRule).filter(Boolean).slice(0, 3) as PlanRule[]
 }
 /** 供 arenaBoard 使用：把库中活跃的 AI 方案包装为 ExtraPlan（同一序列上 walk-forward，样本外从 report_expect 之后算起） */

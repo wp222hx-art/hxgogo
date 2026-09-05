@@ -170,7 +170,8 @@
 
   // ---------------------------------------------------------------- 数据
   function applyPick(d) {
-    S.pick = d.pick; S.record = d.record; S.history = d.history || []
+    S.pick = d.pick; S.record = d.record; S.history = d.history || []; S.lead = d.lead_ms || 20000; S.provider = d.provider; S.model = d.model
+    var hm = $('hd-model'); if (hm) hm.textContent = (d.provider ? d.provider + ' · ' : '') + (d.model || '') + ' · 开奖前 ' + Math.round(S.lead / 1000) + 's 锁定'
     renderCur(); renderStats(); renderHist()
   }
   function fetchPick(force) {
@@ -210,6 +211,12 @@
     if (left > 0) {
       var s = Math.ceil(left / 1000); el.textContent = (s >= 60 ? Math.floor(s / 60) + ':' : '') + ('0' + (s % 60)).slice(-2) + (s >= 60 ? '' : 's')
       el.className = 'text-2xl font-black mono ' + (s <= 10 ? 'text-amber-300' : 'text-slate-100')
+      // 报单窗口：开奖前 lead 秒必须已有号码；显示距截止还有多久
+      var lockLeft = (st.expected_publish_ms || st.next_due_ms || 0) - (S.lead || 20000) - Date.now(), lk = $('cur-lock')
+      if (lk) {
+        if (S.pick && S.pick.status !== 'thinking') lk.innerHTML = lockLeft > 0 ? '<i class="fas fa-lock-open mr-1 text-emerald-400"></i>报单窗口 剩 <b class="mono">' + Math.ceil(lockLeft / 1000) + 's</b>' : '<i class="fas fa-lock mr-1 text-slate-500"></i>报单窗口已过 · 等下期'
+        else lk.innerHTML = lockLeft > 0 ? '<i class="fas fa-hourglass-half mr-1 text-pink-300"></i>AI 须在 <b class="mono">' + Math.ceil(lockLeft / 1000) + 's</b> 内锁定' : '<i class="fas fa-triangle-exclamation mr-1 text-amber-400"></i>超出截止 · 将用兜底策略'
+      }
     } else {
       el.textContent = '开奖中'; el.className = 'text-2xl font-black mono text-emerald-400 animate-pulse'
       if (!S.timers.nextBusy) { S.timers.nextBusy = true; fetchStatus(true).then(function () { setTimeout(function () { S.timers.nextBusy = false }, POLL_NEXT) }) }
