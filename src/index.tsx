@@ -23,7 +23,7 @@ import { scanGaps, fillGapsFromChain, coverageReport } from './gapfill'
 import { top3Page } from './page_top3'
 import { settingsPage } from './page_settings'
 import { queryPage } from './page_query'
-import { generateSets, insertSets, allNs, setsBoard, setsForPeriod, backfillSets, SET_META, SET_IDS } from './ai_sets'
+import { generateSets, insertSets, allNs, setsBoard, setsForPeriod, backfillSets, tierScoreVector, sharpBuilder, tierDefs, loadTierPeriods, tierStat, backfillIndependentTiers, SET_META, SET_IDS } from './ai_sets'
 
 type Bindings = { DB: D1Database } & AiEnv
 const app = new Hono<{ Bindings: Bindings; Variables: { ai: AiEnv } }>()
@@ -553,9 +553,21 @@ async function aiKick(db: D1Database, env: AiEnv, source: string, trigger = 'pag
     // 报单截止 = 下期理论开奖时刻 − AI_LEAD_MS（默认 20s）：留出足够的下单时间；超时则本期由兜底策略顶上
     const lockByMs = rows.length ? (rows[0] as any).open_ms + SOURCES[source].intervalMs - aiLeadMs(env) : undefined
     let cap: { f: any; ctx: any } | null = null
-    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights, { lockByMs, trigger }); if (f) cap = { f, ctx }; return f ? aiScores(f, ctx.vec, ctx.perf) : null }, parseCustomNs(env.AI_CUSTOM_N))
-    // 多组独立生成：每档 N 各 5 组（A 融合 / B 定位 / C 量化 / D 聚焦 / E 互补），独立入榜结算
-    if (done && cap) { try { const sets = generateSets(cap.f, cap.ctx.vec, cap.ctx.perf, allNs(parseCustomNs(env.AI_CUSTOM_N))); await insertSets(db, source, cap.ctx.next, rows[0].expect, sets) } catch (e) { console.error('ai sets', e) } }
+    let setsGen: ReturnType<typeof generateSets> = []
+    const customNs = parseCustomNs(env.AI_CUSTOM_N)
+    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => {
+      const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights, { lockByMs, trigger }); if (!f) return null
+      cap = { f, ctx }
+      // 先算 A–E 五组（每档 N），它们也是二级蒸馏的"评委"
+      try { setsGen = generateSets(f, ctx.vec, ctx.perf, allNs(customNs)) } catch (e) { console.error('ai sets gen', e) }
+      return aiScores(f, ctx.vec, ctx.perf)
+    }, customNs, {
+      // 每个注数独立生成：镜头参数随 N 变化（小注数更锐、大注数更宽）
+      tierScorer: (n) => cap ? tierScoreVector(cap.f, cap.ctx.vec, cap.ctx.perf, n) : null,
+      // 二级蒸馏：一级全部生成（含五组）加权共识 → 精准 100 / 200
+      sharp: (first) => sharpBuilder(cap?.ctx.perf)([...first, ...setsGen.map(g => ({ key: g.key, numbers: g.numbers }))]),   // setsGen 在 scorer 内填充，此处闭包读取最新值
+    })
+    if (done && cap && setsGen.length) { try { await insertSets(db, source, cap.ctx.next, rows[0].expect, setsGen) } catch (e) { console.error('ai sets', e) } }
     if (done) invalidateArena(source)
   } catch (e) { console.error('ai kick', e) } finally { aiBusy.delete(source) }
 }
@@ -678,22 +690,14 @@ app.get('/api/ai/history', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
   const n = Math.max(10, Math.min(1000, Number(c.req.query('n') || 50)))
-  const customNs = parseCustomNs(c.var.ai.AI_CUSTOM_N)
-  const tiers = [...AI_SUBSETS.map(a => ({ key: a.key, n: a.n, custom: false })), ...customNs.map(x => ({ key: `ai-custom-${x}`, n: x, custom: true })), { key: 'ai', n: 500, custom: false }].sort((a, b) => a.n - b.n)
+  const defs = tierDefs(parseCustomNs(c.var.ai.AI_CUSTOM_N))
   const key = `aihist|${source}|${n}|c${c.var.ai.AI_CUSTOM_N || ''}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
   const { v, cached, age } = await cachedArena(key, 20_000, async () => {
-    const rows = (await c.env.DB.prepare(`SELECT a.expect, a.actual, a.hit, a.rank, a.pnl, a.created_ms, f.regime, f.confidence, f.error, d.open_ms
-      FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect LEFT JOIN draws d ON d.source=a.source AND d.expect=a.expect
-      WHERE a.source=? AND a.strategy='ai' AND a.scored_ms IS NOT NULL ORDER BY a.expect DESC LIMIT ?`).bind(source, n).all<any>()).results
-    const sum: Record<string, { n: number; hits: number; pnl: number }> = {}
-    for (const t of tiers) sum[t.key] = { n: 0, hits: 0, pnl: 0 }
-    const history = rows.map(r => {
-      const sub: Record<string, 0 | 1> = {}
-      for (const t of tiers) { const hit = !!r.hit && r.rank != null && r.rank <= t.n; sub[t.key] = hit ? 1 : 0; sum[t.key].n++; if (hit) sum[t.key].hits++; sum[t.key].pnl += hit ? ARENA_ODDS - t.n : -t.n }
-      return { expect: r.expect, actual: r.actual, open_ms: r.open_ms, hit: !!r.hit, rank: r.rank, pnl: r.pnl, regime: r.regime || null, confidence: r.confidence, fallback: !r.regime || !!r.error, sub }
-    })
-    const summary = tiers.map(t => { const s = sum[t.key]; const p = t.n / 1000; return { key: t.key, n_pick: t.n, custom: t.custom, n: s.n, hits: s.hits, rate: s.n ? Math.round(s.hits / s.n * 1000) / 1000 : null, breakeven: Math.round(t.n / ARENA_ODDS * 1000) / 1000, pnl: s.pnl, roi: s.n ? Math.round(s.pnl / (s.n * t.n) * 10000) / 10000 : null, z: s.n ? Math.round((s.hits - s.n * p) / Math.sqrt(s.n * p * (1 - p)) * 100) / 100 : null } })
-    return { tiers: tiers.map(t => ({ key: t.key, n_pick: t.n, custom: t.custom })), history, summary }
+    const periods = await loadTierPeriods(c.env.DB, source, defs, { limit: n })
+    const history = periods.map(p => { const sub: Record<string, 0 | 1 | null> = {}; for (const d of defs) sub[d.key] = p.sub[d.key] ? (p.sub[d.key]!.hit ? 1 : 0) : null
+      return { expect: p.expect, actual: p.actual, open_ms: p.open_ms, hit: p.ai.hit, rank: p.ai.rank, pnl: p.ai.pnl, regime: p.regime, confidence: p.confidence, fallback: p.fallback, sub } })
+    const summary = defs.map(d => tierStat(periods, d))
+    return { tiers: defs.map(d => ({ key: d.key, n_pick: d.n, custom: d.custom, sharp: !!d.sharp })), history, summary }
   })
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
   return c.json({ ok: true, source, n, cached, cache_age_ms: age, ...v })
@@ -706,13 +710,11 @@ app.get('/api/ai/query', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
   const q = { expect: (c.req.query('expect') || '').replace(/\D/g, ''), date: c.req.query('date') || '', n: Math.min(1000, Math.max(1, Number(c.req.query('n') || 100))), hit: c.req.query('hit') === '1' }
-  const customNs = parseCustomNs(c.var.ai.AI_CUSTOM_N)
-  const tiers = [...AI_SUBSETS.map(a => ({ key: a.key, n: a.n, custom: false })), ...customNs.map(x => ({ key: `ai-custom-${x}`, n: x, custom: true })), { key: 'ai', n: 500, custom: false }].sort((a, b) => a.n - b.n)
-  const where: string[] = [`a.source=?`, `a.strategy='ai'`, `a.scored_ms IS NOT NULL`]; const args: any[] = [source]
+  const defs = tierDefs(parseCustomNs(c.var.ai.AI_CUSTOM_N))
+  const where: string[] = []; const args: any[] = []
   let mode = 'recent'
   if (q.expect.length === 12) { where.push('a.expect=?'); args.push(q.expect); mode = 'expect' }
   else if (q.expect.length >= 1 && q.expect.length <= 4) {
-    // 当日序号：配合 date；无 date 则默认查有记录的最近一天
     const seq = q.expect.padStart(4, '0')
     let day = q.date.replace(/-/g, '')
     if (!day) { const last = await c.env.DB.prepare(`SELECT expect FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT 1`).bind(source).first<any>(); day = last ? String(last.expect).slice(0, 8) : '' }
@@ -720,14 +722,11 @@ app.get('/api/ai/query', async (c) => {
   } else if (q.date) { where.push('a.expect LIKE ?'); args.push(q.date.replace(/-/g, '') + '%'); mode = 'date' }
   if (q.hit) where.push('a.hit=1')
   const limit = mode === 'date' ? 1440 : q.n
-  const rows = (await c.env.DB.prepare(`SELECT a.expect, a.actual, a.hit, a.rank, a.pnl, f.regime, f.confidence, f.error, d.open_ms
-    FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect LEFT JOIN draws d ON d.source=a.source AND d.expect=a.expect
-    WHERE ${where.join(' AND ')} ORDER BY a.expect DESC LIMIT ?`).bind(...args, limit).all<any>()).results
-  const sum: Record<string, { n: number; hits: number; pnl: number }> = {}; for (const t of tiers) sum[t.key] = { n: 0, hits: 0, pnl: 0 }
-  const history = rows.map(r => { const sub: Record<string, 0 | 1> = {}; for (const t of tiers) { const hit = !!r.hit && r.rank != null && r.rank <= t.n; sub[t.key] = hit ? 1 : 0; sum[t.key].n++; if (hit) sum[t.key].hits++; sum[t.key].pnl += hit ? ARENA_ODDS - t.n : -t.n }
-    return { expect: r.expect, actual: r.actual, open_ms: r.open_ms, hit: !!r.hit, rank: r.rank, pnl: r.pnl, regime: r.regime || null, confidence: r.confidence, fallback: !r.regime || !!r.error, sub } })
-  const summary = tiers.map(t => { const s = sum[t.key]; return { key: t.key, n_pick: t.n, custom: t.custom, n: s.n, hits: s.hits, rate: s.n ? Math.round(s.hits / s.n * 1000) / 1000 : null, breakeven: Math.round(t.n / ARENA_ODDS * 1000) / 1000, pnl: s.pnl } })
-  return c.json({ ok: true, source, mode, query: q, tiers: tiers.map(t => ({ key: t.key, n_pick: t.n, custom: t.custom })), history, summary })
+  const periods = await loadTierPeriods(c.env.DB, source, defs, { limit, where: where.join(' AND ') || undefined, args })
+  const history = periods.map(p => { const sub: Record<string, 0 | 1 | null> = {}; for (const d of defs) sub[d.key] = p.sub[d.key] ? (p.sub[d.key]!.hit ? 1 : 0) : null
+    return { expect: p.expect, actual: p.actual, open_ms: p.open_ms, hit: p.ai.hit, rank: p.ai.rank, pnl: p.ai.pnl, regime: p.regime, confidence: p.confidence, fallback: p.fallback, sub } })
+  const summary = defs.map(d => tierStat(periods, d))
+  return c.json({ ok: true, source, mode, query: q, tiers: defs.map(d => ({ key: d.key, n_pick: d.n, custom: d.custom, sharp: !!d.sharp })), history, summary })
 })
 /**
  * 连挂风险统计：AI 各投注档位（100/150/自定义/300/500）出现「连续 ≥K 期不命中」的概率。
@@ -740,22 +739,19 @@ app.get('/api/ai/streaks', async (c) => {
   if (!isSource(source)) return bad(c, 'unknown source')
   const K = Math.max(2, Math.min(10, Number(c.req.query('k') || 4)))
   const nQ = Number(c.req.query('n') || 0)
-  const customNs = parseCustomNs(c.var.ai.AI_CUSTOM_N)
-  const tiers = [...AI_SUBSETS.map(a => ({ key: a.key, n: a.n, custom: false })), ...customNs.map(x => ({ key: `ai-custom-${x}`, n: x, custom: true })), { key: 'ai', n: 500, custom: false }].sort((a, b) => a.n - b.n)
+  const tiers = tierDefs(parseCustomNs(c.var.ai.AI_CUSTOM_N))
   const key = `streaks|${source}|${nQ}|${K}|c${c.var.ai.AI_CUSTOM_N || ''}|a${arenaVer.get(source) || 0}`
   const { v, cached } = await cachedArena(key, 20_000, async () => {
-    const sql = nQ > 0
-      ? `SELECT hit, rank, expect FROM (SELECT hit, rank, expect FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT ?) ORDER BY expect ASC`
-      : `SELECT hit, rank, expect FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL ORDER BY expect ASC`
-    const rows = (nQ > 0 ? await c.env.DB.prepare(sql).bind(source, nQ).all<any>() : await c.env.DB.prepare(sql).bind(source).all<any>()).results
-    const total = rows.length
+    const periodsAll = (await loadTierPeriods(c.env.DB, source, tiers, { limit: nQ > 0 ? nQ : 5000 })).reverse()   // 升序
+    const total = periodsAll.length
     const r4 = (x: number) => Math.round(x * 10000) / 10000
     const out = tiers.map(t => {
       const q = 1 - t.n / 1000
+      const rows = periodsAll.map(p => p.sub[t.key]).filter(Boolean) as { hit: boolean }[]   // 只用该档位真实结算行
       const runs: number[] = []; let cur = 0, longest = 0, hits = 0
       const dist: Record<string, number> = { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0, '6+': 0 }
       for (const r of rows) {
-        const hit = !!r.hit && r.rank != null && r.rank <= t.n
+        const hit = r.hit
         if (hit) { hits++; if (cur) runs.push(cur); cur = 0 } else { cur++; if (cur > longest) longest = cur }
       }
       const current = cur; if (cur) runs.push(cur)   // 末尾未闭合的连挂也计入段
@@ -763,12 +759,12 @@ app.get('/api/ai/streaks', async (c) => {
       const runsK = runs.filter(L => L >= K)
       const periodsInK = runsK.reduce((a, L) => a + L, 0)
       return {
-        key: t.key, n_pick: t.n, custom: t.custom, periods: total, hits, rate: total ? r4(hits / total) : null,
+        key: t.key, n_pick: t.n, custom: t.custom, sharp: !!t.sharp, periods: rows.length, hits, rate: rows.length ? r4(hits / rows.length) : null,
         theory: { miss_p: r4(q), any_k_in_row: r4(Math.pow(q, K)), run_reaches_k: r4(Math.pow(q, K - 1)), expected_runs_k_per_100: r4(100 * (1 - q) * Math.pow(q, K)) },
-        actual: { runs: runs.length, runs_k: runsK.length, run_reaches_k: runs.length ? r4(runsK.length / runs.length) : null, periods_in_k: periodsInK, periods_in_k_share: total ? r4(periodsInK / total) : null, runs_k_per_100: total ? r4(runsK.length / total * 100) : null, longest, current, dist },
+        actual: { runs: runs.length, runs_k: runsK.length, run_reaches_k: runs.length ? r4(runsK.length / runs.length) : null, periods_in_k: periodsInK, periods_in_k_share: rows.length ? r4(periodsInK / rows.length) : null, runs_k_per_100: rows.length ? r4(runsK.length / rows.length * 100) : null, longest, current, dist },
       }
     })
-    return { k: K, periods: total, first: rows[0]?.expect || null, last: rows[rows.length - 1]?.expect || null, tiers: out }
+    return { k: K, periods: total, first: periodsAll[0]?.expect || null, last: periodsAll[total - 1]?.expect || null, tiers: out }
   })
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
   return c.json({ ok: true, source, ...v })
@@ -787,19 +783,19 @@ app.get('/api/ai/tier-analysis', async (c) => {
   if (!isSource(source)) return bad(c, 'unknown source')
   const CONF = Math.max(0, Math.min(1, Number(c.req.query('conf') ?? 0.6)))
   const ROUND = Math.max(5, Math.min(50, Number(c.req.query('round') || 10)))
-  const customNs = parseCustomNs(c.var.ai.AI_CUSTOM_N)
-  const tiers = [...AI_SUBSETS.map(a => ({ key: a.key, n: a.n, custom: false })), ...customNs.map(x => ({ key: `ai-custom-${x}`, n: x, custom: true })), { key: 'ai', n: 500, custom: false }].sort((a, b) => a.n - b.n)
+  const tiers = tierDefs(parseCustomNs(c.var.ai.AI_CUSTOM_N))
   const key = `tieran|${source}|${CONF}|${ROUND}|c${c.var.ai.AI_CUSTOM_N || ''}|a${arenaVer.get(source) || 0}`
   const { v, cached } = await cachedArena(key, 20_000, async () => {
-    const rows = (await c.env.DB.prepare(`SELECT a.expect, a.hit, a.rank, f.confidence FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect WHERE a.source=? AND a.strategy='ai' AND a.scored_ms IS NOT NULL ORDER BY a.expect ASC`).bind(source).all<any>()).results
-    const T = rows.length
+    const periodsAll = (await loadTierPeriods(c.env.DB, source, tiers, { limit: 5000 })).reverse()   // 升序
+    const T = periodsAll.length
     const r4 = (x: number | null) => x == null || !isFinite(x) ? null : Math.round(x * 10000) / 10000
     const wilson = (h: number, n: number) => { if (!n) return null; const z = 1.96, p = h / n, d = 1 + z * z / n, ctr = p + z * z / (2 * n), sp = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)); return { lo: r4((ctr - sp) / d), hi: r4((ctr + sp) / d) } }
     // 下一期 AI 置信度（若已锁定）
     const nextF = await c.env.DB.prepare(`SELECT f.expect, f.confidence FROM ai_forecasts f WHERE f.source=? AND f.error IS NULL AND NOT EXISTS (SELECT 1 FROM arena_rounds a WHERE a.source=f.source AND a.expect=f.expect AND a.strategy='ai' AND a.scored_ms IS NOT NULL) ORDER BY f.expect DESC LIMIT 1`).bind(source).first<any>()
     const out = tiers.map(t => {
       const p0 = t.n / 1000, q0 = 1 - p0, be = t.n / 950
-      const hits: boolean[] = rows.map(r => !!r.hit && r.rank != null && r.rank <= t.n)
+      const rows = periodsAll.filter(p => p.sub[t.key])                 // 只用该档位真实结算行
+      const hits: boolean[] = rows.map(p => p.sub[t.key]!.hit)
       const H = hits.filter(Boolean).length
       const last = (k: number) => hits.slice(-k)
       const rate = (arr: boolean[]) => arr.length ? arr.filter(Boolean).length / arr.length : null
@@ -863,14 +859,14 @@ app.get('/api/ai/tier-analysis', async (c) => {
       let afterHitN = 0, afterHitH = 0, afterHitConfN = 0, afterHitConfH = 0
       for (let i = 0; i + 1 < hits.length; i++) if (hits[i]) { afterHitN++; if (hits[i + 1]) afterHitH++; const cf = rows[i + 1].confidence; if (cf != null && cf >= CONF) { afterHitConfN++; if (hits[i + 1]) afterHitConfH++ } }
       return {
-        key: t.key, n_pick: t.n, custom: t.custom, periods: T, hits: H, breakeven: r4(be),
+        key: t.key, n_pick: t.n, custom: t.custom, sharp: !!t.sharp, periods: rows.length, hits: H, breakeven: r4(be),
         next: { theory: r4(p0), all: r4(pAll), ci_all: wilson(H, T), last100: r4(p100), last30: r4(p30), cond_after_current_streak: pCond, current_streak: cur, estimate: pEst, edge_vs_breakeven: pEst != null ? r4(pEst - be) : null, verdict: pEst == null ? 'n/a' : (pEst >= be + 0.02 && (pAll ?? 0) >= be - 0.01) ? 'favorable' : pEst >= be ? 'marginal' : 'unfavorable' },
         streak: { dist, longest, current: cur, cond, survive, end_now_p: pCond ?? r4(p0) },
         pit: { steps: pit, at_least_one_4run_in_round: pit10, round: ROUND },
         martingale: { conf_threshold: CONF, round: ROUND, after_hit: { n: afterHitN, hits: afterHitH, rate: afterHitN ? r4(afterHitH / afterHitN) : null }, after_hit_conf: { n: afterHitConfN, hits: afterHitConfH, rate: afterHitConfN ? r4(afterHitConfH / afterHitConfN) : null }, sims },
       }
     })
-    return { periods: T, first: rows[0]?.expect || null, last: rows[T - 1]?.expect || null, next_forecast: nextF ? { expect: nextF.expect, confidence: nextF.confidence, double_ok: CONF === 0 || (nextF.confidence != null && nextF.confidence >= CONF) } : null, tiers: out }
+    return { periods: T, first: periodsAll[0]?.expect || null, last: periodsAll[T - 1]?.expect || null, next_forecast: nextF ? { expect: nextF.expect, confidence: nextF.confidence, double_ok: CONF === 0 || (nextF.confidence != null && nextF.confidence >= CONF) } : null, tiers: out }
   })
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
   return c.json({ ok: true, source, ...v })
@@ -893,6 +889,16 @@ app.post('/api/ai/sets/backfill', async (c) => {
   const n = Math.max(1, Math.min(20, Number(c.req.query('n') || 10)))
   const draws = await loadDraws(c.env.DB, source, 1400)   // 每期只需其前 800 期；1400 覆盖最近 ~600 期待回填目标
   const r = await backfillSets(c.env.DB, source, draws as any, allNs(parseCustomNs(c.var.ai.AI_CUSTOM_N)), n)
+  if (r.done) invalidateArena(source)
+  return c.json({ ok: true, source, ...r })
+})
+/** 独立生成档 + 二级精准 历史重算（取代旧前缀行；每次 ≤ n 期，幂等） */
+app.post('/api/ai/tiers/backfill', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const n = Math.max(1, Math.min(20, Number(c.req.query('n') || 8)))
+  const draws = await loadDraws(c.env.DB, source, 1400)
+  const r = await backfillIndependentTiers(c.env.DB, source, draws as any, parseCustomNs(c.var.ai.AI_CUSTOM_N), n)
   if (r.done) invalidateArena(source)
   return c.json({ ok: true, source, ...r })
 })

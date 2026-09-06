@@ -9,7 +9,7 @@
   var bj = function (ms, withDate) { if (!ms) return ''; var d = new Date(ms + BJ); var t = String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') + ':' + String(d.getUTCSeconds()).padStart(2, '0'); return withDate ? (d.getUTCMonth() + 1) + '/' + d.getUTCDate() + ' ' + t : t }
   var S = { source: 'qkltj:6001', tiers: [], rows: [], last: null, hitOnly: false, detail: {} }
   try { S.source = localStorage.getItem('ai:source') || S.source } catch (e) {}
-  var tierShort = function (t) { return t.key === 'ai' ? '500' : String(t.n_pick) + (t.custom ? '★' : '') }
+  var tierShort = function (t) { return t.key === 'ai' ? '500' : (t.sharp ? '⚡' : '') + String(t.n_pick) + (t.custom ? '★' : '') }
 
   // ---------------------------------------------------------------- 后台状态
   function renderBg(d) {
@@ -27,7 +27,7 @@
 
   // ---------------------------------------------------------------- 列表
   function renderHead() {
-    $('thead').innerHTML = '<th class="l">期号</th><th class="tm">开奖时间（北京）</th><th>开奖</th>' + S.tiers.map(function (t) { return '<th' + (t.custom ? ' class="c"' : '') + ' title="前 ' + t.n_pick + ' 注">' + tierShort(t) + '</th>' }).join('') + '<th>位次</th><th class="r">盈亏</th>'
+    $('thead').innerHTML = '<th class="l">期号</th><th class="tm">开奖时间（北京）</th><th>开奖</th>' + S.tiers.map(function (t) { return '<th' + (t.custom ? ' class="c"' : t.sharp ? ' style="color:#fde047"' : '') + ' title="' + (t.sharp ? '二级精准 ' : t.key === 'ai' ? '主推 ' : '独立生成 ') + t.n_pick + ' 注">' + tierShort(t) + '</th>' }).join('') + '<th>位次</th><th class="r">盈亏</th>'
   }
   function renderSum(summary, n) {
     $('sum').innerHTML = '<span class="t"><span class="text-slate-500">' + n + ' 期</span></span>' + (summary || []).map(function (t) {
@@ -44,7 +44,7 @@
         '<td class="ex l">' + h.expect.slice(0, 8) + '<b>' + h.expect.slice(8) + '</b></td>' +
         '<td class="tm text-slate-500">' + bj(h.open_ms, true) + '</td>' +
         '<td class="ac">' + (h.actual || '—') + '</td>' +
-        S.tiers.map(function (t) { return '<td><span class="cell' + (h.sub && h.sub[t.key] ? ' h' : '') + (t.custom ? ' c' : '') + '"></span></td>' }).join('') +
+        S.tiers.map(function (t) { var v = h.sub ? h.sub[t.key] : null; return '<td><span class="cell' + (v ? ' h' : v === null ? ' na' : '') + (t.custom ? ' c' : '') + (t.sharp ? ' s' : '') + '" title="' + (v === null ? '该期无独立生成记录' : '') + '"></span></td>' }).join('') +
         '<td class="rk">' + (h.hit ? '#' + h.rank : '·') + '</td>' +
         '<td class="r ' + (h.pnl > 0 ? 'p' : 'm') + '">' + fmtInt(h.pnl) + '</td></tr>'
     }).join('')
@@ -57,7 +57,7 @@
     $('o-expect').textContent = h.expect; $('o-time').textContent = '北京时间 ' + bj(h.open_ms, true) + ' 开奖'
     $('o-actual').textContent = h.actual || '—'; $('o-actual').className = 'big ' + (h.hit ? 'text-emerald-400' : 'text-slate-200')
     $('o-res').innerHTML = h.hit ? '<span class="text-emerald-400"><i class="fas fa-check-circle mr-1"></i>命中 · 位次 #' + h.rank + '</span><div class="text-xs text-emerald-300/70 font-normal">盈亏 ' + fmtInt(h.pnl) + '</div>' : '<span class="text-slate-400"><i class="fas fa-circle-xmark mr-1"></i>未命中</span><div class="text-xs text-slate-500 font-normal">盈亏 ' + fmtInt(h.pnl) + '</div>'
-    $('o-tiers').innerHTML = S.tiers.map(function (t) { var ok = h.sub && h.sub[t.key]; return '<span class="px-2.5 py-1 rounded-lg text-xs font-bold mono ' + (ok ? 'bg-emerald-500 text-black' : 'bg-slate-800 text-slate-500') + (t.custom ? ' ring-1 ring-violet-500/60' : '') + '">前 ' + tierShort(t) + (ok ? ' ✓' : ' ✗') + '</span>' }).join('')
+    $('o-tiers').innerHTML = S.tiers.map(function (t) { var v = h.sub ? h.sub[t.key] : null; var ok = !!v; return '<span class="px-2.5 py-1 rounded-lg text-xs font-bold mono ' + (ok ? 'bg-emerald-500 text-black' : v === null ? 'bg-slate-900 text-slate-600 border border-dashed border-slate-700' : 'bg-slate-800 text-slate-500') + (t.custom ? ' ring-1 ring-violet-500/60' : '') + (t.sharp ? ' ring-1 ring-yellow-400/60' : '') + '" title="' + (v === null ? '该期无独立生成记录' : '') + '">' + (t.sharp ? '精准 ' : t.key === 'ai' ? '主推 ' : '') + tierShort(t) + (v === null ? ' —' : ok ? ' ✓' : ' ✗') + '</span>' }).join('')
     $('o-regime').innerHTML = h.fallback ? '<span class="text-slate-600 italic">该期 AI 未成功，使用兜底策略</span>' : '<b class="text-slate-300">AI 判断</b>：' + esc(h.regime || '') + (h.confidence ? ' <span class="text-slate-600">置信 ' + pct(h.confidence, 0) + '</span>' : '')
     var g = $('o-grid'); g.style.display = 'none'; g.innerHTML = ''; $('o-copy-wrap').innerHTML = ''
     $('o-show').onclick = function () {
@@ -145,7 +145,7 @@
       var simRow = function (name, r, hi) { return '<tr class="' + (hi ? 'bg-amber-500/5' : '') + '"><td class="l text-slate-300 py-1">' + name + '</td><td class="mono">' + money(r.pnl) + '</td><td class="mono">' + (r.roi == null ? '—' : ((r.roi >= 0 ? '+' : '') + (r.roi * 100).toFixed(2) + '%')) + '</td><td class="mono text-rose-300">' + r.max_drawdown.toLocaleString() + '</td><td class="mono">' + r.rounds_win + '/' + r.rounds + '</td><td class="mono text-rose-300">' + r.worst_round.toLocaleString() + '</td></tr>' }
       return '<div class="rounded-xl border ' + (t.custom ? 'border-violet-500/40' : 'border-slate-800') + ' bg-[#0b1220] p-3 space-y-3">' +
         // 头
-        '<div class="flex items-center justify-between"><div><b class="text-base ' + (t.custom ? 'text-violet-300' : 'text-slate-100') + '">前 ' + tierShort(t) + ' 注</b><span class="text-[11px] text-slate-500 ml-2">保本 ' + pct(t.breakeven, 1) + ' · ' + t.hits + '/' + t.periods + '</span></div>' + verdictBadge(nx.verdict, nx.edge_vs_breakeven) + '</div>' +
+        '<div class="flex items-center justify-between"><div><b class="text-base ' + (t.custom ? 'text-violet-300' : t.sharp ? 'text-yellow-200' : 'text-slate-100') + '">' + (t.sharp ? '精准 ' : t.key === 'ai' ? '主推 ' : '独立 ') + tierShort(t) + ' 注</b><span class="text-[11px] text-slate-500 ml-2">保本 ' + pct(t.breakeven, 1) + ' · ' + t.hits + '/' + t.periods + '</span></div>' + verdictBadge(nx.verdict, nx.edge_vs_breakeven) + '</div>' +
         // 下一期概率
         '<div><div class="text-[11px] text-slate-500 mb-1"><i class="fas fa-bullseye mr-1 text-amber-400"></i>下一期命中概率</div>' +
           '<div class="flex items-end gap-3"><div><div class="mono text-2xl font-black ' + (nx.estimate >= t.breakeven ? 'text-emerald-300' : 'text-slate-200') + '">' + pct(nx.estimate, 1) + '</div><div class="text-[10.5px] text-slate-500">综合估计</div></div>' +

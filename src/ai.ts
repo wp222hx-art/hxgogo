@@ -4,7 +4,7 @@
 //  2) 每期都把它自己上几期的预测与真实结果喂回去（自我复盘闭环），形成不间断迭代；
 //  3) AI 的号码进入 arena_rounds（strategy='ai'），与随机对照组同台结算——它是否有信号由数据说话。
 import { type Draw } from './analysis'
-import { STRATEGIES, ARENA_N, AI_SUBSETS, rollingZ, type PerfMap, type ExtraPlan } from './arena'
+import { STRATEGIES, ARENA_N, AI_SUBSETS, AI_SHARP, rollingZ, type PerfMap, type ExtraPlan } from './arena'
 import { normalizeRule, describeRule, simulateRule, listAiPlans, saveAiPlans, retirePlans, type PlanRule, MAX_ACTIVE_AI_PLANS } from './ai_plans'
 import { parseCustomNs } from './config'
 
@@ -233,13 +233,18 @@ export async function aiPick(db: D1Database, source: string, current: { expect: 
   const status: 'ready' | 'thinking' | 'fallback' = aiRow ? 'ready' : (fRow?.error ? 'fallback' : 'thinking')
   const row = guarded && status !== 'thinking' ? metaRow! : (aiRow || (status === 'fallback' ? metaRow : null))
   const numbers = row ? row.numbers.split(' ') : []
-  // AI 精选：前 N 注（与 numbers 同序，前缀）+ 各档累计战绩 + 近 20 期
-  const customDefs = parseCustomNs(customN).map(n => ({ key: `ai-custom-${n}`, n, name: `AI 自定义 ${n} 注`, short: `AI·${n}`, color: '#a78bfa', custom: true }))
-  const subsets = await Promise.all([...AI_SUBSETS.map(x => ({ ...x, custom: false })), ...customDefs].map(async sub => {
+  // 各档位：每档都是独立生成（不是 500 注前缀）——号码直接取该档自己的 arena_rounds 行；无行（改造前/AI 未就绪）时退化为主榜前缀并标注 from_prefix
+  const customDefs = parseCustomNs(customN).map(n => ({ key: `ai-custom-${n}`, n, name: `AI 自定义 ${n} 注`, short: `AI·${n}`, color: '#a78bfa', custom: true, sharp: false }))
+  const sharpDefs = AI_SHARP.map(x => ({ key: x.key, n: x.n, name: x.name, short: x.short, color: x.color, custom: false, sharp: true }))
+  const allDefs = [...AI_SUBSETS.map(x => ({ key: x.key, n: x.n, name: x.name, short: x.short, color: x.color, custom: false, sharp: false })), ...customDefs, ...sharpDefs].sort((a, b) => a.n - b.n || (a.sharp ? -1 : 1))
+  const subsets = await Promise.all(allDefs.map(async sub => {
     const st = await db.prepare(`SELECT COUNT(*) n, SUM(hit) h, SUM(pnl) pnl FROM arena_rounds WHERE source=? AND strategy=? AND scored_ms IS NOT NULL`).bind(source, sub.key).first<any>()
     const streak = (await db.prepare(`SELECT hit FROM arena_rounds WHERE source=? AND strategy=? AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT 20`).bind(source, sub.key).all<any>()).results.map(r => r.hit ? 1 : 0)
     const n = st?.n || 0, h = st?.h || 0, p = sub.n / SPACE
-    return { key: sub.key, n_pick: sub.n, name: sub.name, short: sub.short, color: sub.color, custom: (sub as any).custom, breakeven: r3(sub.n / 950), numbers: row ? numbers.slice(0, sub.n) : [], from: row ? row.strategy : null, record: n ? { n, hits: h, rate: r3(h / n), pnl: st.pnl || 0, z: r3((h - n * p) / Math.sqrt(n * p * (1 - p))), roi: r3((st.pnl || 0) / (n * sub.n)), streak } : null }
+    const ownRow = current.strategies.find(s => s.strategy === sub.key)
+    const nums = ownRow ? ownRow.numbers.split(' ') : (row ? numbers.slice(0, sub.n) : [])
+    const overlapMain = ownRow && numbers.length ? nums.filter(x => numbers.includes(x)).length : null
+    return { key: sub.key, n_pick: sub.n, name: sub.name, short: sub.short, color: sub.color, custom: sub.custom, sharp: sub.sharp, breakeven: r3(sub.n / 950), numbers: nums, from: ownRow ? 'own' : (row ? row.strategy + ':prefix' : null), independent: !!ownRow, overlap_main: overlapMain, record: n ? { n, hits: h, rate: r3(h / n), pnl: st.pnl || 0, z: r3((h - n * p) / Math.sqrt(n * p * (1 - p))), roi: r3((st.pnl || 0) / (n * sub.n)), streak } : null }
   }))
   return {
     expect: current.expect, based_on: current.based_on, status, subsets,
@@ -294,14 +299,20 @@ export async function aiHistory(db: D1Database, source: string, k = 6, beforeExp
 export async function tierDigest(db: D1Database, source: string, beforeExpect: string, customNs: number[]) {
   const rows = (await db.prepare(`SELECT hit, rank FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL AND expect<? ORDER BY expect DESC LIMIT 400`).bind(source, beforeExpect).all<any>()).results
   if (!rows.length) return null
-  const Ns = [...new Set([100, 150, 300, 450, 500, ...customNs])].sort((a, b) => a - b)
-  const stat = (rs: any[], N: number) => { const n = rs.length, h = rs.filter(r => r.hit && r.rank != null && r.rank <= N).length, p = N / SPACE; return { N, n, rate: r3(h / n), breakeven: r3(N / 950), edge: r3(h / n - N / 950), z: r3((h - n * p) / Math.sqrt(n * p * (1 - p) || 1)), roi: r3((h * (950 - N) - (n - h) * N) / (n * N)) } }
-  const recent = rows.slice(0, 60)
-  // 命中位次分布：命中时落在前 100 / 101–200 / 201–300 / 301–500 的比例
+  // 各档位（独立生成 + 自定义 + 二级精准）用自己的真实结算行
+  const defs = [...AI_SUBSETS.map(x => ({ key: x.key, N: x.n, kind: 'independent' })), ...customNs.map(n => ({ key: `ai-custom-${n}`, N: n, kind: 'custom' })), ...AI_SHARP.map(x => ({ key: x.key, N: x.n, kind: 'sharp' })), { key: 'ai', N: 500, kind: 'main' }].sort((a, b) => a.N - b.N)
+  const statKey = async (key: string, N: number, limit: number) => {
+    const rs = (await db.prepare(`SELECT hit FROM arena_rounds WHERE source=? AND strategy=? AND scored_ms IS NOT NULL AND expect<? ORDER BY expect DESC LIMIT ?`).bind(source, key, beforeExpect, limit).all<any>()).results
+    const n = rs.length, h = rs.filter(r => r.hit).length, p = N / SPACE
+    return n ? { N, n, rate: r3(h / n), breakeven: r3(N / 950), edge: r3(h / n - N / 950), z: r3((h - n * p) / Math.sqrt(n * p * (1 - p) || 1)), roi: r3((h * (950 - N) - (n - h) * N) / (n * N)) } : { N, n: 0, rate: null, breakeven: r3(N / 950), edge: null, z: null, roi: null }
+  }
+  const tiers_all: any[] = [], tiers_recent60: any[] = []
+  for (const d of defs) { tiers_all.push({ key: d.key, kind: d.kind, ...(await statKey(d.key, d.N, 400)) }); tiers_recent60.push({ key: d.key, kind: d.kind, ...(await statKey(d.key, d.N, 60)) }) }
+  // 主榜命中位次分布：命中时落在前 100 / 101–200 / 201–300 / 301–500 的比例（衡量 500 注排序质量）
   const hits = rows.filter(r => r.hit && r.rank != null); const bucket = [0, 0, 0, 0]
   for (const r of hits) bucket[r.rank <= 100 ? 0 : r.rank <= 200 ? 1 : r.rank <= 300 ? 2 : 3]++
-  return { periods: rows.length, tiers_all: Ns.map(N => stat(rows, N)), tiers_recent60: Ns.map(N => stat(recent, N)), hit_rank_distribution: { '1-100': bucket[0], '101-200': bucket[1], '201-300': bucket[2], '301-500': bucket[3], expected_if_uniform: hits.length ? [0.2, 0.2, 0.2, 0.4].map(x => Math.round(x * hits.length)) : null },
-    hint: '若头部档位 edge 持续高于尾部，说明你的排序有效；请让 pos_weights 更有取舍、把最有把握的组合排到前面。若头部 edge 为负而 500 注为正，说明排序前段过度自信，应分散。' }
+  return { periods: rows.length, tiers_all, tiers_recent60, hit_rank_distribution: { '1-100': bucket[0], '101-200': bucket[1], '201-300': bucket[2], '301-500': bucket[3], expected_if_uniform: [Math.round(hits.length * 0.2), Math.round(hits.length * 0.2), Math.round(hits.length * 0.2), Math.round(hits.length * 0.4)] },
+    hint: '各档位都是用你同一份输出、以不同镜头独立生成的（小注数：定位幂更高、更信你的 pos_weights；大注数：更靠量化融合）。kind=sharp 是对全部一级生成做加权共识得到的精准 100/200。若 independent/sharp 小注数 edge 持续为正，说明你的 pos_weights 取舍有效，可更果断；若小注数 edge 为负而 500 注为正，说明你的定位过度自信，应让 pos_weights 更平、把把握放在 boost 上。' }
 }
 
 /** 为目标期生成 AI 预测（含调用、落库）；返回 forecast（失败时 null，error 落库） */

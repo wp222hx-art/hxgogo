@@ -7,7 +7,7 @@
 //   E 互补覆盖   ：先剔除 A 组已选号码，在剩余空间按融合分 top-N（与主推零重叠，作对冲/覆盖）
 // 每组作为独立策略 `ai-set-{N}-{A..E}` 写入 arena_rounds，走现有结算；ai_sets 表记录元数据。
 // 统计端按 (N, 组) 汇总命中率 / z / ROI，标出"哪一组历史上更会中"，供用户筛选。
-import { ARENA_N, ARENA_ODDS, AI_SUBSETS, rollingZ, type PerfMap } from './arena'
+import { ARENA_N, ARENA_ODDS, AI_SUBSETS, AI_SHARP, rollingZ, type PerfMap } from './arena'
 import { type AiForecast } from './ai'
 
 const SPACE = 1000
@@ -148,6 +148,155 @@ export async function backfillSets(db: D1Database, source: string, draws: { expe
       stmts.push(db.prepare(`INSERT OR IGNORE INTO arena_rounds (source, expect, strategy, mode, based_on, numbers, count, coverage, weight, created_ms, actual, hit, rank, pnl, scored_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .bind(source, r.expect, g.key, 'replay', hist[0].expect, nums.join(' '), nums.length, g.coverage, 1, ts, actual, hit ? 1 : 0, hit ? idx + 1 : null, hit ? ARENA_ODDS - nums.length : -nums.length, ts))
       stmts.push(db.prepare(`INSERT OR IGNORE INTO ai_sets (source, expect, n, set_id, overlap_a, created_ms) VALUES (?,?,?,?,?,?)`).bind(source, r.expect, g.n, g.id, g.overlap_a, ts))
+    }
+    for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40))
+    done++
+  }
+  return { done, remaining_hint: rows.length === max }
+}
+
+// ============ 每个注数独立生成（不同配方，不是同一排序的截断） + 二级蒸馏 ============
+/**
+ * 关键：幂变换不改变排序，所以"锐度"不能让 top-N 变成不同的选择。真正改变排序的是信号配方：
+ *   • AI 定位（own）与量化共识（blend）的配比 ownShare —— 两者的几何加权改变号码的相对次序
+ *   • 是否限定在核心号（万位前 4 × 千位前 6 × 百位前 6 = 144 个）内
+ *   • boost / avoid 的力度
+ * 配方（按注数）：
+ *   100 注「双确认」：只在核心号内、要求 AI 与量化同时看好（own^0.5 × blend^0.5，几何平均惩罚偏科），boost×2.2
+ *   150 注「AI 主见」：own^0.9 × blend^0.1，几乎纯 AI 定位判断，boost×2.0
+ *   300 注「均衡」  ：own^0.5 × blend^0.5（AI 与量化对半，与主推 0.65 拉开），boost×1.6
+ *   450 注「量化底盘」：own^0.35 × blend^0.65，量化主导、AI 微调，avoid 直接剔除
+ *   自定义 N：ownShare 按 N 在 0.9→0.35 间线性插值；N ≤ 120 启用核心号限定
+ */
+export function lensFor(n: number) {
+  if (n <= 120) return { name: '双确认', ownShare: 0.5, core: true, boost: 2.2, avoid: 0.2 }
+  if (n <= 180) return { name: 'AI 主见', ownShare: 0.9, core: false, boost: 2.0, avoid: 0.3 }
+  if (n <= 330) return { name: '均衡', ownShare: 0.5, core: false, boost: 1.6, avoid: 0.35 }   // 与主推(0.65)拉开：AI 与量化对半
+  if (n <= 470) return { name: '量化底盘', ownShare: 0.35, core: false, boost: 1.3, avoid: 0.0 }
+  return { name: '主推', ownShare: 0.65, core: false, boost: 1.6, avoid: 0.4 }
+}
+export function tierScoreVector(f: AiForecast, vec: Record<string, number[]>, perf: PerfMap | undefined, n: number): number[] {
+  const L = lensFor(n)
+  const pd = f.pos_weights.map(row => norm(row.map(v => Math.pow(v + 5, 1.0))))
+  const own = new Array<number>(SPACE); for (let i = 0; i < SPACE; i++) own[i] = pd[0][Math.floor(i / 100)] * pd[1][Math.floor(i / 10) % 10] * pd[2][i % 10]
+  const blendW: Record<string, number> = {}
+  for (const [k, w] of Object.entries(f.strategy_blend)) { if (!vec[k] || w <= 0) continue; if (perf && rollingZ(perf, k).z <= 0) continue; blendW[k] = w }
+  const bsum = Object.values(blendW).reduce((a, b) => a + b, 0)
+  const blend = new Array<number>(SPACE).fill(0)
+  if (bsum > 0) for (const [k, w] of Object.entries(blendW)) { const v = vec[k]; for (let i = 0; i < SPACE; i++) blend[i] += (w / bsum) * v[i] }
+  else { // 无可信量化策略时，用全部基础向量等权，保证 blend 仍有信息量
+    const ks = Object.keys(vec); if (ks.length) for (const k of ks) { const v = vec[k]; for (let i = 0; i < SPACE; i++) blend[i] += v[i] / ks.length } else for (let i = 0; i < SPACE; i++) blend[i] = 1 / SPACE
+  }
+  const topDigits = (row: number[], k: number) => new Set([...row.keys()].sort((a, b) => row[b] - row[a]).slice(0, k))
+  const w4 = topDigits(pd[0], 4), q6 = topDigits(pd[1], 6), b6 = topDigits(pd[2], 6)
+  const out = new Array<number>(SPACE)
+  for (let i = 0; i < SPACE; i++) {
+    let v = Math.pow(own[i], L.ownShare) * Math.pow(blend[i], 1 - L.ownShare)
+    if (L.core && !(w4.has(Math.floor(i / 100)) && q6.has(Math.floor(i / 10) % 10) && b6.has(i % 10))) v *= 0.02   // 核心号之外几乎不选
+    out[i] = v
+  }
+  for (const s of f.boost) { const i = Number(s); if (i >= 0 && i < SPACE) out[i] *= L.boost }
+  for (const s of f.avoid) { const i = Number(s); if (i >= 0 && i < SPACE) out[i] *= L.avoid }
+  return norm(out)
+}
+
+/**
+ * 二级蒸馏：把全部一级生成（500 主推、各注数独立生成、A–E 五组）当作"评委"。
+ * 每个号码得分 = Σ_评委 w_评委 × (1 − rank/len)  —— 被越多、越强、排位越靠前的评委选中，分越高。
+ * w_评委 = 该来源滚动 40 期 z（截到 [0.3, 3]，无样本 = 1）× 精度因子（注数越少越可信，500 注只有 0.5）。
+ * 精准 100 / 200 注 = 得分最高的 100 / 200 个号码。
+ */
+export function sharpBuilder(perf: PerfMap | undefined) {
+  return (first: { key: string; numbers: number[] }[]): Record<number, number[]> => {
+    const score = new Array<number>(SPACE).fill(0)
+    for (const g of first) {
+      if (!g.numbers.length) continue
+      const z = perf ? rollingZ(perf, g.key).z : 0
+      const wz = perf && (perf[g.key]?.length || 0) >= 10 ? Math.max(0.3, Math.min(3, 1 + z)) : 1
+      const prec = Math.max(0.5, Math.min(1.5, 1.5 - g.numbers.length / 500))    // 100 注 1.3；500 注 0.5
+      const w = wz * prec, L = g.numbers.length
+      for (let r = 0; r < L; r++) { const i = g.numbers[r]; if (i >= 0 && i < SPACE) score[i] += w * (1 - r / L) }
+    }
+    return { 100: topN(score, 100), 200: topN(score, 200) }
+  }
+}
+
+// ============ 各档位真实结算行（替代"按 ai 主榜 rank ≤ N 推算"的前缀假设） ============
+export interface TierDef { key: string; n: number; custom: boolean; sharp?: boolean }
+/** 全部档位定义：独立生成档（100/150/300/450）+ 自定义 + 二级精准（100/200）+ 500 主推 */
+export function tierDefs(customNs: number[]): TierDef[] {
+  return [
+    ...AI_SUBSETS.map(a => ({ key: a.key, n: a.n, custom: false })),
+    ...customNs.map(x => ({ key: `ai-custom-${x}`, n: x, custom: true })),
+    ...AI_SHARP.map(a => ({ key: a.key, n: a.n, custom: false, sharp: true })),
+    { key: 'ai', n: ARENA_N, custom: false },
+  ].sort((a, b) => a.n - b.n || (a.sharp ? -1 : 1))
+}
+export interface TierPeriod { expect: string; actual: string | null; open_ms: number | null; regime: string | null; confidence: number | null; fallback: boolean; ai: { hit: boolean; rank: number | null; pnl: number }; sub: Record<string, { hit: boolean; rank: number | null; pnl: number } | null> }
+/**
+ * 读取最近 limit 期（按 ai 主榜已结算期为锚），每期附各档位自己的结算行。
+ * 历史上没有独立行的期（改造前），sub[key] 为 null —— 统计时跳过，不再用前缀推算冒充。
+ */
+export async function loadTierPeriods(db: D1Database, source: string, defs: TierDef[], opts: { limit?: number; where?: string; args?: any[]; order?: 'ASC' | 'DESC' } = {}): Promise<TierPeriod[]> {
+  const limit = opts.limit ?? 1000, order = opts.order ?? 'DESC'
+  const anchors = (await db.prepare(`SELECT a.expect, a.actual, a.hit, a.rank, a.pnl, f.regime, f.confidence, f.error, d.open_ms
+    FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect LEFT JOIN draws d ON d.source=a.source AND d.expect=a.expect
+    WHERE a.source=? AND a.strategy='ai' AND a.scored_ms IS NOT NULL ${opts.where ? 'AND ' + opts.where : ''} ORDER BY a.expect ${order} LIMIT ?`).bind(source, ...(opts.args || []), limit).all<any>()).results
+  if (!anchors.length) return []
+  const lo = anchors.reduce((m, r) => r.expect < m ? r.expect : m, anchors[0].expect), hi = anchors.reduce((m, r) => r.expect > m ? r.expect : m, anchors[0].expect)
+  const keys = defs.map(d => d.key).filter(k => k !== 'ai')
+  const rows = keys.length ? (await db.prepare(`SELECT expect, strategy, hit, rank, pnl FROM arena_rounds WHERE source=? AND expect>=? AND expect<=? AND scored_ms IS NOT NULL AND strategy IN (${keys.map(() => '?').join(',')})`).bind(source, lo, hi, ...keys).all<any>()).results : []
+  const map = new Map<string, Record<string, any>>()
+  for (const r of rows) { if (!map.has(r.expect)) map.set(r.expect, {}); map.get(r.expect)![r.strategy] = { hit: !!r.hit, rank: r.rank, pnl: r.pnl } }
+  return anchors.map(a => { const m = map.get(a.expect) || {}; const sub: TierPeriod['sub'] = {}; for (const d of defs) sub[d.key] = d.key === 'ai' ? { hit: !!a.hit, rank: a.rank, pnl: a.pnl } : (m[d.key] || null)
+    return { expect: a.expect, actual: a.actual, open_ms: a.open_ms, regime: a.regime || null, confidence: a.confidence, fallback: !a.regime || !!a.error, ai: { hit: !!a.hit, rank: a.rank, pnl: a.pnl }, sub } })
+}
+/** 汇总某档位在一组期上的战绩（跳过 null） */
+export function tierStat(periods: TierPeriod[], d: TierDef) {
+  const rs = periods.map(p => p.sub[d.key]).filter(Boolean) as { hit: boolean; rank: number | null; pnl: number }[]
+  const n = rs.length, hits = rs.filter(r => r.hit).length, pnl = rs.reduce((a, r) => a + (r.pnl || 0), 0), p = d.n / SPACE
+  return { key: d.key, n_pick: d.n, custom: d.custom, sharp: !!d.sharp, n, hits, rate: n ? r4(hits / n) : null, breakeven: r4(d.n / ARENA_ODDS), pnl, roi: n ? r4(pnl / (n * d.n)) : null, z: n ? r4((hits - n * p) / Math.sqrt(n * p * (1 - p))) : null }
+}
+
+/**
+ * 独立生成档 + 二级精准 的历史重算：用当期 AI 真实输出重新以各自镜头独立生成（取代此前的"500 注前缀"行），并即时结算。
+ * 严格无前视。每次最多 max 期（新 → 旧）。以 ai-sharp-100 是否存在作为"是否已重算"判据。
+ */
+export async function backfillIndependentTiers(db: D1Database, source: string, draws: { expect: string; n1: number; n2: number; n3: number }[], customNs: number[], max = 8) {
+  const { generateRound, loadPerf, STRATEGIES } = await import('./arena')
+  const { normalize } = await import('./ai')
+  const rows = (await db.prepare(`SELECT f.expect, f.output FROM ai_forecasts f
+    WHERE f.source=? AND f.error IS NULL AND EXISTS (SELECT 1 FROM arena_rounds a WHERE a.source=f.source AND a.expect=f.expect AND a.strategy='ai' AND a.scored_ms IS NOT NULL)
+      AND NOT EXISTS (SELECT 1 FROM arena_rounds b WHERE b.source=f.source AND b.expect=f.expect AND b.strategy='ai-sharp-100')
+    ORDER BY f.expect DESC LIMIT ?`).bind(source, max).all<any>()).results
+  const fixed = STRATEGIES.filter(s => s.derived === 'ai' && s.n).map(s => ({ key: s.key, n: s.n! }))
+  const custom = customNs.filter(n => !fixed.some(f => f.n === n)).map(n => ({ key: `ai-custom-${n}`, n }))
+  let done = 0
+  for (const r of rows) {
+    const k = draws.findIndex(d => d.expect === r.expect); if (k < 0) continue
+    const hist = draws.slice(k + 1, k + 1 + 800) as any; if (hist.length < 120) continue
+    let f: AiForecast; try { f = normalize(JSON.parse(r.output)) } catch { continue }
+    const perf = await loadPerf(db, source, r.expect)
+    const gen = generateRound(hist, `${source}|${r.expect}`, perf)
+    const actual = `${draws[k].n1}${draws[k].n2}${draws[k].n3}`
+    const main = (await db.prepare(`SELECT numbers FROM arena_rounds WHERE source=? AND expect=? AND strategy='ai'`).bind(source, r.expect).first<any>())
+    const mainNums: number[] = main ? String(main.numbers).split(' ').map(Number) : []
+    const first: { key: string; numbers: number[] }[] = mainNums.length ? [{ key: 'ai', numbers: mainNums }] : []
+    const out: { key: string; numbers: number[] }[] = []
+    for (const d of [...fixed, ...custom]) { const sc = tierScoreVector(f, gen.vec, perf, d.n); const nums = topN(sc, d.n); out.push({ key: d.key, numbers: nums }); first.push({ key: d.key, numbers: nums }) }
+    // 五组（若已存在则从库读，否则现算但不落库——由 backfillSets 负责）
+    const setRows = (await db.prepare(`SELECT strategy, numbers FROM arena_rounds WHERE source=? AND expect=? AND strategy LIKE 'ai-set-%'`).bind(source, r.expect).all<any>()).results
+    if (setRows.length) for (const s of setRows) first.push({ key: s.strategy, numbers: String(s.numbers).split(' ').map(Number) })
+    else for (const g of generateSets(f, gen.vec, perf, allNs(customNs))) first.push({ key: g.key, numbers: g.numbers })
+    const sharp = sharpBuilder(perf)(first)
+    for (const s of AI_SHARP) { const nums = sharp[s.n]; if (nums?.length) out.push({ key: s.key, numbers: nums }) }
+    const ts = Date.now(); const stmts: D1PreparedStatement[] = []
+    for (const g of out) {
+      const nums = g.numbers.map(no3); const idx = nums.indexOf(actual); const hit = idx >= 0
+      // 覆盖旧的前缀行：先删再插
+      stmts.push(db.prepare(`DELETE FROM arena_rounds WHERE source=? AND expect=? AND strategy=?`).bind(source, r.expect, g.key))
+      stmts.push(db.prepare(`INSERT OR IGNORE INTO arena_rounds (source, expect, strategy, mode, based_on, numbers, count, coverage, weight, created_ms, actual, hit, rank, pnl, scored_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(source, r.expect, g.key, 'replay', hist[0].expect, nums.join(' '), nums.length, 0, 1, ts, actual, hit ? 1 : 0, hit ? idx + 1 : null, hit ? ARENA_ODDS - nums.length : -nums.length, ts))
     }
     for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40))
     done++

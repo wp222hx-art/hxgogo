@@ -15,7 +15,7 @@ body { background:#0b0f1a; }
 .grid500 span { font-family: ui-monospace, monospace; font-size:13px; text-align:center; padding:4px 0; border-radius:5px; background:rgba(148,163,184,.10); color:#e2e8f0; }
 .grid500 span.boost { background:#f472b6; color:#000; font-weight:700; }
 .grid500 span.hit { background:#22c55e; color:#000; font-weight:800; }
-.grid500 span.dim { opacity:.35; }
+.grid500 span.dim { opacity:.35; } .grid500 span.novel { box-shadow: inset 0 0 0 1px #22d3ee88; }
 .tab { font-size:12px; padding:6px 12px; border-radius:10px; border:1px solid #1e293b; background:#0f172a; color:#94a3b8; cursor:pointer; } .tab.on { background:#f472b6; color:#000; border-color:#f472b6; font-weight:700; } .tab small { opacity:.7; margin-left:4px; }
 .sc { background:#0b1220; border:1px solid #1e293b; border-radius:12px; padding:10px 12px; } .sc.on { border-color:#f472b6; }
 .chipsub { display:inline-flex; align-items:center; gap:3px; font-size:10px; padding:1px 6px; border-radius:999px; background:#1e293b; color:#94a3b8; } .chipsub.h { background:#22c55e33; color:#86efac; } .chipsub.c { outline:1px solid #7c3aed66; }
@@ -28,7 +28,7 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
 .htbl-wrap { background:#0f172a; border:1px solid #1e293b; border-radius:12px; overflow:auto; max-height:70vh; }
 .htbl { width:100%; border-collapse:separate; border-spacing:0; font-size:12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .htbl thead th { position:sticky; top:0; z-index:1; background:#0b1220; color:#64748b; font-weight:500; font-size:10.5px; letter-spacing:.02em; padding:6px 8px; text-align:center; border-bottom:1px solid #1e293b; white-space:nowrap; }
-.htbl thead th.l { text-align:left; } .htbl thead th.r { text-align:right; } .htbl thead th.c { color:#a78bfa; }
+.htbl thead th.l { text-align:left; } .htbl thead th.r { text-align:right; } .htbl thead th.c { color:#a78bfa; } .htbl thead th.s { color:#fde047; }
 .htbl tbody tr.hr { cursor:pointer; height:26px; } .htbl tbody tr.hr:hover td { background:#111c33; } .htbl tbody tr.hr.open td { background:#111c33; }
 .htbl tbody tr.hr:nth-child(4n+1) td { border-top:1px solid #1e293b44; }
 .htbl td { padding:2px 8px; text-align:center; white-space:nowrap; border-bottom:1px solid #0b1220; line-height:1.3; }
@@ -38,7 +38,7 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
 .htbl td.rk { color:#64748b; } tr.hit td.rk { color:#86efac; font-weight:700; }
 .htbl td.pn.p { color:#4ade80; } .htbl td.pn.m { color:#fb7185; }
 .htbl td.rg { color:#64748b; font-family: system-ui, sans-serif; font-size:11px; max-width:190px; overflow:hidden; text-overflow:ellipsis; text-align:left; } .htbl td.rg.fb { color:#475569; font-style:italic; }
-.cell { display:inline-block; width:18px; height:14px; border-radius:3px; background:#1e293b; vertical-align:middle; } .cell.h { background:#22c55e; } .cell.c { box-shadow: inset 0 0 0 1px #7c3aed88; }
+.cell { display:inline-block; width:18px; height:14px; border-radius:3px; background:#1e293b; vertical-align:middle; } .cell.h { background:#22c55e; } .cell.c { box-shadow: inset 0 0 0 1px #7c3aed88; } .cell.s { box-shadow: inset 0 0 0 1px #eab30888; } .cell.na { background:transparent; border:1px dashed #1e293b; }
 .htbl tr.det td { padding:10px 12px; background:#0b1220; text-align:left; white-space:normal; border-bottom:1px solid #1e293b; cursor:default; }
 .htbl .grid500 span { font-size:12px; padding:3px 0; }
 @media (max-width: 768px) { .htbl td.rg, .htbl th.rg { display:none; } }
@@ -131,7 +131,7 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
   <!-- 战绩概览：500 注 + 三档精选 -->
   <section id="stats" class="grid grid-cols-2 md:grid-cols-4 gap-3 hidden"></section>
   <section id="sub-stats" class="hidden bg-[#0f172a] border border-slate-800 rounded-xl p-4">
-    <h2 class="font-bold text-sm mb-2"><i class="fas fa-filter mr-2 text-rose-400"></i>AI 精选档位战绩 <span class="text-xs text-slate-500 font-normal">每档作为独立策略逐期结算（每注 1，命中 +950−N，未中 −N）；保本 = N/950</span></h2>
+    <h2 class="font-bold text-sm mb-2"><i class="fas fa-filter mr-2 text-rose-400"></i>AI 各档位战绩 <span class="text-xs text-slate-500 font-normal">每个注数都是独立生成（非 500 注前缀）；⚡ 二级精准 = 对全部一级生成加权共识；每档独立结算（每注 1，命中 +950−N，未中 −N）；保本 = N/950</span></h2>
     <div class="grid md:grid-cols-4 gap-3" id="sub-cards"></div>
   </section>
 

@@ -26,7 +26,7 @@ td.ex { color:#fcd34d; } td.ex small { color:#475569; margin-left:5px; font-size
 td.ac { font-weight:800; letter-spacing:.08em; color:#cbd5e1; } tr.hit td.ac { color:#4ade80; }
 td.rk { color:#64748b; } tr.hit td.rk { color:#86efac; font-weight:700; }
 td.p { color:#4ade80; } td.m { color:#fb7185; }
-.cell { display:inline-block; width:22px; height:16px; border-radius:4px; background:#1e293b; vertical-align:middle; } .cell.h { background:#22c55e; } .cell.c { box-shadow: inset 0 0 0 1px #7c3aed88; }
+.cell { display:inline-block; width:22px; height:16px; border-radius:4px; background:#1e293b; vertical-align:middle; } .cell.h { background:#22c55e; } .cell.c { box-shadow: inset 0 0 0 1px #7c3aed88; } .cell.s { box-shadow: inset 0 0 0 1px #eab30888; } .cell.na { background:transparent; border:1px dashed #1e293b; }
 .big { font-size:34px; font-weight:900; font-family: ui-monospace, monospace; letter-spacing:.1em; }
 @media (max-width:640px) { td.tm, th.tm { display:none; } }
 </style>

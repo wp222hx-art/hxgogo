@@ -51,12 +51,13 @@
   function loadLocal() { try { var v = JSON.parse(localStorage.getItem(lsKey()) || 'null'); return v && v.data ? v : null } catch (e) { return null } }
 
   // ---------------------------------------------------------------- 精选档位（同一份排序的前 N 注）
-  function subN() { if (S.sub === 'all' || !S.pick) return null; var x = (S.pick.subsets || []).find(function (q) { return q.key === S.sub }); return x ? x.n_pick : null }
-  function activeNums() { var n = S.pick ? S.pick.numbers : []; var k = subN(); return k ? n.slice(0, k) : n }
+  function subObj() { if (S.sub === 'all' || !S.pick) return null; return (S.pick.subsets || []).find(function (q) { return q.key === S.sub }) || null }
+  function subN() { var x = subObj(); return x ? x.n_pick : null }
+  function activeNums() { var x = subObj(); if (!x) return S.pick ? S.pick.numbers : []; return (x.numbers && x.numbers.length) ? x.numbers : (S.pick ? S.pick.numbers.slice(0, x.n_pick) : []) }
   function renderSubTabs() {
     var p = S.pick, el = $('sub-tabs'); if (!el) return
     var subs = ((p && p.subsets) || []).slice().sort(function (a, b) { return a.n_pick - b.n_pick })
-    var tabs = [{ key: 'all', label: '全部 500 注', sub: '保本 52.6%' }].concat(subs.map(function (q) { return { key: q.key, label: '前 ' + q.n_pick + ' 注' + (q.custom ? ' <i class="fas fa-star text-violet-400 text-[9px]" title="自定义档位"></i>' : ''), sub: '保本 ' + pct(q.breakeven, 1) + (q.record ? ' · 实盘 ' + pct(q.record.rate, 1) : '') } }))
+    var tabs = [{ key: 'all', label: '主推 500 注', sub: '保本 52.6%' }].concat(subs.map(function (q) { return { key: q.key, label: (q.sharp ? '<i class="fas fa-bolt text-yellow-300 text-[9px] mr-1" title="二级精准"></i>精准 ' : '') + q.n_pick + ' 注' + (q.custom ? ' <i class="fas fa-star text-violet-400 text-[9px]" title="自定义档位"></i>' : ''), sub: '保本 ' + pct(q.breakeven, 1) + (q.record ? ' · 实盘 ' + pct(q.record.rate, 1) : '') + (q.independent === false ? ' · 前缀' : '') } }))
     el.innerHTML = tabs.map(function (t) { return '<button class="tab' + (S.sub === t.key ? ' on' : '') + '" data-k="' + t.key + '">' + t.label + '<small>' + t.sub + '</small></button>' }).join('')
     el.querySelectorAll('.tab').forEach(function (b) { b.addEventListener('click', function () { S.sub = b.getAttribute('data-k'); try { localStorage.setItem('ai:sub', S.sub) } catch (e) {} renderSubTabs(); renderList(); renderSubStats() }) })
   }
@@ -66,20 +67,27 @@
     $('cur-text').value = joinNums(nums, S.fmt)
     $('copy-btn').innerHTML = '<i class="fas fa-copy mr-2"></i>一键复制 ' + nums.length + ' 注'
     $('copy-btn').disabled = !nums.length
-    // 网格仍显示全部 500，超出所选档位的号码变暗
-    $('cur-grid').innerHTML = p.numbers.map(function (n, i) { var cls = bset[n] ? 'boost' : ''; if (k && i >= k) cls += ' dim'; return '<span class="' + cls.trim() + '">' + n + '</span>' }).join('')
-    $('cur-meta').textContent = (k ? '精选前 ' + k + ' 注' : p.count + ' 注') + ' · 覆盖 ' + pct(k ? (p.coverage || 0.5) * (k / 500) : (p.coverage || p.count / 1000), 1) + (p.created_ms ? ' · 北京时间 ' + hhmm(p.created_ms) + ' 锁定' : '')
+    // 各档位是独立生成：网格显示该档自己的号码；与 500 主推重叠的号码加边框标识
+    var x = subObj(), mainSet = {}; (p.numbers || []).forEach(function (n) { mainSet[n] = 1 })
+    if (x && x.independent) {
+      $('cur-grid').innerHTML = nums.map(function (n) { var cls = bset[n] ? 'boost' : ''; if (!mainSet[n]) cls += ' novel'; return '<span class="' + cls.trim() + '" title="' + (mainSet[n] ? '也在 500 主推中' : '主推 500 注之外的独立选择') + '">' + n + '</span>' }).join('')
+      var novel = nums.filter(function (n) { return !mainSet[n] }).length
+      $('cur-meta').innerHTML = (x.sharp ? '<i class="fas fa-bolt text-yellow-300 mr-1"></i>二级精准 ' : '独立生成 ') + nums.length + ' 注 · 与 500 主推重叠 ' + (nums.length - novel) + ' · <span class="text-cyan-300">主推之外 ' + novel + '</span>' + (p.created_ms ? ' · 北京时间 ' + hhmm(p.created_ms) + ' 锁定' : '')
+    } else {
+      $('cur-grid').innerHTML = p.numbers.map(function (n, i) { var cls = bset[n] ? 'boost' : ''; if (k && i >= k) cls += ' dim'; return '<span class="' + cls.trim() + '">' + n + '</span>' }).join('')
+      $('cur-meta').textContent = (k ? '前缀 ' + k + ' 注（该期无独立生成行）' : p.count + ' 注') + ' · 覆盖 ' + pct(k ? (p.coverage || 0.5) * (k / 500) : (p.coverage || p.count / 1000), 1) + (p.created_ms ? ' · 北京时间 ' + hhmm(p.created_ms) + ' 锁定' : '')
+    }
   }
   function renderSubStats() {
     var p = S.pick, el = $('sub-cards'), sec = $('sub-stats'); if (!el) return
     var subs = ((p && p.subsets) || []).slice().sort(function (a, b) { return a.n_pick - b.n_pick }); if (!subs.length) { sec.classList.add('hidden'); return }
     sec.classList.remove('hidden')
-    var all = S.record ? { key: 'all', n_pick: 500, short: 'AI·500', color: '#f472b6', breakeven: 0.526, record: Object.assign({ z: null, roi: S.record.n ? S.record.pnl / (S.record.n * 500) : null }, S.record) } : null
+    var all = S.record ? { key: 'all', n_pick: 500, short: 'AI·500', color: '#f472b6', breakeven: 0.526, main: true, record: Object.assign({ z: null, roi: S.record.n ? S.record.pnl / (S.record.n * 500) : null }, S.record) } : null
     el.innerHTML = ([all].filter(Boolean).concat(subs)).map(function (q) {
       var r = q.record
       var streak = r && r.streak ? r.streak.slice().reverse().map(function (h) { return '<i class="' + (h ? 'h' : '') + '"></i>' }).join('') : ''
       var good = r && r.rate >= q.breakeven
-      return '<div class="sc' + (S.sub === q.key ? ' on' : '') + '"><div class="flex items-center justify-between"><b style="color:' + q.color + '">前 ' + q.n_pick + ' 注' + (q.custom ? ' <span class="text-[9px] px-1 rounded bg-violet-500/20 text-violet-300 font-normal">自定义</span>' : '') + '</b><span class="text-[10px] text-slate-500">保本 ' + pct(q.breakeven, 1) + '</span></div>' +
+      return '<div class="sc' + (S.sub === q.key ? ' on' : '') + '"><div class="flex items-center justify-between"><b style="color:' + q.color + '">' + (q.sharp ? '<i class="fas fa-bolt text-yellow-300 mr-1"></i>精准 ' : q.main ? '主推 ' : '') + q.n_pick + ' 注' + (q.custom ? ' <span class="text-[9px] px-1 rounded bg-violet-500/20 text-violet-300 font-normal">自定义</span>' : '') + (q.sharp ? ' <span class="text-[9px] px-1 rounded bg-yellow-500/20 text-yellow-200 font-normal">二级</span>' : (!q.main ? ' <span class="text-[9px] px-1 rounded bg-slate-700/60 text-slate-300 font-normal">独立</span>' : '')) + '</b><span class="text-[10px] text-slate-500">保本 ' + pct(q.breakeven, 1) + '</span></div>' +
         (r ? '<div class="mt-1 flex items-baseline gap-2"><span class="mono text-xl font-black ' + (good ? 'text-emerald-300' : 'text-slate-200') + '">' + pct(r.rate, 1) + '</span><span class="text-[11px] text-slate-500">' + r.hits + '/' + r.n + ' 期</span>' + (r.z != null ? '<span class="text-[11px] mono ' + (r.z > 0 ? 'text-emerald-400' : 'text-slate-500') + '">z ' + (r.z > 0 ? '+' : '') + r.z + '</span>' : '') + '</div>' +
           '<div class="text-[11px] mt-1">累计 <b class="mono ' + (r.pnl >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + fmtInt(r.pnl) + '</b> · ROI <b class="mono ' + (r.roi >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + (r.roi > 0 ? '+' : '') + pct(r.roi, 2) + '</b></div><div class="streak mt-2">' + streak + '</div>' : '<div class="text-[11px] text-slate-500 mt-1">尚无结算</div>') + '</div>'
     }).join('')
@@ -243,15 +251,15 @@
   }
   // 档位 key → 显示标签：ai-150 → 150；ai-custom-200 → 200★（★ 标记自定义档）
   function tierN(k) { var m = /(\d+)$/.exec(k); return m ? +m[1] : 0 }
-  function tierLabel(k) { return tierN(k) + (k.indexOf('custom') >= 0 ? '★' : '') }
+  function tierLabel(k) { return (k.indexOf('sharp') >= 0 ? '⚡' : '') + tierN(k) + (k.indexOf('custom') >= 0 ? '★' : '') }
   function tierKeys(sub) { return Object.keys(sub || {}).sort(function (a, b) { return tierN(a) - tierN(b) }) }
   // ---------------------------------------------------------------- 逐期记录（紧凑表格：50/100/200/500/1000 期，独立接口，展开懒加载详情）
   var H = { n: 50, rows: [], tiers: [], summary: [], loading: false, ver: 0, cache: {} }
   try { H.n = +(localStorage.getItem('ai:histn') || 50) || 50 } catch (e) {}
-  function tierShort(t) { return t.key === 'ai' ? '500' : String(t.n_pick) + (t.custom ? '★' : '') }
+  function tierShort(t) { return t.key === 'ai' ? '500' : (t.sharp ? '⚡' : '') + String(t.n_pick) + (t.custom ? '★' : '') }
   function renderHistHead() {
     var th = '<th class="l">期号</th><th>开奖</th>' +
-      H.tiers.map(function (t) { return '<th' + (t.custom ? ' class="c"' : '') + ' title="前 ' + t.n_pick + ' 注' + (t.custom ? '（自定义）' : '') + '">' + tierShort(t) + '</th>' }).join('') +
+      H.tiers.map(function (t) { return '<th' + (t.custom ? ' class="c"' : t.sharp ? ' class="s"' : '') + ' title="' + (t.sharp ? '二级精准 ' : t.key === 'ai' ? '主推 ' : '独立生成 ') + t.n_pick + ' 注' + (t.custom ? '（自定义）' : '') + '">' + tierShort(t) + '</th>' }).join('') +
       '<th>位次</th><th class="r">盈亏</th><th class="rg l">AI 判断</th>'
     $('hist-head').innerHTML = th
   }
@@ -269,7 +277,7 @@
     var out = [], hits = 0, pnl = 0
     for (var i = 0; i < rows.length; i++) {
       var h = rows[i]; if (h.hit) hits++; pnl += h.pnl || 0
-      var cells = H.tiers.map(function (t) { return '<td><span class="cell' + (h.sub && h.sub[t.key] ? ' h' : '') + (t.custom ? ' c' : '') + '"></span></td>' }).join('')
+      var cells = H.tiers.map(function (t) { var v = h.sub ? h.sub[t.key] : null; return '<td><span class="cell' + (v ? ' h' : v === null ? ' na' : '') + (t.custom ? ' c' : '') + (t.sharp ? ' s' : '') + '" title="' + (v === null ? '该期无独立生成记录' : '') + '"></span></td>' }).join('')
       out.push('<tr class="hr' + (h.hit ? ' hit' : '') + '" data-e="' + h.expect + '">' +
         '<td class="ex l">' + h.expect.slice(8) + '<small>' + h.expect.slice(4, 6) + '/' + h.expect.slice(6, 8) + ' ' + hhmmShort(h.open_ms) + '</small></td>' +
         '<td class="ac">' + (h.actual || '—') + '</td>' + cells +

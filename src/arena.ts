@@ -15,7 +15,7 @@ const norm = (a: number[]) => { const s = a.reduce((x, y) => x + y, 0) || 1; ret
 const no3 = (i: number) => String(i).padStart(3, '0')
 const digitsOf = (d: Draw) => [d.n1, d.n2, d.n3]
 
-export interface StrategyDef { key: string; name: string; short: string; desc: string; color: string; control?: boolean; meta?: boolean; ai?: boolean; derived?: string; n?: number /* 派生：取 derived 策略排序前 n 注 */ }
+export interface StrategyDef { key: string; name: string; short: string; desc: string; color: string; control?: boolean; meta?: boolean; ai?: boolean; derived?: string; sharp?: boolean; n?: number /* derived：由同一 AI 输出独立生成 n 注；sharp：二级蒸馏 n 注 */ }
 export const STRATEGIES: StrategyDef[] = [
   { key: 'quant', name: '量化集成·均衡', short: '量化均衡', desc: '20 机制集成 × 单双/大小倾斜 × 组合级信号（前三和/龙虎/形态），temp 1.5 分散取号', color: '#06b6d4' },
   { key: 'quant-focus', name: '量化集成·聚焦', short: '量化聚焦', desc: '同量化集成，temp 1.0，更集中押注高倾向号', color: '#0ea5e9' },
@@ -30,14 +30,19 @@ export const STRATEGIES: StrategyDef[] = [
   { key: 'follow', name: '跟随最强 · 动态切换', short: '跟最强', desc: '每期整份复制「之前」滚动 40 期 z 最高的基础策略（样本 <10 期时退化为组合最优）', color: '#ec4899', meta: true },
   { key: 'vote', name: '多策略共识投票', short: '共识投票', desc: '按被多少个基础策略同时选中排序（并列以组合最优概率决胜），取 Top 500', color: '#84cc16', meta: true },
   { key: 'ai', name: 'AI 预测官 · 大模型推理', short: 'AI 预测', desc: '大模型阅读全部统计信号 + 各策略滚动战绩 + 自己近期预测复盘 → 输出每位权重/策略融合/加减号 → Top 500（仅实盘，每期自动调用）', color: '#f472b6', ai: true },
-  // AI 精选：同一份 AI 排序的前 N 注（保本命中率 N/950），作为独立选手同规则结算——验证「AI 的信号是否集中在头部」
-  { key: 'ai-100', name: 'AI 精选 100 注', short: 'AI·100', desc: 'AI 排序前 100 注（保本 10.5%），每注 1，命中 +850 / 未中 −100', color: '#fb7185', ai: true, derived: 'ai', n: 100 },
-  { key: 'ai-150', name: 'AI 精选 150 注', short: 'AI·150', desc: 'AI 排序前 150 注（保本 15.8%），回测 ROI 最优档', color: '#f43f5e', ai: true, derived: 'ai', n: 150 },
-  { key: 'ai-300', name: 'AI 精选 300 注', short: 'AI·300', desc: 'AI 排序前 300 注（保本 31.6%）', color: '#e11d48', ai: true, derived: 'ai', n: 300 },
-  { key: 'ai-450', name: 'AI 精选 450 注', short: 'AI·450', desc: 'AI 排序前 450 注（保本 47.4%），比 500 注少压 50 个最弱组合，命中 +500 / 未中 −450', color: '#be123c', ai: true, derived: 'ai', n: 450 },
+  // AI 独立生成档：每个注数都是一次独立生成（不同镜头参数），不是 500 注排序的前缀
+  { key: 'ai-100', name: 'AI 独立生成 100 注', short: 'AI·100', desc: '「双确认」配方独立生成：只在核心号内、AI 定位与量化共识同时看好（几何平均），保本 10.5%，命中 +850 / 未中 −100', color: '#fb7185', ai: true, derived: 'ai', n: 100 },
+  { key: 'ai-150', name: 'AI 独立生成 150 注', short: 'AI·150', desc: '「AI 主见」配方独立生成：几乎纯 AI 三位定位判断（own^0.9），保本 15.8%', color: '#f43f5e', ai: true, derived: 'ai', n: 150 },
+  { key: 'ai-300', name: 'AI 独立生成 300 注', short: 'AI·300', desc: '「均衡」配方独立生成：AI 定位 × 量化共识对半（0.5/0.5），保本 31.6%', color: '#e11d48', ai: true, derived: 'ai', n: 300 },
+  { key: 'ai-450', name: 'AI 独立生成 450 注', short: 'AI·450', desc: '「量化底盘」配方独立生成：量化主导（0.35/0.65）、AI 微调、avoid 直接剔除，保本 47.4%，命中 +500 / 未中 −450', color: '#be123c', ai: true, derived: 'ai', n: 450 },
+  // 二级蒸馏：在全部一级生成（500 主推 + 各注数独立生成 + A–E 五组）之上做共识投票 × 各来源滚动战绩加权 → 更精准的 100 / 200 注
+  { key: 'ai-sharp-100', name: 'AI 二级精准 100 注', short: '精准·100', desc: '对所有一级生成做加权共识（被多少份、多强的来源同时选中）→ 最有把握的 100 注', color: '#fde047', ai: true, sharp: true, n: 100 },
+  { key: 'ai-sharp-200', name: 'AI 二级精准 200 注', short: '精准·200', desc: '同上，取共识最高的 200 注', color: '#facc15', ai: true, sharp: true, n: 200 },
 ]
 export const BASE_KEYS = STRATEGIES.filter(s => !s.control && !s.meta && !s.ai).map(s => s.key)
 export const AI_SUBSETS = STRATEGIES.filter(s => s.derived === 'ai') as (StrategyDef & { n: number })[]
+export const AI_SHARP = STRATEGIES.filter(s => s.sharp) as (StrategyDef & { n: number })[]
+export { topN }
 /** 回放时不包含 AI（避免大量模型调用；且 AI 只在真实开奖前预测才有意义） */
 const REPLAY_KEYS = STRATEGIES.filter(s => !s.ai).map(s => s.key)
 
@@ -268,7 +273,9 @@ export async function autoArena(db: D1Database, source: string, draws: Draw[], b
 }
 
 /** 外部（AI）选手独立生成：可在后台（waitUntil）执行，不阻塞页面请求；已存在则直接返回 */
-export async function externalRound(db: D1Database, source: string, draws: Draw[], key: string, scorer: ExternalScorer, extraNs: number[] = []) {
+export type TierScorer = (n: number) => number[] | null        // 某注数的独立得分向量（null = 退化为主向量）
+export type SharpBuilder = (firstLevel: { key: string; numbers: number[] }[]) => Record<number, number[]>   // 二级蒸馏：n → 号码
+export async function externalRound(db: D1Database, source: string, draws: Draw[], key: string, scorer: ExternalScorer, extraNs: number[] = [], opts: { tierScorer?: TierScorer; sharp?: SharpBuilder; extraFirstLevel?: { key: string; numbers: number[] }[] } = {}) {
   if (draws.length < ARENA_MIN_HIST) return false
   const latest = draws[0].expect; const next = nextOf(latest); if (!next) return false
   const have = await db.prepare('SELECT 1 FROM arena_rounds WHERE source=? AND expect=? AND strategy=?').bind(source, next, key).first()
@@ -280,8 +287,16 @@ export async function externalRound(db: D1Database, source: string, draws: Draw[
   const main = roundFromScores(key, scores)
   const fixed = STRATEGIES.filter(s => s.derived === key && s.n).map(s => ({ key: s.key, n: s.n! }))
   const custom = extraNs.filter(n => Number.isInteger(n) && n >= 10 && n <= 900 && !fixed.some(f => f.n === n)).map(n => ({ key: `${key}-custom-${n}`, n }))
-  const derived = [...fixed, ...custom].map(d => { const nums = d.n <= main.numbers.length ? main.numbers.slice(0, d.n) : topN(scores, d.n); return { strategy: d.key, numbers: nums, coverage: r4(nums.reduce((a, i) => a + scores[i], 0)), weight: 1 } })
-  await insertRounds(db, source, next, latest, 'live', [main, ...derived])
+  // 每个注数：独立生成（tierScorer 给出该 N 专属得分向量；缺省退化为主向量 top-N）
+  const derived = [...fixed, ...custom].map(d => { const sc = opts.tierScorer?.(d.n) || scores; const nums = topN(sc, d.n); return { strategy: d.key, numbers: nums, coverage: r4(nums.reduce((a, i) => a + sc[i], 0)), weight: 1 } })
+  const rounds: RoundGen[] = [main, ...derived]
+  // 二级蒸馏：在全部一级生成之上（含外部传入的 A–E 五组）
+  if (opts.sharp) {
+    const first = [...rounds.map(r => ({ key: r.strategy, numbers: r.numbers })), ...(opts.extraFirstLevel || [])]
+    const sharp = opts.sharp(first)
+    for (const s of STRATEGIES.filter(x => x.sharp && x.n)) { const nums = sharp[s.n!]; if (nums?.length) rounds.push({ strategy: s.key, numbers: nums, coverage: r4(nums.reduce((a, i) => a + scores[i], 0)), weight: 1 }) }
+  }
+  await insertRounds(db, source, next, latest, 'live', rounds)
   return true
 }
 
