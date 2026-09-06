@@ -3,6 +3,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag to rebuild, such as v0.4.0'
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -16,17 +21,23 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
+      REQUESTED_TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
       - name: Validate version and existing release
         id: version
         shell: pwsh
         run: |
           $pkg = Get-Content package.json -Raw | ConvertFrom-Json
           $tag = 'v' + $pkg.version
-          if ($env:GITHUB_REF -ne "refs/tags/$tag") { throw "Run on the version tag matching package.json." }
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            if ($env:REQUESTED_TAG -ne $tag) { throw 'Requested tag must match package.json.' }
+          } elseif ($env:GITHUB_REF -ne "refs/tags/$tag") { throw 'Run on a matching version tag.' }
+          $tagCommit = git rev-parse "refs/tags/$tag^{commit}"
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne (git rev-parse HEAD)) { throw 'Checkout must be the exact existing tag commit.' }
           $notes = "downloads/versions/$tag.md"
           if (!(Test-Path $notes) -or (Get-Content $notes -Raw).Contains('RELEASE_NOTES_TODO')) { throw 'Complete version notes first.' }
           $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
@@ -48,7 +59,10 @@ jobs:
         if: steps.version.outputs.published != 'true'
       - run: npm run build
         if: steps.version.outputs.published != 'true'
-      - run: npm run desktop:dist
+      - name: Install packaged Electron runtime
+        if: steps.version.outputs.published != 'true'
+        run: node node_modules/electron/install.js
+      - run: npm run desktop:dist -- --publish never
         if: steps.version.outputs.published != 'true'
       - name: Test packaged portable app
         if: steps.version.outputs.published != 'true'
