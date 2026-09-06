@@ -102,6 +102,28 @@
   document.querySelector('.qk[data-hit]').addEventListener('click', function () { S.hitOnly = !S.hitOnly; this.classList.toggle('on', S.hitOnly); if (S.last) run(Object.assign({}, S.last, { hit: undefined }), $('q-msg').textContent.split(' · ')[0] || '') })
   $('tbody').addEventListener('click', function (e) { var tr = e.target.closest('tr[data-e]'); if (!tr) return; var h = S.rows.find(function (x) { return x.expect === tr.getAttribute('data-e') }); if (h) { $('tbody').querySelectorAll('tr.hl').forEach(function (r) { r.classList.remove('hl') }); tr.classList.add('hl'); showOne(h) } })
 
+  // ---------------------------------------------------------------- 5 组独立生成 · 组别对比
+  var SB = { k: 60 }
+  function renderSetsBoard(d) {
+    var ids = d.ids || ['A', 'B', 'C', 'D', 'E'], meta = d.meta || {}
+    $('sets-n').textContent = '样本 ' + (d.periods || 0) + ' 期 · 近期窗口 ' + d.recent_k + ' 期'
+    $('sets-head').innerHTML = '<th class="l">注数</th>' + ids.map(function (id) { var m = meta[id] || {}; return '<th style="color:' + (m.color || '#94a3b8') + '">' + id + ' ' + esc(m.short || '') + '</th>' }).join('') + '<th class="l">结论</th>'
+    if (!d.periods) { $('sets-body').innerHTML = '<tr><td colspan="' + (ids.length + 2) + '" class="py-4 text-slate-500">尚无组别结算样本（每期 AI 推理后自动生成并结算）</td></tr>'; return }
+    $('sets-body').innerHTML = (d.tiers || []).map(function (t) {
+      var cells = ids.map(function (id) {
+        var s = t.sets.find(function (x) { return x.id === id }); if (!s) return '<td>—</td>'
+        var a = s.all, r = s.recent, good = a.rate != null && a.rate >= a.breakeven
+        var mark = (t.best === id ? ' <i class="fas fa-crown text-amber-300"></i>' : '') + (t.best_recent === id ? ' <i class="fas fa-fire text-orange-400"></i>' : '')
+        return '<td class="' + (t.best === id ? 'bg-amber-400/10' : '') + '"><div class="mono font-bold ' + (good ? 'text-emerald-300' : 'text-slate-200') + '">' + pct(a.rate, 1) + mark + '</div><div class="text-[10.5px] text-slate-500 mono">' + a.hits + '/' + a.n + ' · z ' + (a.z == null ? '—' : (a.z > 0 ? '+' : '') + a.z) + '</div><div class="text-[10.5px] mono ' + (a.pnl >= 0 ? 'text-emerald-400/80' : 'text-rose-400/80') + '">' + fmtInt(a.pnl) + '</div><div class="text-[10.5px] text-slate-600 mono">近' + r.n + ' ' + pct(r.rate, 0) + (r.current_miss >= 3 ? ' <span class="text-rose-400">挂' + r.current_miss + '</span>' : '') + '</div></td>'
+      }).join('')
+      var b = t.sets.find(function (x) { return x.id === t.best }), br = t.sets.find(function (x) { return x.id === t.best_recent })
+      var concl = b ? ('历史看 <b style="color:' + b.color + '">' + b.id + ' ' + esc(b.short) + '</b>（z ' + (b.all.z > 0 ? '+' : '') + b.all.z + '）' + (br && br.id !== b.id ? '，近期 <b style="color:' + br.color + '">' + br.id + '</b> 更热' : '') + (b.all.z != null && b.all.z < 1 ? ' · <span class="text-slate-500">差异未显著</span>' : '')) : '<span class="text-slate-500">样本不足</span>'
+      return '<tr><td class="l"><b class="text-slate-100">' + t.n + '</b><div class="text-[10.5px] text-slate-500">保本 ' + pct(t.n / 950, 1) + '</div></td>' + cells + '<td class="l text-[11px] text-slate-400" style="white-space:normal;min-width:150px">' + concl + '</td></tr>'
+    }).join('')
+  }
+  function fetchSetsBoard() { axios.get('/api/ai/sets/board', { params: { source: S.source, k: SB.k } }).then(function (r) { renderSetsBoard(r.data) }).catch(function (e) { $('sets-body').innerHTML = '<tr><td colspan="7" class="py-3 text-rose-400">' + esc(e.message) + '</td></tr>' }) }
+  $('sets-k').addEventListener('click', function (e) { var b = e.target.closest('.qk'); if (!b) return; SB.k = +b.getAttribute('data-k'); $('sets-k').querySelectorAll('.qk').forEach(function (x) { x.classList.toggle('on', x === b) }); fetchSetsBoard() })
+
   // ---------------------------------------------------------------- 档位分析（下一期概率 / 长龙 / 进坑 / 倍投）
   var TA = { conf: 0.6, round: 10 }
   var money = function (n) { n = Math.round(n || 0); return '<span class="' + (n >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + (n > 0 ? '+' : '') + n.toLocaleString('zh-CN') + '</span>' }
@@ -192,14 +214,15 @@
     var sel = $('source'); sel.innerHTML = list.map(function (s) { return '<option value="' + s.key + '">' + esc(s.name) + '</option>' }).join('')
     if (!list.some(function (s) { return s.key === S.source })) S.source = list[0] ? list[0].key : S.source
     sel.value = S.source
-    sel.addEventListener('change', function () { S.source = sel.value; try { localStorage.setItem('ai:source', S.source) } catch (e) {} S.detail = {}; fetchBg(); fetchStreaks(); fetchTA(); go() })
+    sel.addEventListener('change', function () { S.source = sel.value; try { localStorage.setItem('ai:source', S.source) } catch (e) {} S.detail = {}; fetchBg(); fetchStreaks(); fetchTA(); fetchSetsBoard(); go() })
     // 从 URL 带入 ?expect= / ?date=
     var u = new URLSearchParams(location.search); if (u.get('expect')) $('q-expect').value = u.get('expect'); if (u.get('date')) $('q-date').value = u.get('date')
-    fetchBg(); fetchStreaks(); fetchTA(); go()
+    fetchBg(); fetchStreaks(); fetchTA(); fetchSetsBoard(); go()
   })
   setInterval(fetchBg, 10000)
   setInterval(fetchStreaks, 60000)
   setInterval(fetchTA, 60000)
+  setInterval(fetchSetsBoard, 60000)
   // 有新开奖时自动刷新“最近 N 期”视图
   setInterval(function () { if (S.last && S.last.n && !S.last.expect && !S.last.date) run(S.last, '最近 ' + S.last.n + ' 期') }, 30000)
 })()

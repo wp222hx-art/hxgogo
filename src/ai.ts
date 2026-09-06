@@ -172,7 +172,7 @@ export async function callAi(env: AiEnv, ctx: any, opts: { timeoutMs?: number; e
   return { forecast, raw: r.content, cot: r.reasoning_content, usage: r.usage, latency_ms: r.latency_ms, model }
 }
 
-function normalize(o: any): AiForecast {
+export function normalize(o: any): AiForecast {
   const clampW = (v: any) => Math.max(0, Math.min(100, Number(v) || 0))
   let pw: number[][] = Array.isArray(o.pos_weights) ? o.pos_weights.slice(0, 3).map((row: any) => Array.isArray(row) ? [...Array(10).keys()].map(i => clampW(row[i])) : Array(10).fill(50)) : []
   while (pw.length < 3) pw.push(Array(10).fill(50))

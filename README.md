@@ -188,6 +188,22 @@
 - **模型据此调整**：头部档位 edge 持续高于尾部 → 排序有效，`pos_weights` 更有取舍、把最有把握的组合排到前面；头部 edge 为负而 500 注为正 → 前段过度自信，应分散。形成「推理 → 记录 → 结算 → 反馈 → 再推理」的数据飞轮，样本越多反馈越精
 - **可观测**：`GET /api/ai/tier-digest?source` 返回模型本期看到的完整摘要（当前：位次分布 49/36/49/80 vs 均匀 43/43/43/86，头部 1–100 略高于均匀，300 注档 z +1.53 最强）
 
+### AI 多组独立生成：每档注数 5 组 A–E（模块 `src/ai_sets.ts`，表 `ai_sets`，策略 key `ai-set-{N}-{A..E}`）⭐
+- **动机**：此前各档注数是 500 注排序的前缀（只减不换）。现在每期 AI 推理完成后，对每个 N（100/150/300/450/500 + 自定义）用 **5 种视角各自独立算出**一组 N 注：
+  | 组 | 名称 | 算法 |
+  |---|---|---|
+  | A | 融合主推 | AI 三位定位权重 × 量化融合得分（主口径）top-N |
+  | B | 纯定位 | 只用 AI `pos_weights` 乘积，不掺量化 |
+  | C | 量化共识 | 仅 z>0 量化策略融合向量 + AI boost/avoid 微调 |
+  | D | 聚焦集中 | 万位权重前 4 × 千/百位前 6 的核心号优先，再按融合分补满 |
+  | E | 互补覆盖 | 剔除 A 组后在剩余空间取 top-N（与 A 零重叠，对冲/覆盖） |
+  实测同期 150 注：A∩C=70、B∩C=20、A∩E=0 —— 确为不同选择，非前缀
+- **入榜结算**：每组作为独立策略写 `arena_rounds`，走现有 `settleArena`；`ai_sets` 存 `overlap_a`。板块/权重/top3/aiPick 查询均排除 `ai-set-%`，不影响原有榜单
+- **命中标识**：`GET /api/ai/sets/board?source&k=60` 按 (N, 组) 汇总命中率 / z / ROI / 累计 / 近 K 期 / 当前连挂，并给出 `best`（全量 z 最高，样本 ≥20）与 `best_recent`（近 K 期 z 最高）；页面用 👑 / 🔥 标注
+- **历史回填** `POST /api/ai/sets/backfill?source&n≤20`：用当期 `ai_forecasts.output`（AI 真实输出）+ 该期之前 800 期开奖重算 5 组并即时结算，严格无前视；分批小步（本地 dev worker 大批量写会重启）
+- **页面**：`/ai` 新增「本期 5 组独立生成」（注数标签 → 5 张组卡：算法说明、与 A 重叠数、历史命中率/z/累计、近 60 期、近 20 期条、本期结果、**一键复制该组**；下方 5 组历史对比表）；`/query` 新增「AI 5 组独立生成 · 哪一组更会中」（全部注数 × 5 组矩阵 + 结论列，近期窗口 30/60/150 可切）
+- **接口**：`GET /api/ai/sets?source&expect=`（某期各档各组号码，默认当前待开期）
+
 ### 后台常驻运行：Keeper 守护进程（`keeper.cjs`，PM2 app `keeper`）⭐
 - **目标**：关闭所有网页后，「拉取开奖 → 结算 → AI 推理下一期（带档位战绩反馈）→ 记录 → 漏期补齐」仍持续运行，数据与学习不间断
 - **机制**：服务端心跳链（`heartbeat`，2s 一跳、20 分钟一段）原本靠任意 `/api/*` 请求续命；现在沙盒内由独立 PM2 进程 `keeper` 每 15s 打 `GET /api/keeper/tick` 续命（服务不可用时指数退避，最长 60s，永不退出）。`pm2 save` 已持久化，两进程随 PM2 一起拉起
@@ -324,6 +340,9 @@
 | POST | `/api/arena/plans/:id/retire?source=` | 手动退役一条 AI 规则 |
 
 | POST | `/api/ai/backfill-subsets?source=&n=300` | 由 ai 行回填 ai-100/150/300 + 当前自定义档位历史（幂等） |
+| GET | `/api/ai/sets?source=&expect=` | AI 5 组独立生成：某期各档 A–E 号码、重叠数、结果 |
+| GET | `/api/ai/sets/board?source=&k=60` | 组别战绩榜：每档 5 组命中率/z/ROI/近 K 期，best / best_recent 标识 |
+| POST | `/api/ai/sets/backfill?source=&n=10` | 用历史 AI 输出回填 5 组并结算（幂等，小批量） |
 | GET | `/api/ai/tier-analysis?source=&conf=0.6&round=10` | 档位分析：下一期命中概率、长龙条件/存活率、连续进坑、每轮倍投回测 |
 | GET | `/api/ai/streaks?source=&k=4&n=` | 连挂风险：各档位连续 ≥K 期不命中的理论 vs 实测概率、分布、最长/当前连挂 |
 | GET | `/api/ai/query?source=&expect=&date=&n=&hit=1` | 逐期命中查询（期号 / 当日序号 / 日期 / 最近 N 期，可只看命中） |

@@ -79,6 +79,16 @@ td.p { color:#4ade80; } td.m { color:#fb7185; }
     </div>
   </section>
 
+  <!-- 5 组独立生成 · 组别命中对比 -->
+  <section class="card p-4" id="sets-sec">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+      <h2 class="font-bold text-sm"><i class="fas fa-layer-group mr-2 text-violet-400"></i>AI 5 组独立生成 · 哪一组更会中 <span class="text-xs text-slate-500 font-normal" id="sets-n"></span></h2>
+      <div class="flex items-center gap-1 text-xs"><span class="text-slate-500 mr-1">近期窗口</span><div class="flex gap-1" id="sets-k"><button class="qk" data-k="30">30</button><button class="qk on" data-k="60">60</button><button class="qk" data-k="150">150</button></div></div>
+    </div>
+    <p class="text-[11px] text-slate-500 mb-2"><span style="color:#f472b6">A 融合</span> AI 定位×量化 · <span style="color:#a78bfa">B 定位</span> 纯 AI 三位权重 · <span style="color:#22d3ee">C 量化</span> z&gt;0 量化共识 · <span style="color:#fbbf24">D 聚焦</span> 核心号优先 · <span style="color:#34d399">E 互补</span> 与 A 零重叠。每组独立结算；<i class="fas fa-crown text-amber-300"></i> 历史 z 最高 · <i class="fas fa-fire text-orange-400"></i> 近期 z 最高。</p>
+    <div class="tw" style="max-height:none"><table id="sets-tbl"><thead><tr id="sets-head"></tr></thead><tbody id="sets-body"><tr><td colspan="6" class="py-4 text-slate-500">加载中…</td></tr></tbody></table></div>
+  </section>
+
   <!-- 档位分析：下一期命中概率 / 长龙 / 进坑 / 倍投 -->
   <section class="card p-4" id="ta-sec">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-3">

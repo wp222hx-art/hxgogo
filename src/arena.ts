@@ -212,7 +212,7 @@ export async function settleArena(db: D1Database, source: string) {
 
 /** 加载目标期之前的已结算战绩（各策略最近 META_K 条，升序） */
 export async function loadPerf(db: D1Database, source: string, beforeExpect: string): Promise<PerfMap> {
-  const rows = (await db.prepare(`SELECT strategy, expect, hit, count FROM arena_rounds WHERE source=? AND expect<? AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT ?`)
+  const rows = (await db.prepare(`SELECT strategy, expect, hit, count FROM arena_rounds WHERE source=? AND expect<? AND scored_ms IS NOT NULL AND strategy NOT LIKE 'ai-set-%' ORDER BY expect DESC LIMIT ?`)
     .bind(source, beforeExpect, META_K * STRATEGIES.length).all<any>()).results
   const perf: PerfMap = {}
   for (const r of rows.reverse()) (perf[r.strategy] ||= []).push({ expect: r.expect, hit: r.hit, p: r.count / SPACE })
@@ -320,7 +320,7 @@ export async function arenaBoard(db: D1Database, source: string, opt: { mode?: '
     FROM arena_rounds WHERE source=? AND scored_ms IS NOT NULL${mw} GROUP BY strategy`).bind(source, ...mb).all<any>()).results
   // 序列：最近 limit 期（每期全部策略）
   const rows = (await db.prepare(`SELECT expect, strategy, mode, count, coverage, weight, actual, hit, rank, pnl FROM arena_rounds
-    WHERE source=? AND scored_ms IS NOT NULL${mw} ORDER BY expect DESC LIMIT ?`).bind(source, ...mb, limit * STRATEGIES.length).all<any>()).results
+    WHERE source=? AND scored_ms IS NOT NULL AND strategy NOT LIKE 'ai-set-%'${mw} ORDER BY expect DESC LIMIT ?`).bind(source, ...mb, limit * STRATEGIES.length).all<any>()).results
   const byExpect = new Map<string, any[]>()
   for (const r of rows) { if (!byExpect.has(r.expect)) byExpect.set(r.expect, []); byExpect.get(r.expect)!.push(r) }
   const expects = [...byExpect.keys()].sort()   // 升序

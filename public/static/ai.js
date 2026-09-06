@@ -34,7 +34,7 @@
     step(4)
     setTimeout(function () {
       $('loader').classList.add('hidden')
-      ;['cur', 'stats', 'hist-sec'].forEach(function (id) { var el = $(id); el.classList.remove('hidden'); el.classList.add('fade-in') }); renderSync(S.sync); fetchStake()
+      ;['cur', 'stats', 'hist-sec'].forEach(function (id) { var el = $(id); el.classList.remove('hidden'); el.classList.add('fade-in') }); renderSync(S.sync); fetchStake(); fetchSets()
     }, 250)
   }
 
@@ -193,6 +193,43 @@
       $('stake-best').innerHTML = s.best_N ? '样本 ' + s.periods + ' 期 · ROI 最优：<b class="text-amber-300 mono">前 ' + s.best_N + ' 注</b>（' + (s.best_roi > 0 ? '+' : '') + pct(s.best_roi, 2) + '）' : ''
     }).catch(function () {})
   }
+  // ---------------------------------------------------------------- 多组独立生成（每档 5 组 A–E）
+  var SETS = { n: 500, data: null, board: null }
+  try { SETS.n = +(localStorage.getItem('ai:setsn') || 500) || 500 } catch (e) {}
+  function setsBest(n) { var b = SETS.board && (SETS.board.tiers || []).find(function (t) { return t.n === n }); return b || null }
+  function renderSets() {
+    var d = SETS.data, sec = $('sets-sec'); if (!sec) return
+    if (!d || !d.expect || !d.ns || !d.ns.length) { sec.classList.add('hidden'); return }
+    sec.classList.remove('hidden')
+    if (d.ns.indexOf(SETS.n) < 0) SETS.n = d.ns.indexOf(500) >= 0 ? 500 : d.ns[d.ns.length - 1]
+    $('sets-expect').textContent = '期号 ' + d.expect
+    $('sets-ntabs').innerHTML = d.ns.map(function (n) { return '<button class="hn' + (n === SETS.n ? ' on' : '') + '" data-n="' + n + '">' + n + '</button>' }).join('') + '<span class="text-[11px] text-slate-500 ml-1">注</span>'
+    $('sets-ntabs').querySelectorAll('.hn').forEach(function (b) { b.addEventListener('click', function () { SETS.n = +b.getAttribute('data-n'); try { localStorage.setItem('ai:setsn', SETS.n) } catch (e) {} renderSets() }) })
+    var arr = (d.sets || {})[SETS.n] || [], best = setsBest(SETS.n)
+    if (!arr.length) { $('sets-cards').innerHTML = '<div class="text-xs text-slate-500 col-span-5">本期该档位的 5 组尚未生成（AI 推理完成后自动出现）</div>'; return }
+    $('sets-cards').innerHTML = arr.map(function (g) {
+      var st = best && best.sets.find(function (s) { return s.id === g.id }), a = st && st.all, rc = st && st.recent
+      var crown = best && best.best === g.id ? ' <i class="fas fa-crown text-amber-300" title="该注数下历史 z 最高"></i>' : '', fire = best && best.best_recent === g.id ? ' <i class="fas fa-fire text-orange-400" title="近 60 期 z 最高"></i>' : ''
+      var good = a && a.rate != null && a.rate >= a.breakeven
+      return '<div class="rounded-xl border p-3 flex flex-col gap-2" style="border-color:' + g.color + '55;background:#0b1220">' +
+        '<div class="flex items-center justify-between"><b style="color:' + g.color + '">' + g.id + ' · ' + esc(g.name) + '</b><span>' + crown + fire + '</span></div>' +
+        '<div class="text-[10.5px] text-slate-500 leading-snug">' + esc(g.desc) + (g.overlap_a != null && g.id !== 'A' ? ' · 与 A 重叠 ' + g.overlap_a : '') + '</div>' +
+        (a && a.n ? '<div class="text-[11px]"><span class="mono font-bold ' + (good ? 'text-emerald-300' : 'text-slate-200') + '">' + pct(a.rate, 1) + '</span><span class="text-slate-500"> ' + a.hits + '/' + a.n + ' · z ' + (a.z > 0 ? '+' : '') + a.z + ' · ' + fmtInt(a.pnl) + '</span>' + (rc && rc.n ? '<div class="text-slate-500">近 ' + rc.n + ' 期 ' + pct(rc.rate, 1) + (rc.current_miss ? ' · 连挂 ' + rc.current_miss : '') + '</div>' : '') + '<div class="streak mt-1">' + (a.streak || []).slice().reverse().map(function (h) { return '<i class="' + (h ? 'h' : '') + '"></i>' }).join('') + '</div></div>' : '<div class="text-[11px] text-slate-600">尚无结算样本</div>') +
+        (g.hit != null ? '<div class="text-[11px] ' + (g.hit ? 'text-emerald-300' : 'text-slate-500') + '">本期 ' + (g.hit ? '命中 #' + g.rank : '未中') + '</div>' : '') +
+        '<button class="mt-auto text-xs px-2 py-1.5 rounded-lg font-semibold text-black s-copy" style="background:' + g.color + '" data-k="' + g.key + '"><i class="fas fa-copy mr-1"></i>复制 ' + g.count + ' 注</button></div>'
+    }).join('')
+    $('sets-cards').querySelectorAll('.s-copy').forEach(function (b) { b.addEventListener('click', function () { var g = arr.find(function (x) { return x.key === b.getAttribute('data-k') }); if (g) copyText(joinNums(g.numbers, S.fmt), b) }) })
+    // 组别榜（当前 N）
+    if (best) {
+      $('sets-board').innerHTML = '<div class="text-[11px] text-slate-500 mb-1">前 ' + SETS.n + ' 注 · 5 组历史对比（样本 ' + (SETS.board.periods || 0) + ' 期，保本 ' + pct(SETS.n / 950, 1) + '）</div><div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-slate-600"><th class="text-left font-normal py-1">组</th><th class="font-normal">命中率</th><th class="font-normal">z</th><th class="font-normal">ROI</th><th class="font-normal">累计</th><th class="font-normal">近 60 期</th><th class="font-normal">当前连挂</th></tr></thead><tbody>' +
+        best.sets.map(function (s) { var a = s.all, r = s.recent; return '<tr class="' + (best.best === s.id ? 'bg-amber-400/10' : '') + '"><td class="py-1"><b style="color:' + s.color + '">' + s.id + ' ' + esc(s.short) + '</b>' + (best.best === s.id ? ' <i class="fas fa-crown text-amber-300"></i>' : '') + (best.best_recent === s.id ? ' <i class="fas fa-fire text-orange-400"></i>' : '') + '</td><td class="text-center mono ' + (a.rate != null && a.rate >= a.breakeven ? 'text-emerald-300' : '') + '">' + pct(a.rate, 1) + ' <span class="text-slate-600">' + a.hits + '/' + a.n + '</span></td><td class="text-center mono ' + (a.z > 0 ? 'text-emerald-300' : 'text-slate-400') + '">' + (a.z == null ? '—' : (a.z > 0 ? '+' : '') + a.z) + '</td><td class="text-center mono">' + (a.roi == null ? '—' : ((a.roi >= 0 ? '+' : '') + (a.roi * 100).toFixed(2) + '%')) + '</td><td class="text-center mono ' + (a.pnl >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + fmtInt(a.pnl) + '</td><td class="text-center mono">' + pct(r.rate, 1) + '</td><td class="text-center mono ' + (r.current_miss >= 4 ? 'text-rose-300' : 'text-slate-400') + '">' + (r.current_miss || '·') + '</td></tr>' }).join('') + '</tbody></table></div>'
+    } else $('sets-board').innerHTML = ''
+  }
+  function fetchSets() {
+    if (!S.source) return
+    Promise.all([axios.get('/api/ai/sets', { params: { source: S.source } }), axios.get('/api/ai/sets/board', { params: { source: S.source } })]).then(function (rs) { SETS.data = rs[0].data; SETS.board = rs[1].data; renderSets() }).catch(function () {})
+  }
+
   // ---------------------------------------------------------------- 战绩 + 历史
   function renderStats() {
     var r = S.record; if (!r) return
@@ -308,6 +345,8 @@
     renderCur(); renderStats(); renderSubStats()
     var lastExp = (d.history && d.history[0] && d.history[0].expect) || null
     if (lastExp && lastExp !== H.lastExp) { H.lastExp = lastExp; fetchHist(false) }
+    var pe = d.pick && d.pick.expect; if (pe && pe !== SETS.lastExp) { SETS.lastExp = pe; if (S.loaded) fetchSets() }
+    if (d.pick && d.pick.status === 'ready' && SETS.data && SETS.data.expect === pe && !((SETS.data.sets || {})[SETS.n] || []).length && S.loaded) fetchSets()
   }
   function fetchPick(force) {
     var ver = ++S.ver

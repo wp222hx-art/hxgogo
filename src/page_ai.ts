@@ -135,6 +135,17 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
     <div class="grid md:grid-cols-4 gap-3" id="sub-cards"></div>
   </section>
 
+  <!-- 多组独立生成：每档 5 组 A–E -->
+  <section id="sets-sec" class="hidden bg-[#0f172a] border border-slate-800 rounded-xl p-4">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+      <h2 class="font-bold text-sm"><i class="fas fa-layer-group mr-2 text-violet-400"></i>本期 5 组独立生成 <span class="text-xs text-slate-500 font-normal" id="sets-expect"></span></h2>
+      <div class="flex items-center gap-1 text-xs" id="sets-ntabs"></div>
+    </div>
+    <p class="text-[11px] text-slate-500 mb-3">每档注数都由 5 种视角<b class="text-slate-400">各自独立算出</b>（不是 500 注的前缀）：<span style="color:#f472b6">A 融合</span> AI 定位×量化 · <span style="color:#a78bfa">B 定位</span> 纯 AI 三位权重 · <span style="color:#22d3ee">C 量化</span> 仅 z&gt;0 量化共识 · <span style="color:#fbbf24">D 聚焦</span> 核心号优先 · <span style="color:#34d399">E 互补</span> 与 A 零重叠。每组独立入榜结算，<i class="fas fa-crown text-amber-300"></i> = 该注数下历史最会中的组，<i class="fas fa-fire text-orange-400"></i> = 近 60 期最热。</p>
+    <div id="sets-cards" class="grid md:grid-cols-5 gap-2"></div>
+    <div id="sets-board" class="mt-3"></div>
+  </section>
+
   <!-- 注数回测：只投前 N 注 -->
   <section id="stake-sec" class="hidden bg-[#0f172a] border border-slate-800 rounded-xl p-4">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-2"><h2 class="font-bold text-sm"><i class="fas fa-sliders mr-2 text-amber-400"></i>投注注数回测 <span class="text-xs text-slate-500 font-normal">若每期只投 AI 排名前 N 注（号码按 AI 得分排序，前 N 个即上方列表前 N 个），历史命中率 / ROI 会怎样</span></h2><span id="stake-best" class="text-xs"></span></div>

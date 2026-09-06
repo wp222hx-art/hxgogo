@@ -23,6 +23,7 @@ import { scanGaps, fillGapsFromChain, coverageReport } from './gapfill'
 import { top3Page } from './page_top3'
 import { settingsPage } from './page_settings'
 import { queryPage } from './page_query'
+import { generateSets, insertSets, allNs, setsBoard, setsForPeriod, backfillSets, SET_META, SET_IDS } from './ai_sets'
 
 type Bindings = { DB: D1Database } & AiEnv
 const app = new Hono<{ Bindings: Bindings; Variables: { ai: AiEnv } }>()
@@ -551,7 +552,10 @@ async function aiKick(db: D1Database, env: AiEnv, source: string, trigger = 'pag
     const rows = await loadDraws(db, source, 800)
     // 报单截止 = 下期理论开奖时刻 − AI_LEAD_MS（默认 20s）：留出足够的下单时间；超时则本期由兜底策略顶上
     const lockByMs = rows.length ? (rows[0] as any).open_ms + SOURCES[source].intervalMs - aiLeadMs(env) : undefined
-    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights, { lockByMs, trigger }); return f ? aiScores(f, ctx.vec, ctx.perf) : null }, parseCustomNs(env.AI_CUSTOM_N))
+    let cap: { f: any; ctx: any } | null = null
+    const done = await externalRound(db, source, rows as any, 'ai', async (ctx) => { const f = await forecastFor(db, env, source, ctx.next, ctx.hist, ctx.perf, ctx.weights, { lockByMs, trigger }); if (f) cap = { f, ctx }; return f ? aiScores(f, ctx.vec, ctx.perf) : null }, parseCustomNs(env.AI_CUSTOM_N))
+    // 多组独立生成：每档 N 各 5 组（A 融合 / B 定位 / C 量化 / D 聚焦 / E 互补），独立入榜结算
+    if (done && cap) { try { const sets = generateSets(cap.f, cap.ctx.vec, cap.ctx.perf, allNs(parseCustomNs(env.AI_CUSTOM_N))); await insertSets(db, source, cap.ctx.next, rows[0].expect, sets) } catch (e) { console.error('ai sets', e) } }
     if (done) invalidateArena(source)
   } catch (e) { console.error('ai kick', e) } finally { aiBusy.delete(source) }
 }
@@ -871,6 +875,38 @@ app.get('/api/ai/tier-analysis', async (c) => {
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
   return c.json({ ok: true, source, ...v })
 })
+/** AI 多组生成 · 组别战绩榜：每档 N 的 5 组（A–E）命中率 / z / ROI / 近 K 期，标出最佳组 */
+app.get('/api/ai/sets/board', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const k = Math.max(20, Math.min(300, Number(c.req.query('k') || 60)))
+  const Ns = allNs(parseCustomNs(c.var.ai.AI_CUSTOM_N))
+  const key = `setsboard|${source}|${k}|c${c.var.ai.AI_CUSTOM_N || ''}|a${arenaVer.get(source) || 0}`
+  const { v, cached } = await cachedArena(key, 20_000, () => setsBoard(c.env.DB, source, Ns, k))
+  c.header('X-Cache', cached ? 'HIT' : 'MISS')
+  return c.json({ ok: true, source, meta: SET_META, ids: SET_IDS, ...v })
+})
+/** AI 多组生成 · 历史回填（每次 ≤ n 期，幂等；用当期 AI 真实输出重算 5 组并即时结算） */
+app.post('/api/ai/sets/backfill', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const n = Math.max(1, Math.min(20, Number(c.req.query('n') || 10)))
+  const draws = await loadDraws(c.env.DB, source, 1400)   // 每期只需其前 800 期；1400 覆盖最近 ~600 期待回填目标
+  const r = await backfillSets(c.env.DB, source, draws as any, allNs(parseCustomNs(c.var.ai.AI_CUSTOM_N)), n)
+  if (r.done) invalidateArena(source)
+  return c.json({ ok: true, source, ...r })
+})
+/** AI 多组生成 · 某期（默认当前待开期）各档各组号码，可直接复制 */
+app.get('/api/ai/sets', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const Ns = allNs(parseCustomNs(c.var.ai.AI_CUSTOM_N))
+  let expect = c.req.query('expect') || ''
+  if (!expect) { const p = await c.env.DB.prepare(`SELECT expect FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NULL ORDER BY expect DESC LIMIT 1`).bind(source).first<any>(); expect = p?.expect || '' }
+  if (!expect) return c.json({ ok: true, source, expect: null, sets: {} })
+  const sets = await setsForPeriod(c.env.DB, source, expect, Ns)
+  return c.json({ ok: true, source, expect, ns: Ns, meta: SET_META, sets })
+})
 /** 单期 AI 详情（展开时懒加载）：500 注号码、boost、推理、方案 */
 app.get('/api/ai/history/:expect', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
@@ -897,7 +933,7 @@ app.get('/api/arena/pick', async (c) => {
   const key = `pick|${source}|${hist}|c${c.var.ai.AI_CUSTOM_N || ''}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
   const { v, cached, age } = await cachedArena(key, 20_000, async () => {
     const db = c.env.DB
-    const pend = (await db.prepare(`SELECT expect, strategy, based_on, numbers, count, coverage, weight FROM arena_rounds WHERE source=? AND scored_ms IS NULL ORDER BY expect DESC LIMIT 40`).bind(source).all<any>()).results
+    const pend = (await db.prepare(`SELECT expect, strategy, based_on, numbers, count, coverage, weight FROM arena_rounds WHERE source=? AND scored_ms IS NULL AND strategy NOT LIKE 'ai-set-%' ORDER BY expect DESC LIMIT 60`).bind(source).all<any>()).results
     const expect = pend[0]?.expect
     const current = expect ? { expect, based_on: pend[0].based_on, strategies: pend.filter(r => r.expect === expect) } : null
     const pick = await aiPick(db, source, current, c.var.ai.AI_CUSTOM_N)
