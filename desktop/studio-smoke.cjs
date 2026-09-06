@@ -1,0 +1,48 @@
+const {writeFileSync}=require('node:fs');
+const {join,resolve}=require('node:path');
+const {DatabaseSync}=require('node:sqlite');
+module.exports=async function studioSmoke(win,result,dataDir){
+ const arg=process.argv.find(a=>a.startsWith('--data-dir='));
+ if(!arg||resolve(arg.slice(11))!==resolve(dataDir)||!process.argv.includes('--smoke-test'))throw Error('测试必须使用明确的独立数据目录');
+ const run=s=>win.webContents.executeJavaScript(s,true),delay=ms=>new Promise(r=>setTimeout(r,ms));
+ const wait=async s=>{for(let i=0;i<100;i++){if(await run(s))return;await delay(200)}throw Error('工作台等待超时 '+s)};
+ const shot=async name=>{await delay(180);writeFileSync(join(dataDir,name+'.png'),(await win.webContents.capturePage()).toPNG())};
+ const source='qkltj:6004',interval=600000;
+ const period=ms=>{const d=new Date(ms+8*3600000),day=d.toISOString().slice(0,10).replaceAll('-','');const n=(d.getUTCHours()*60+d.getUTCMinutes())/10;if(n===0){return period(ms-interval).slice(0,8)+'144'}return day+String(n).padStart(3,'0')};
+ const last=Math.floor(Date.now()/interval)*interval;
+ const db=new DatabaseSync(join(dataDir,'hashplay.sqlite'));db.exec('PRAGMA busy_timeout=5000');
+ try{
+  const ins=db.prepare('INSERT OR IGNORE INTO draws(source,expect,hash,n1,n2,n3,n4,n5,open_ms) VALUES(?,?,?,?,?,?,?,?,?)');
+  db.exec('BEGIN IMMEDIATE');for(let i=0;i<240;i++)ins.run(source,period(last-i*interval),'synthetic-ui',i%10,(i*3+1)%10,(i*7+2)%10,1,2,last-i*interval);db.exec('COMMIT');
+  await win.loadURL('hashplay://app/workspace?source='+source);
+  await wait('document.querySelector("#st-root").getAttribute("aria-busy")==="false"');await shot('studio-overview');
+  await win.loadURL('hashplay://app/workspace?view=generate&source='+source);
+  await wait('document.querySelector("#st-generate") && !document.querySelector("#st-generate").disabled');
+  await shot('studio-generate');
+  await run('document.querySelector("#st-generate").click()');await wait('document.querySelector("#st-detail").open');
+  await run('document.querySelector("#st-note").value="界面验证：保留输入与核对记录";document.querySelector("#st-pin").checked=true;document.querySelector("#st-save").click()');
+  await wait('fetch("/api/studio/overview?source=qkltj:6004").then(r=>r.json()).then(d=>d.plans[0]?.pinned && d.plans[0]?.note.includes("保留输入"))');
+  await shot('studio-locked-plan');await run('document.querySelector("#st-close").click()');
+  const plan=db.prepare('SELECT * FROM studio_plans WHERE source=? ORDER BY created_ms DESC LIMIT 1').get(source),nums=JSON.parse(plan.numbers),hit=nums[0],miss=Array.from({length:1000},(_,i)=>String(i).padStart(3,'0')).find(n=>!nums.includes(n));
+  ins.run(source,plan.expect,'synthetic-ui-result',...hit.split('').map(Number),1,2,last+interval);
+  await win.loadURL('hashplay://app/workspace?view=tracking&source='+source);
+  await wait('document.querySelector("#st-root").innerText.includes("已命中")');
+  await shot('studio-tracking');
+  db.prepare('UPDATE draws SET n1=?,n2=?,n3=? WHERE source=? AND expect=?').run(...miss.split('').map(Number),source,plan.expect);
+  await run('window.dispatchEvent(new Event("studio-refresh"))');await wait('document.querySelector("#st-root").innerText.includes("未命中")');
+  await win.loadURL('hashplay://app/workspace?view=data&source='+source);
+  await wait('document.querySelector("#st-period")');
+  const downloaded=new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(Error('CSV导出超时')),15000);win.webContents.session.once('will-download',(_,item)=>{item.setSavePath(join(dataDir,'studio-data.csv'));item.once('done',(_,state)=>{clearTimeout(t);state==='completed'?resolve():reject(Error(state))})});});
+  await run('document.querySelector("#st-export-data").click()');await downloaded;await shot('studio-data');
+  await run('document.querySelector("#st-period").value="19990101144";document.querySelector("#st-period").dispatchEvent(new Event("input"));document.querySelector("#st-search").click()');
+  await wait('document.querySelector("#st-root").innerText.includes("暂无符合条件")');
+  await win.loadURL('hashplay://app/workspace?source='+source);
+  await wait('document.querySelector("#st-root").getAttribute("aria-busy")==="false"');
+  win.setMinimumSize(360,600);win.setSize(420,850);await delay(200);await shot('studio-mobile');
+  const overflow=await run('document.documentElement.scrollWidth>innerWidth+1');if(overflow)throw Error('移动布局出现页面横向溢出');
+  win.setSize(1360,920);win.setMinimumSize(1050,700);
+  await win.loadURL('hashplay://app/analysis?source=local:five');await wait('document.querySelector("#source-sel")?.value==="local:five"');
+  if(!await run('document.querySelector("#hp-source").value==="local:five" && !document.querySelector("#hp-source").disabled'))throw Error('本地五位来源入口未保留');
+  result.studio={legacyLocalSource:true,generation:true,immutableNumbers:nums.length===150,pinnedNote:true,canonicalCorrection:true,export:true,emptySearch:true,mobileNoOverflow:true};
+ }finally{db.close()}
+};

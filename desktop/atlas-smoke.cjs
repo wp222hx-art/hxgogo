@@ -10,6 +10,8 @@ module.exports=async function atlasSmoke(win,result,dataDir){
   const source=async id=>{await run('(()=>{const s=document.querySelector("select[aria-label=数据来源]");s.value='+JSON.stringify(id)+';s.dispatchEvent(new Event("change",{bubbles:true}));})()');await wait('new URL(location.href).searchParams.get("source")==='+JSON.stringify(id)+' && !document.querySelector("#atlas-refresh").disabled');};
   const screenshot=async name=>{await delay(250);writeFileSync(join(dataDir,name+'.png'),(await win.webContents.capturePage()).toPNG());};
   await wait('document.querySelector("#atlas-app")?.dataset.ready==="true"');
+  if(await run('document.querySelector("#atlas-navigation").getBoundingClientRect().height>120'))throw Error('图谱子导航未保持紧凑横排');
+  result.atlasCompactNavigation = true;
   const rows=Array.from({length:20},(_,i)=>({period:'smoke-'+String(i+1).padStart(3,'0'),numbers:[i%10,(i*3+1)%10,(i*7+2)%10],drawAt:Date.UTC(2026,8,1,0,i)}));
   const imports=[
     {sourceId:'local:digits3',records:rows},

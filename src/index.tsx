@@ -1,3 +1,6 @@
+import { platformPage } from './platform-shell'
+import { studioPage } from './page_studio'
+import { studioApi } from './studio-api'
 import { createSourceScheduler } from './source-scheduler'
 import { atlasApi } from './atlas-api'
 import { atlasPage } from './page_atlas'
@@ -33,8 +36,10 @@ import { generateSets, insertSets, allNs, setsBoard, setsForPeriod, backfillSets
 
 type Bindings = { DB: D1Database } & AiEnv
 const app = new Hono<{ Bindings: Bindings; Variables: { ai: AiEnv } }>()
+app.route('/api/studio', studioApi)
+app.get('/workspace', c => c.html(platformPage(studioPage(), 'overview')))
 app.route('/api/atlas', atlasApi)
-app.get('/atlas', c => c.html(atlasPage()))
+app.get('/atlas', c => c.html(platformPage(atlasPage(), "atlas")))
 app.use('/api/*', cors())
 // AI 生效配置 = D1 app_config（/settings 页面填写）> 环境变量；每个请求解析一次，后续所有 AI 调用都用 c.var.ai
 app.use('/api/*', async (c, next) => { c.set('ai', await effectiveEnv(c.env.DB, c.env)); if (!(c.env as any).LOCAL_DESKTOP) ensureHeartbeat(c); await next() })
@@ -1259,13 +1264,13 @@ app.get('/api/analysis/audit', async (c) => {
 })
 
 // ------------------------------------------------------------------ 页面
-app.get('/', (c) => c.html(page()))
-app.get('/analysis', (c) => c.html(analysisPage()))
-app.get('/arena', (c) => c.html(arenaPage()))
-app.get('/ai', (c) => c.html(aiPage()))
-app.get('/settings', (c) => c.html(settingsPage()))
-app.get('/top3', (c) => c.html(top3Page()))
-app.get('/query', (c) => c.html(queryPage()))
+app.get('/', (c) => c.html(platformPage(page(), "demo")))
+app.get('/analysis', (c) => c.html(platformPage(analysisPage(), "analysis")))
+app.get('/arena', (c) => c.html(platformPage(arenaPage(), "arena")))
+app.get('/ai', (c) => c.html(platformPage(aiPage(), "ai")))
+app.get('/settings', (c) => c.html(platformPage(settingsPage(), "settings")))
+app.get('/top3', (c) => c.html(platformPage(top3Page(), "top3")))
+app.get('/query', (c) => c.html(platformPage(queryPage(), "query")))
 
 /** AI 自学习摘要：每期喷给模型的 your_tier_performance（各档位真实战绩 + 命中位次分布），前端与审计都能看到模型“学到了什么” */
 app.get('/api/ai/tier-digest', async (c) => {

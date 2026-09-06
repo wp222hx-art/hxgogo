@@ -30,7 +30,7 @@ if (!app.requestSingleInstanceLock()) { app.quit() } else {
     if (existsSync(logfile) && statSync(logfile).size > 2_000_000) renameSync(logfile, logfile + '.previous')
     appendFileSync(logfile, new Date().toISOString() + ' ' + text.slice(0, 4000) + '\n')
   }
-  function showPage(path = '/settings') {
+  function showPage(path = '/workspace') {
     if (!origin) return
     if (!win || win.isDestroyed()) createWindow()
     win.loadURL(uiOrigin + path)
@@ -167,6 +167,11 @@ if (!app.requestSingleInstanceLock()) { app.quit() } else {
   function buildMenu() {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: '工作台', submenu: [
+        { label: '总览', click: () => showPage('/workspace') },
+        { label: '生成方案', click: () => showPage('/workspace?view=generate') },
+        { label: '策略追踪', click: () => showPage('/workspace?view=tracking') },
+        { label: '数据管理', click: () => showPage('/workspace?view=data') },
+        { type: 'separator' },
         { label: 'AI 配置中心', click: () => showPage('/settings') },
         { label: 'AI 推荐', click: () => showPage('/ai') },
         { label: '历史查询', click: () => showPage('/query') },
@@ -199,12 +204,13 @@ if (!app.requestSingleInstanceLock()) { app.quit() } else {
     const errors = []
     win.webContents.on('console-message', (_event, level, message) => { if (level === 3) errors.push(message) })
     const result = { pages: [], errors, version: app.getVersion(), electron: process.versions.electron, sqlite: false, encrypted: false }
-    for (const path of ['/settings','/query','/analysis','/arena','/ai','/top3','/atlas','/']) {
+    for (const path of ['/workspace','/settings','/query','/analysis','/arena','/ai','/top3','/atlas','/']) {
       await win.loadURL(uiOrigin + path)
       await new Promise(r => setTimeout(r, 1000))
       const info = await win.webContents.executeJavaScript("({ title:document.title, text:document.body.innerText.slice(0,100), scripts:[...document.scripts].map(s=>s.src).filter(Boolean), background:getComputedStyle(document.body).backgroundColor, node:typeof require })")
       if (!info.title || info.node !== 'undefined' || info.scripts.some(s => !s.startsWith(uiOrigin))) throw new Error('桌面页面验证失败: ' + path)
       result.pages.push({ path, ...info })
+      if (path === '/workspace') await require('./studio-smoke.cjs')(win,result,dataDir)
       if (path === '/atlas') await require('./atlas-smoke.cjs')(win,result,dataDir)
       if (path === '/analysis') {
         const seeded = await win.webContents.executeJavaScript("fetch('/api/analysis/pick/track?source=qkltj:6001&count=500&temp=1.5').then(r=>r.json()).then(d=>d.n>0)")
@@ -242,7 +248,7 @@ if (!app.requestSingleInstanceLock()) { app.quit() } else {
     const navigation = new Promise(resolve => win.webContents.once('did-finish-load', resolve))
     await win.webContents.executeJavaScript("document.getElementById('ai-config-link').click()")
     await navigation
-    if (win.webContents.getURL() !== uiOrigin + '/settings') throw new Error('AI 配置入口导航失败')
+    if (new URL(win.webContents.getURL()).pathname !== '/settings') throw new Error('AI 配置入口导航失败')
     await win.webContents.executeJavaScript("fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({AI_PROVIDER:'disabled'})}).then(r=>r.json())")
     await win.reload()
     await new Promise(r => setTimeout(r, 1000))

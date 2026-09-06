@@ -321,3 +321,10 @@ atlasApi.put('/workspace', async c => {
     .bind(json, updatedAt).run()
   return c.json({ ok: true, contractVersion: CONTRACT, workspace: JSON.parse(json), updatedAt })
 })
+
+/** Canonical read contract shared by the research workspace and Atlas. */
+export async function builtinSnapshot(db: D1Database, id: string, limit = 1000) {
+ const source = requestedSource(id)
+ if (source.kind !== 'builtin') throw new AtlasError(400, 'INVALID_SOURCE', '该工作台仅支持共用五位来源')
+ return sourceSnapshot(db, source, limit)
+}

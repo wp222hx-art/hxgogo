@@ -1,5 +1,7 @@
 # HashPlay · 链上哈希可验证公平游戏演示平台
 
+> **v0.4.0 统一研究工作台**：新增总览、生成方案、策略追踪、数据管理，支持固定配方提前锁定与共用数据核对。使用与统计口径见 [工作台说明](docs/workspace.md)，下载见 [下载目录](downloads/README.md)。
+
 > **Windows 本地版**：现已支持 Electron + SQLite 桌面运行。安装、AI 配置、备份恢复和构建说明见 [DESKTOP.md](./DESKTOP.md)。
 
 > **下载安装**：[最新版](https://github.com/wp222hx-art/hxgogo/releases/latest) · [下载目录与历史版本](downloads/README.md) · [版本发布指南](docs/releases.md)

@@ -40,7 +40,7 @@
     "vite": "^8.1.4",
     "wrangler": "^4.110.0"
   },
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "HashPlay 本地工作台",
   "author": "HashPlay",
   "main": "desktop/main.cjs",
@@ -48,7 +48,7 @@
     "appId": "com.hashplay.desktop",
     "productName": "HashPlay",
     "directories": {
-      "output": "release/0.3.1"
+      "output": "release/0.4.0"
     },
     "files": [
       "desktop/main.cjs",
@@ -56,7 +56,8 @@
       "desktop/vault.cjs",
       "desktop-build/**/*",
       "!desktop-build/**/*.map",
-      "desktop/atlas-smoke.cjs"
+      "desktop/atlas-smoke.cjs",
+      "desktop/studio-smoke.cjs"
     ],
     "asar": true,
     "npmRebuild": false,

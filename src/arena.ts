@@ -25,7 +25,7 @@ export const STRATEGIES: StrategyDef[] = [
   { key: 'parity-size', name: '单双大小倾向', short: '单双大小', desc: '近 60 期各位单双、大小经验频率乘积 → 数字权重', color: '#eab308' },
   { key: 'bayes', name: '贝叶斯衰减后验', short: '贝叶斯', desc: 'Dirichlet(1) 先验 + 指数衰减计数（半衰期 30 期）后验', color: '#a855f7' },
   { key: 'markov', name: '马尔可夫转移', short: '马尔可夫', desc: '各位一阶转移矩阵：上期数字 → 本期数字条件频率（近 300 期）', color: '#f97316' },
-  { key: 'pos3-bias', name: '百位偏差追踪', short: '百位偏差', desc: '假设检验型：全历史卡方发现百位分布偏离均匀（p≈0.05），只在百位按全样本频率加权（收缩 50%），万/千均匀。若 200 期后 z>1.5 说明上游存在系统性偏差', color: '#14b8a6' },
+  { key: 'pos3-bias', name: '百位偏差追踪', short: '百位偏差', desc: '假设检验型：全历史卡方发现百位分布偏离均匀（p≈0.05），只在百位按全样本频率加权（收缩 50%），万/千均匀。滚动偏差仅作为诊断，需独立样本验证且应校正多重比较', color: '#14b8a6' },
   { key: 'random', name: '随机对照组', short: '随机对照', desc: '以期号为种子随机取 500 注，理论命中率 50%，用于对照所有策略', color: '#64748b', control: true },
   { key: 'meta', name: '组合最优 · 自适应加权', short: '组合最优', desc: '只用「目标期之前」已结算战绩，按滚动 z 分数给各策略加权，融合概率后取 Top 500', color: '#22c55e', meta: true },
   { key: 'follow', name: '跟随最强 · 动态切换', short: '跟最强', desc: '每期整份复制「之前」滚动 40 期 z 最高的基础策略（样本 <10 期时退化为组合最优）', color: '#ec4899', meta: true },

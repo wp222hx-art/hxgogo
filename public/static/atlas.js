@@ -651,6 +651,7 @@ async function navigate(tab) {
   document.getElementById('atlas-subtitle').textContent = subtitle || '公开规则、清晰记录，在当前数据范围内逐项检验。';
   for (const item of document.querySelectorAll('[data-atlas-tab]')) { const active = item.dataset.atlasTab === tab; item.classList.toggle('active', active); active ? item.setAttribute('aria-current', 'page') : item.removeAttribute('aria-current'); }
   const url = new URL(location.href); url.searchParams.set('tab', tab); if (state.source) url.searchParams.set('source', state.source.id); history.replaceState({}, '', url);
+  if (state.source) window.dispatchEvent(new CustomEvent('platform-source', {detail: state.source.id}));
   if (!state.source) return;
   if (tab === 'conditions') return renderConditions();
   if (tab === 'trends') return renderTrends();

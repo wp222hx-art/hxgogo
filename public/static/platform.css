@@ -1,0 +1,33 @@
+/* Shared platform shell; legacy controls stay in the DOM for compatibility. */
+:root{color-scheme:dark;--hp-bg:#0c141e;--hp-panel:#131f2d;--hp-border:#283748;--hp-ink:#e4eef6;--hp-muted:#91a5b8;--hp-accent:#8bdfc4}
+body{margin:0!important;background:var(--hp-bg)!important;color:var(--hp-ink);font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif!important}
+#hp-sidebar,#hp-header,#hp-sidebar *,#hp-header *{box-sizing:border-box}
+#hp-sidebar{position:fixed;inset:0 auto 0 0;width:210px;z-index:60;background:#101b27;border-right:1px solid var(--hp-border);padding:29px 18px;display:flex;flex-direction:column;overflow:auto}
+.hp-brand{display:flex;align-items:center;gap:10px;color:#eff8fb;text-decoration:none;font-weight:650;font-size:19px;letter-spacing:.5px}
+.hp-brand small{display:block;font-size:10px;color:#8ea8ba;font-weight:400;letter-spacing:1px;margin-top:5px}
+.hp-nav-caption{color:#6e8599;letter-spacing:2px;font-size:10px;margin:20px 12px 10px}
+#hp-sidebar nav>a{line-height:1.4;display:flex;align-items:center;gap:12px;padding:9px 13px;font-size:13px;color:#a4b6c6;text-decoration:none;border-radius:8px;margin:3px 0;white-space:nowrap}
+#hp-sidebar nav>a span{font-size:19px;width:20px;text-align:center}
+#hp-sidebar nav>a:hover{background:#1a2b3a;color:white}
+#hp-sidebar nav>a[aria-current]{background:#233e40;color:#a7efda}
+.hp-sidebar-foot{margin-top:auto;padding:22px 8px 0;font-size:11px;color:#9eb5b7}.hp-sidebar-foot i{display:inline-block;width:6px;height:6px;background:#8bdfc4;border-radius:50%;margin-right:5px}.hp-sidebar-foot small{display:block;font-size:9px;color:#627e91;margin-top:9px;line-height:1.8}
+#hp-header{position:sticky;top:0;margin-left:210px;z-index:50;min-height:85px;background:#0e1823f5;border-bottom:1px solid var(--hp-border);display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 30px;backdrop-filter:blur(15px)}
+#hp-header small{font-size:9px;color:#7f99ac;letter-spacing:2px}#hp-header h1{font-size:20px;font-weight:600;margin:3px 0 0;line-height:1.3}
+.hp-header-actions{display:flex;align-items:center;gap:12px;font-size:11px;color:#94acbe}
+#hp-source,#hp-refresh{border:1px solid #344859;background:#182838;border-radius:7px;color:#d9e9f2;font:inherit;padding:8px 10px}#hp-refresh{cursor:pointer}.hp-data-link{color:#a8d9ce;text-decoration:none}
+#hp-status{font-size:10px;color:#dabb82;max-width:125px}#hp-status[data-state=ok]{color:#92d6bb}#hp-status[data-state=error]{color:#e8a198}
+#platform-content{margin-left:210px;min-width:0;outline:none}#platform-content:not([data-page=demo])>header{display:none}
+#platform-content>main{max-width:1500px;padding:26px 30px}
+#platform-content .card{background:var(--hp-panel);border-color:var(--hp-border);border-radius:12px}
+#platform-content[data-page=atlas] .atlas-app{display:block;min-height:0}
+#platform-content .atlas-sidebar{position:relative;inset:auto;width:auto;min-height:0;padding:12px 26px;display:block;border-right:0;border-bottom:1px solid var(--hp-border);overflow:visible}
+#platform-content .atlas-brand,#platform-content .atlas-nav-caption,#platform-content .atlas-sidebar-bottom{display:none}
+#platform-content #atlas-navigation{display:flex;flex-direction:row;gap:6px;overflow-x:auto;align-items:center}
+#platform-content .atlas-nav-button{width:auto;flex:0 0 auto;padding:8px 10px;margin:0;font-size:11px}
+#platform-content .atlas-nav-divider{display:none}#platform-content .atlas-main{margin-left:0}
+#platform-content .atlas-header{padding-top:23px}#platform-content .atlas-toast{left:50%}
+.hp-skip{position:fixed;top:-80px;left:220px;z-index:100;background:#b7eedc;color:#112a23;padding:12px}.hp-skip:focus{top:8px}
+:where(a,button,input,select,textarea):focus-visible{outline:2px solid #96e2c9;outline-offset:3px}
+@media(max-width:1050px){#hp-sidebar{width:178px;padding:25px 12px}#hp-header,#platform-content{margin-left:178px}.hp-header-actions label,.hp-data-link{display:none}#hp-header{padding:15px 22px}#platform-content>main{padding:24px}.hp-brand{font-size:17px}}
+@media(max-width:760px){#hp-sidebar{position:relative;width:auto;padding:14px 16px;overflow:visible}.hp-brand{font-size:17px}.hp-brand img{width:29px;height:29px}.hp-brand small,.hp-nav-caption,.hp-sidebar-foot{display:none}#hp-sidebar nav{display:flex;overflow:auto;gap:5px;margin-top:12px}#hp-sidebar nav>a{padding:7px 10px;margin:0;font-size:11px}#hp-sidebar nav>a span{font-size:15px;width:15px}#hp-header,#platform-content{margin-left:0}#hp-header{min-height:75px;padding:12px 16px;flex-wrap:wrap}#hp-header h1{font-size:18px}.hp-header-actions{gap:8px}#hp-status{max-width:none}#hp-header small{font-size:8px}#platform-content>main{padding:20px 16px}#platform-content .atlas-sidebar{padding:10px}.hp-skip{left:10px}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}

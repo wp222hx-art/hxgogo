@@ -9,6 +9,12 @@
 
 升级前，从旧版系统托盘选择“退出并停止后台”，再启动新版。默认继续使用原数据库和配置，可先通过“数据 → 备份数据”备份。当前应用采用手动下载安装更新。
 
+## v0.4.0
+
+[便携版](https://github.com/wp222hx-art/hxgogo/releases/download/v0.4.0/HashPlay-Portable-0.4.0.exe) · [安装版](https://github.com/wp222hx-art/hxgogo/releases/download/v0.4.0/HashPlay-Setup-0.4.0.exe) · [更新说明](versions/v0.4.0.md)
+
+统一首页、快捷生成、策略追踪和数据管理。保留原功能，方案提前锁定，结果跟随共用数据核对。清楚区分理论覆盖、历史实测与尚未校准的下期概率。
+
 ## v0.3.1
 
 [便携版](https://github.com/wp222hx-art/hxgogo/releases/download/v0.3.1/HashPlay-Portable-0.3.1.exe) · [安装版](https://github.com/wp222hx-art/hxgogo/releases/download/v0.3.1/HashPlay-Setup-0.3.1.exe) · [更新说明](versions/v0.3.1.md)

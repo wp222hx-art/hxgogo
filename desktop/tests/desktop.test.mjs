@@ -15,7 +15,7 @@ const token = 'test-only-application-token-0123456789abcdef'
 test('all migrations, batch rollback, backup and restart persistence', async () => {
   const dir = temporary(), file = join(dir, 'data.sqlite')
   let db = new LocalDatabase(file, join(root, 'migrations'))
-  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM desktop_migrations').first()).n, 18)
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM desktop_migrations').first()).n, 19)
   await assert.rejects(db.batch([
     db.prepare("INSERT INTO app_config VALUES ('test','first',1)"),
     db.prepare("INSERT INTO app_config VALUES ('test','duplicate',2)")
@@ -26,7 +26,7 @@ test('all migrations, batch rollback, backup and restart persistence', async () 
   db.close()
   db = new LocalDatabase(file, join(root, 'migrations'))
   assert.equal(await db.prepare("SELECT value FROM app_config WHERE key='test'").first('value'), 'persisted')
-  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM desktop_migrations').first()).n, 18)
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM desktop_migrations').first()).n, 19)
   db.close()
   const restored = new LocalDatabase(join(dir, 'backup.sqlite'), join(root, 'migrations'))
   assert.equal(await restored.prepare("SELECT value FROM app_config WHERE key='test'").first('value'), 'persisted')
@@ -45,13 +45,13 @@ test('private local service, offline assets, encrypted-store contract and persis
     assert.equal((await fetch(service.origin + '/api/config')).status, 403)
     assert.equal((await request('/api/config', { headers: { Origin: 'https://untrusted.example' } })).status, 403)
     assert.equal((await request('/api/config', { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403)
-    for (const route of ['/','/settings','/query','/analysis','/arena','/ai','/top3','/atlas']) {
+    for (const route of ['/workspace','/','/settings','/query','/analysis','/arena','/ai','/top3','/atlas']) {
       const response = await request(route), html = await response.text()
       assert.equal(response.status, 200, route)
       assert.ok(response.headers.get('content-security-policy').includes("frame-ancestors 'none'"))
       assert.doesNotMatch(html, /(?:src|href)="https:\/\/cdn\./)
     }
-    for (const path of ['/vendor/tailwind.css','/vendor/axios.min.js','/vendor/chart.umd.js','/vendor/echarts.min.js','/vendor/fontawesome/css/all.min.css','/static/settings.js','/static/atlas.js','/static/atlas-core.js','/static/atlas-tools.js','/static/atlas.css','/static/atlas.svg']) {
+    for (const path of ['/vendor/tailwind.css','/vendor/axios.min.js','/vendor/chart.umd.js','/vendor/echarts.min.js','/vendor/fontawesome/css/all.min.css','/static/settings.js','/static/atlas.js','/static/atlas-core.js','/static/atlas-tools.js','/static/atlas.css','/static/atlas.svg','/static/platform.css','/static/platform.js','/static/studio.css','/static/studio.js']) {
       const response = await request(path)
       assert.equal(response.status, 200, path)
       assert.ok((await response.arrayBuffer()).byteLength > 100, path)
