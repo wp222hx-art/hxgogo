@@ -1,5 +1,9 @@
 # HashPlay · 链上哈希可验证公平游戏演示平台
 
+> **Windows 本地版**：现已支持 Electron + SQLite 桌面运行。安装、AI 配置、备份恢复和构建说明见 [DESKTOP.md](./DESKTOP.md)。
+
+> **下载安装**：[最新版](https://github.com/wp222hx-art/hxgogo/releases/latest) · [下载目录与历史版本](downloads/README.md) · [版本发布指南](docs/releases.md)
+
 ## 项目概述
 - **名称**: HashPlay
 - **定位**: 复刻「哈希竞猜」类玩法的完整机制，但 **只用虚拟积分、无任何支付/充提通道**。核心价值是演示 **Provably Fair（可验证公平）** 机制：每一局结果都能被任何第三方离线复算。
@@ -360,3 +364,5 @@ pm2 start ecosystem.config.cjs      # http://localhost:3000
 - [ ] 房间参数后台可配（周期、赔率、限额）
 - [ ] WebSocket/SSE 推送替代轮询（需 Durable Objects，BYOK 部署可选）
 - [ ] 多语言 / 移动端手势优化
+
+本地 0.2.0 的预测检验修正和验证口径见 [OPTIMIZATION.md](./OPTIMIZATION.md)。

@@ -6,38 +6,59 @@
 import { SOURCES } from './sync'
 import { findFirstBlockAtOrAfter, getNowBlock, type TronBlock } from './tron'
 import { extractFive } from './engine5'
+import { nextPeriod, periodAtTimeMs, periodTimeMs, sourceIntervalMs } from './period'
 
 const BJ = 8 * 3600_000
-/**
- * 期号 → 该期对应分钟的 UTC 毫秒。
- * 实测口径（与上游 1000 期逐条核对）：expect = YYYYMMDD + 序号 0001..1440，序号 N 对应北京时间“当日 00:00 + N 分钟”。
- * 例：202609060058 → 09-06 00:58；202609051440 → 09-06 00:00（当日最后一期跑到次日零点）。
- * 开奖区块 = 该分钟 +3s 的首个区块，openTime ≈ 分钟 +14s。
- */
-export function expectToMinuteMs(expect: string): number | null {
-  const m = /^(\d{4})(\d{2})(\d{2})(\d{4})$/.exec(expect); if (!m) return null
-  const seq = Number(m[4]); if (seq < 1 || seq > 1440) return null
-  return Date.UTC(+m[1], +m[2] - 1, +m[3]) - BJ + seq * 60_000
+/** 保留兼容入口；新调用应显式传入来源。 */
+export function expectToMinuteMs(expect: string, source = 'qkltj:6001'): number | null {
+  return periodTimeMs(expect, source)
 }
-/** 分钟时间戳 → 期号（与上面互逆：00:00 归到前一日的 1440） */
-export function minuteMsToExpect(ms: number): string {
-  const bj = new Date(ms + BJ - 60_000)   // 往前推 1 分钟取“所属日”，使 00:00 归为前一日 1440
-  const seq = bj.getUTCHours() * 60 + bj.getUTCMinutes() + 1
-  return `${bj.getUTCFullYear()}${String(bj.getUTCMonth() + 1).padStart(2, '0')}${String(bj.getUTCDate()).padStart(2, '0')}${String(seq).padStart(4, '0')}`
+export function minuteMsToExpect(ms: number, source = 'qkltj:6001'): string | null {
+  return periodAtTimeMs(ms, source)
 }
-const nextExpect = (e: string) => { const ms = expectToMinuteMs(e); return ms == null ? null : minuteMsToExpect(ms + 60_000) }
 
-/** 扫描 [from, to] 区间内缺失的期号（按分钟节拍生成完整序列，与库内比对） */
+function boundedDays(days = 7): number {
+  return Number.isFinite(days) ? Math.max(1, Math.min(30, Math.floor(days))) : 7
+}
+
+function summarizePeriods(rows: { expect: string; src?: string }[], source: string, limit = 500) {
+  const valid = rows.filter(r => periodTimeMs(r.expect, source) != null).sort((a, b) => a.expect.localeCompare(b.expect))
+  const have = new Set(valid.map(r => r.expect))
+  const first = valid[0]?.expect ?? null, last = valid[valid.length - 1]?.expect ?? null
+  const missing: string[] = [], byDay = new Map<string, { day: string; n: number; chain: number; expected: number }>()
+  const safeLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 500
+  let checked = 0, missingTotal = 0
+  let expect = first
+  // 最多 30 天的查询窗口，额外保护异常数据库中的时间跨度。
+  while (expect && last && expect <= last && checked < 60_000) {
+    checked++
+    const day = expect.slice(0, 8)
+    const stat = byDay.get(day) ?? { day, n: 0, chain: 0, expected: 0 }
+    stat.expected++; byDay.set(day, stat)
+    if (!have.has(expect)) {
+      missingTotal++
+      if (missing.length < safeLimit) missing.push(expect)
+    }
+    expect = nextPeriod(expect, source)
+  }
+  for (const row of valid) {
+    const stat = byDay.get(row.expect.slice(0, 8))
+    if (stat) { stat.n++; if (row.src === 'chain') stat.chain++ }
+  }
+  return {
+    checked, missing, missing_total: missingTotal, first, last,
+    invalid_periods: rows.length - valid.length,
+    truncated: !!expect && !!last && expect <= last,
+    days: [...byDay.values()].map(r => ({ ...r, missing: Math.max(0, r.expected - r.n), complete: r.expected === r.n })),
+  }
+}
+
+/** 按来源周期扫描实际观测到的首末期范围，包括跨日的完整缺失天。 */
 export async function scanGaps(db: D1Database, source: string, opts: { days?: number; limit?: number } = {}) {
-  const days = Math.min(30, opts.days ?? 7)
-  const rows = (await db.prepare(`SELECT expect FROM draws WHERE source=? AND open_ms>=? ORDER BY expect`).bind(source, Date.now() - days * 86400_000).all<any>()).results
-  if (rows.length < 2) return { checked: 0, missing: [] as string[], first: null, last: null }
-  const have = new Set(rows.map(r => r.expect))
-  const first = rows[0].expect, last = rows[rows.length - 1].expect
-  const missing: string[] = []
-  let e: string | null = first; let guard = 0
-  while (e && e < last && guard++ < 60_000) { if (!have.has(e)) missing.push(e); e = nextExpect(e) }
-  return { checked: guard, missing: missing.slice(0, opts.limit ?? 500), missing_total: missing.length, first, last }
+  const rows = (await db.prepare('SELECT expect FROM draws WHERE source=? AND open_ms>=? ORDER BY expect')
+    .bind(source, Date.now() - boundedDays(opts.days) * 86_400_000).all<{ expect: string }>()).results
+  const { days: _days, ...summary } = summarizePeriods(rows, source, opts.limit)
+  return summary
 }
 
 /** 用链上区块补齐一批缺失期（每次最多 max 期，串行以免打爆 TronGrid） */
@@ -48,7 +69,7 @@ export async function fillGapsFromChain(db: D1Database, source: string, expects:
   let i = 0
   for (const expect of expects.slice(0, max)) {
     if (i++ > 0) await new Promise(r => setTimeout(r, 250))   // 限速：避免公共节点 429
-    const minMs = expectToMinuteMs(expect); if (minMs == null) { failed++; continue }
+    const minMs = periodTimeMs(expect, source); if (minMs == null) { failed++; continue }
     const target = minMs + 3_000     // 分钟 + 3s 的第一个区块
     try {
       const blk = await findFirstBlockAtOrAfter(target, head || undefined)
@@ -58,7 +79,7 @@ export async function fillGapsFromChain(db: D1Database, source: string, expects:
       const openTime = new Date(openMs + BJ).toISOString().slice(0, 19).replace('T', ' ')
       await db.batch([
         db.prepare(`INSERT OR IGNORE INTO draws (source, expect, block, hash, n1,n2,n3,n4,n5, open_ms, opennumber, lotto_type, lotto_type_cn, open_time, src_id, mismatch, src) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-          .bind(source, expect, blk.number, blk.hash, five[0], five[1], five[2], five[3], five[4], openMs, five.join(','), 'trxbhffc', cfg.name, openTime, null, 0, 'chain'),
+          .bind(source, expect, blk.number, blk.hash, five[0], five[1], five[2], five[3], five[4], openMs, five.join(','), cfg.code === '6002' ? 'trxbh3fc' : cfg.code === '6003' ? 'trxbh5fc' : cfg.code === '6004' ? 'trxbh10fc' : 'trxbhffc', cfg.name, openTime, null, 0, 'chain'),
         db.prepare(`INSERT INTO gap_log (source, expect, method, block, ok, detail, created_ms) VALUES (?,?,?,?,?,?,?)`).bind(source, expect, 'chain', blk.number, 1, `ts=${blk.timestamp} ${five.join('')}`, ts),
       ])
       filled++; results.push({ expect, ok: true, block: blk.number, five: five.join('') })
@@ -70,13 +91,18 @@ export async function fillGapsFromChain(db: D1Database, source: string, expects:
   return { filled, failed, results }
 }
 
-/** 完整性报告：按天覆盖率 + 来源构成 + 最近补齐记录 */
+/** 完整性报告：覆盖率仅针对已观测首末期之间的范围。 */
 export async function coverageReport(db: D1Database, source: string, days = 7) {
-  const since = Date.now() - days * 86400_000
-  const byDay = (await db.prepare(`SELECT substr(expect,1,8) day, COUNT(*) n, SUM(CASE WHEN src='chain' THEN 1 ELSE 0 END) chain_n, MIN(CAST(substr(expect,9,4) AS INTEGER)) fs, MAX(CAST(substr(expect,9,4) AS INTEGER)) ls FROM draws WHERE source=? AND open_ms>=? GROUP BY day ORDER BY day`).bind(source, since).all<any>()).results
-  const days_ = byDay.map(r => ({ day: r.day, n: r.n, chain: r.chain_n, expected: r.ls - r.fs + 1, missing: r.ls - r.fs + 1 - r.n, complete: r.ls - r.fs + 1 === r.n }))
-  const gaps = await scanGaps(db, source, { days, limit: 50 })
-  const log = (await db.prepare(`SELECT expect, method, block, ok, detail, created_ms FROM gap_log WHERE source=? ORDER BY id DESC LIMIT 20`).bind(source).all<any>()).results
-  const total = (await db.prepare(`SELECT COUNT(*) n, SUM(CASE WHEN src='chain' THEN 1 ELSE 0 END) c, MIN(expect) f, MAX(expect) l FROM draws WHERE source=?`).bind(source).first<any>())
-  return { days: days_, missing: gaps.missing, missing_total: gaps.missing_total || 0, range: { first: gaps.first, last: gaps.last }, total: { n: total?.n || 0, chain: total?.c || 0, first: total?.f, last: total?.l }, recent_fills: log }
+  const since = Date.now() - boundedDays(days) * 86_400_000
+  const rows = (await db.prepare('SELECT expect, src FROM draws WHERE source=? AND open_ms>=? ORDER BY expect')
+    .bind(source, since).all<{ expect: string; src: string }>()).results
+  const summary = summarizePeriods(rows, source, 50)
+  const log = (await db.prepare('SELECT expect, method, block, ok, detail, created_ms FROM gap_log WHERE source=? ORDER BY id DESC LIMIT 20').bind(source).all<any>()).results
+  const total = (await db.prepare("SELECT COUNT(*) n, SUM(CASE WHEN src='chain' THEN 1 ELSE 0 END) c, MIN(expect) f, MAX(expect) l FROM draws WHERE source=?").bind(source).first<any>())
+  return {
+    days: summary.days, missing: summary.missing, missing_total: summary.missing_total,
+    invalid_periods: summary.invalid_periods, truncated: summary.truncated,
+    interval_ms: sourceIntervalMs(source), range: { first: summary.first, last: summary.last },
+    total: { n: total?.n || 0, chain: total?.c || 0, first: total?.f, last: total?.l }, recent_fills: log,
+  }
 }

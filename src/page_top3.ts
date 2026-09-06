@@ -1,3 +1,4 @@
+import { atlasEntry } from './atlas-entry'
 export const top3Page = () => `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -45,6 +46,7 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
     </div>
     <nav class="flex items-center gap-2 text-xs">
       <select id="source-sel" class="bg-slate-800 rounded-lg px-3 py-1.5 border border-slate-700"></select>
+      ${atlasEntry}
       <a href="/ai" class="bg-pink-500 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-brain mr-1"></i>AI 推荐</a>
       <a href="/arena" class="hidden md:inline-flex bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-ranking-star mr-1 text-emerald-400"></i>竞技场</a>
       <a href="/" class="bg-amber-500 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-dice mr-1"></i>游戏</a>
@@ -105,7 +107,7 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
     <div class="flex items-center justify-between mb-2"><h2 class="font-bold text-sm"><i class="fas fa-clock-rotate-left mr-2 text-cyan-400"></i>融合策略逐期战绩 <span class="text-xs text-slate-500 font-normal">点击展开该期 500 注与当期三位成员各自命中情况</span></h2><select id="hist-n" class="bg-slate-800 rounded-lg px-2 py-1 border border-slate-700 text-xs"><option value="12">最近 12 期</option><option value="30">最近 30 期</option><option value="60">最近 60 期</option></select></div>
     <div id="hist" class="space-y-2"></div>
   </section>
-  <p class="text-[11px] text-slate-600 leading-relaxed" id="foot">哈希开奖逐期独立，任何三位号理论概率恒为 1/1000；500 注理论命中率 50%，按 950× 赔率保本需 52.6%。「前三名」以目标期之前的滚动战绩排定（walk-forward，无前视），融合结果与所有策略同规则结算，由真实开奖逐期检验，不构成任何收益承诺。</p>
+  <p class="text-[11px] text-slate-600 leading-relaxed" id="foot">哈希开奖逐期独立，任何三位号理论概率恒为 1/1000；500 注理论命中率 50%，按 950× 赔率保本需 52.6%。「前三名」以目标期之前的滚动战绩排定（实验性滚动筛选），融合结果与所有策略同规则结算，由真实开奖逐期检验，不构成任何收益承诺。</p>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
 <script src="/static/top3.js"></script>

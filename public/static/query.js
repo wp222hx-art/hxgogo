@@ -84,6 +84,7 @@
       var d = r.data; if (!d.ok) throw new Error(d.error || 'query failed')
       S.tiers = d.tiers || []; S.rows = d.history || []; S.last = params
       renderHead(); renderSum(d.summary, S.rows.length); renderRows(S.rows, d.mode === 'expect' && S.rows[0] ? S.rows[0].expect : null)
+      if (d.filtered_hits) { $('sum').innerHTML = '<span class="text-amber-300 text-xs">当前仅展示命中记录，不能用筛选后的比例衡量整体准确率。</span>'; $('foot').textContent = '已过滤未命中记录；取消“只看命中”后可查看完整成绩。' }
       $('q-msg').textContent = label + ' · ' + S.rows.length + ' 条'
       if (d.mode === 'expect') { if (S.rows[0]) showOne(S.rows[0]); else { $('one').classList.add('hidden'); $('q-msg').innerHTML = '<span class="text-amber-400">未找到该期 AI 记录（可能尚未开奖或早于 AI 上线）</span>' } }
       else $('one').classList.add('hidden')
@@ -128,14 +129,14 @@
   var TA = { conf: 0.6, round: 10 }
   var money = function (n) { n = Math.round(n || 0); return '<span class="' + (n >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + (n > 0 ? '+' : '') + n.toLocaleString('zh-CN') + '</span>' }
   function verdictBadge(v, edge) {
-    var m = { favorable: ['bg-emerald-500 text-black', '有利'], marginal: ['bg-amber-400 text-black', '边际'], unfavorable: ['bg-slate-700 text-slate-300', '不利'] }[v] || ['bg-slate-800 text-slate-500', '—']
+    var m = { insufficient_evidence: ['bg-slate-700 text-slate-300', '证据不足'], favorable: ['bg-emerald-500 text-black', '历史偏高'], marginal: ['bg-amber-400 text-black', '边际'], unfavorable: ['bg-slate-700 text-slate-300', '不利'] }[v] || ['bg-slate-800 text-slate-500', '—']
     return '<span class="px-2 py-0.5 rounded text-[11px] font-bold ' + m[0] + '">' + m[1] + (edge != null ? ' ' + (edge >= 0 ? '+' : '') + (edge * 100).toFixed(1) + '%' : '') + '</span>'
   }
   function bar(p, color) { var w = Math.max(0, Math.min(100, (p || 0) * 100)); return '<span class="inline-block h-1.5 rounded bg-slate-800 align-middle" style="width:70px"><span class="block h-1.5 rounded" style="width:' + w + '%;background:' + (color || '#22d3ee') + '"></span></span>' }
   function renderTA(d) {
     $('ta-round').textContent = d.tiers && d.tiers[0] ? d.tiers[0].pit.round : TA.round
     var nf = d.next_forecast
-    $('ta-next').innerHTML = '<span class="text-slate-500">样本 ' + d.periods + ' 期（' + esc(d.first || '') + ' → ' + esc(d.last || '') + '）</span>' + (nf ? ' · 下一期 <span class="mono text-amber-300">' + esc(nf.expect) + '</span> AI 置信度 <b class="mono ' + (nf.double_ok ? 'text-emerald-300' : 'text-slate-300') + '">' + pct(nf.confidence, 0) + '</b> → ' + (nf.double_ok ? '<span class="text-emerald-300">达到倍投阈值</span>' : '<span class="text-slate-500">未达阈值，倍投策略本期平注</span>') : ' · 下一期 AI 尚未锁定')
+    $('ta-next').innerHTML = '<span class="text-slate-500">已验证样本 ' + d.periods + ' 期（' + esc(d.first || '') + ' → ' + esc(d.last || '') + '）</span>' + (nf ? ' · 下一期 <span class="mono text-amber-300">' + esc(nf.expect) + '</span> · AI 自评分 ' + pct(nf.confidence, 0) + '（未校准，不能作为加码依据）' : ' · 下一期 AI 尚未锁定')
     $('ta-cards').innerHTML = (d.tiers || []).map(function (t) {
       var nx = t.next, sk = t.streak, pit = t.pit, mg = t.martingale, s = mg.sims
       var condRows = ['0', '1', '2', '3', '4', '5', '6+'].map(function (k) { var c = sk.cond[k]; var cur = String(sk.current >= 6 ? '6+' : sk.current) === k; return '<span class="mono text-[10.5px] px-1.5 py-0.5 rounded ' + (cur ? 'bg-cyan-500/20 text-cyan-200 ring-1 ring-cyan-400/50' : 'bg-slate-800 text-slate-400') + '" title="历史上已连挂 ' + k + ' 期时，下一期命中 ' + c.hits + '/' + c.n + '">挂' + k + '→' + (c.rate == null ? '—' : pct(c.rate, 0)) + '</span>' }).join(' ')
@@ -147,20 +148,20 @@
         // 头
         '<div class="flex items-center justify-between"><div><b class="text-base ' + (t.custom ? 'text-violet-300' : t.sharp ? 'text-yellow-200' : 'text-slate-100') + '">' + (t.sharp ? '精准 ' : t.key === 'ai' ? '主推 ' : '独立 ') + tierShort(t) + ' 注</b><span class="text-[11px] text-slate-500 ml-2">保本 ' + pct(t.breakeven, 1) + ' · ' + t.hits + '/' + t.periods + '</span></div>' + verdictBadge(nx.verdict, nx.edge_vs_breakeven) + '</div>' +
         // 下一期概率
-        '<div><div class="text-[11px] text-slate-500 mb-1"><i class="fas fa-bullseye mr-1 text-amber-400"></i>下一期命中概率</div>' +
-          '<div class="flex items-end gap-3"><div><div class="mono text-2xl font-black ' + (nx.estimate >= t.breakeven ? 'text-emerald-300' : 'text-slate-200') + '">' + pct(nx.estimate, 1) + '</div><div class="text-[10.5px] text-slate-500">综合估计</div></div>' +
-          '<div class="text-[10.5px] text-slate-500 leading-5 mono">理论 ' + pct(nx.theory, 1) + ' · 全量 ' + pct(nx.all, 1) + (nx.ci_all ? ' <span class="text-slate-600">[' + pct(nx.ci_all.lo, 0) + '–' + pct(nx.ci_all.hi, 0) + ']</span>' : '') + '<br>近100 ' + pct(nx.last100, 1) + ' · 近30 ' + pct(nx.last30, 1) + '<br>当前连挂 <b class="' + (nx.current_streak >= 4 ? 'text-rose-300' : 'text-slate-300') + '">' + nx.current_streak + '</b> 期 → 条件命中 <b class="text-slate-200">' + (nx.cond_after_current_streak == null ? '样本不足' : pct(nx.cond_after_current_streak, 1)) + '</b></div></div></div>' +
+        '<div><div class="text-[11px] text-slate-500 mb-1"><i class="fas fa-bullseye mr-1 text-amber-400"></i>理论基线与历史检验</div>' +
+          '<div class="flex items-end gap-3"><div><div class="mono text-2xl font-black ' + (nx.estimate >= t.breakeven ? 'text-emerald-300' : 'text-slate-200') + '">' + pct(nx.estimate, 1) + '</div><div class="text-[10.5px] text-slate-500">独立均匀假设下的基线</div></div>' +
+          '<div class="text-[10.5px] text-slate-500 leading-5 mono">理论 ' + pct(nx.theory, 1) + ' · 全量 ' + pct(nx.all, 1) + (nx.ci_all ? ' <span class="text-slate-600">[' + pct(nx.ci_all.lo, 0) + '–' + pct(nx.ci_all.hi, 0) + ']</span>' : '') + '<br>近100 ' + pct(nx.last100, 1) + ' · 近30 ' + pct(nx.last30, 1) + '<br>当前连挂 <b class="' + (nx.current_streak >= 4 ? 'text-rose-300' : 'text-slate-300') + '">' + nx.current_streak + '</b> 期 → 历史条件频率 <b class="text-slate-200">' + (nx.cond_after_current_streak == null ? '样本不足' : pct(nx.cond_after_current_streak, 1)) + '</b></div></div></div>' +
         // 长龙
         '<div><div class="text-[11px] text-slate-500 mb-1"><i class="fas fa-dragon mr-1 text-rose-400"></i>长龙机制 <span class="text-slate-600">最长 ' + sk.longest + ' · 分布 1-6+</span> ' + dist + '</div>' +
           '<div class="flex flex-wrap gap-1 mb-1">' + condRows + '</div>' +
           '<div class="text-[10.5px] text-slate-500">存活率（挂 L 期后继续挂，理论 ' + pct(1 - nx.theory, 0) + '）：' + surv + '</div></div>' +
         // 进坑
-        '<div class="grid grid-cols-2 gap-3"><div><div class="text-[11px] text-slate-500 mb-1"><i class="fas fa-arrow-trend-down mr-1 text-rose-400"></i>连续进坑（理论 → 估计）</div>' + pits + '</div>' +
+        '<div class="grid grid-cols-2 gap-3"><div><div class="text-[11px] text-slate-500 mb-1"><i class="fas fa-arrow-trend-down mr-1 text-rose-400"></i>连续未中（理论基线）</div>' + pits + '</div>' +
           '<div><div class="text-[11px] text-slate-500 mb-1">一轮 ' + pit.round + ' 期内出现 ≥4 连挂</div><div class="mono text-xl font-black ' + (pit.at_least_one_4run_in_round.est > 0.5 ? 'text-rose-300' : 'text-slate-200') + '">' + pct(pit.at_least_one_4run_in_round.est, 1) + '</div><div class="text-[10.5px] text-slate-500">理论 ' + pct(pit.at_least_one_4run_in_round.theory, 1) + '</div>' + bar(pit.at_least_one_4run_in_round.est, '#f43f5e') + '</div></div>' +
         // 倍投
         '<div><div class="text-[11px] text-slate-500 mb-1"><i class="fas fa-layer-group mr-1 text-emerald-400"></i>每 ' + mg.round + ' 期倍投回测 <span class="text-slate-600">命中后下一期实测命中 ' + pct(mg.after_hit.rate, 1) + '（' + mg.after_hit.hits + '/' + mg.after_hit.n + '）' + (mg.conf_threshold ? ' · 置信≥' + Math.round(mg.conf_threshold * 100) + '% 时 ' + pct(mg.after_hit_conf.rate, 1) + '（' + mg.after_hit_conf.hits + '/' + mg.after_hit_conf.n + '）' : '') + '</span></div>' +
           '<div class="overflow-x-auto"><table class="w-full text-[11px]" style="min-width:380px"><thead><tr class="text-slate-600"><th class="l font-normal">策略</th><th class="font-normal">累计</th><th class="font-normal">ROI</th><th class="font-normal">最大回撤</th><th class="font-normal">赢轮</th><th class="font-normal">最差轮</th></tr></thead><tbody>' +
-          simRow('平注', s.flat) + simRow('命中后翻倍', s.win_double, true) + simRow('挂后加码 1-2-4', s.loss_martin) + '</tbody></table></div>' +
+          simRow('平注', s.flat) + simRow('命中后翻倍（历史模拟）', s.win_double) + simRow('挂后加码 1-2-4', s.loss_martin) + '</tbody></table></div>' +
           '<div class="text-[10.5px] text-slate-600 mt-1">翻倍下注 ' + s.win_double.doubled_bets + ' 次，其中命中 ' + s.win_double.doubled_hit + '（' + pct(s.win_double.doubled_hit_rate, 1) + '）</div></div>' +
         '</div>'
     }).join('')

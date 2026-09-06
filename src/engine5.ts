@@ -22,7 +22,14 @@ export function extractFive(hash: string): Five | null {
 }
 
 export function computeOutcomes5(hash: string): Outcomes5 | null {
-  const nums = extractFive(hash); if (!nums) return null
+  const nums = extractFive(hash)
+  return nums ? outcomesFromNumbers(nums) : null
+}
+
+/** The settlement rules are shared by official draw numbers and hash-only games. */
+export function outcomesFromNumbers(numbers: readonly number[]): Outcomes5 | null {
+  const nums = [...numbers] as Five
+  if (nums.length !== 5 || !nums.every(n => Number.isInteger(n) && n >= 0 && n <= 9)) return null
   const sum = nums.reduce((a, b) => a + b, 0)
   const [a, b, c] = nums
   const s = [a, b, c].sort((x, y) => x - y)

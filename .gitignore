@@ -34,3 +34,19 @@ lerna-debug.log*
 .wrangler/
 .dev.vars
 dist/
+
+# Desktop artifacts and private local data
+desktop-build/
+release/
+output/
+.env.local
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+secrets.bin
+
+# Local reference originals; analysis indexes are tracked
+彩票图片/
+.env.*
+!.env.example
+*.sqlite-journal

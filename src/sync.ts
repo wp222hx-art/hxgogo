@@ -1,15 +1,16 @@
 // ============ 外部开奖数据同步（qkltj）：按开奖节拍实时同步 + 周期审计 + 缓存版本 ============
 import { extractFive } from './engine5'
+import { periodTimeMs, sourceIntervalMs } from './period'
 
 export const SOURCES: Record<string, { name: string; code: string; intervalMs: number; chain: 'tron' | 'eth' }> = {
-  'qkltj:6001': { name: '哈希分分彩', code: '6001', intervalMs: 60_000, chain: 'tron' },
-  'qkltj:6002': { name: '哈希三分彩', code: '6002', intervalMs: 180_000, chain: 'tron' },
-  'qkltj:6003': { name: '哈希五分彩', code: '6003', intervalMs: 300_000, chain: 'tron' },
-  'qkltj:6004': { name: '哈希十分彩', code: '6004', intervalMs: 600_000, chain: 'tron' },
-  'qkltj:7001': { name: '以太坊分分彩', code: '7001', intervalMs: 60_000, chain: 'eth' },
-  'local:five': { name: 'HashPlay 五位厅', code: '', intervalMs: 60_000, chain: 'tron' },
+  'qkltj:6001': { name: '哈希分分彩', code: '6001', intervalMs: sourceIntervalMs('qkltj:6001')!, chain: 'tron' },
+  'qkltj:6002': { name: '哈希三分彩', code: '6002', intervalMs: sourceIntervalMs('qkltj:6002')!, chain: 'tron' },
+  'qkltj:6003': { name: '哈希五分彩', code: '6003', intervalMs: sourceIntervalMs('qkltj:6003')!, chain: 'tron' },
+  'qkltj:6004': { name: '哈希十分彩', code: '6004', intervalMs: sourceIntervalMs('qkltj:6004')!, chain: 'tron' },
+  'qkltj:7001': { name: '以太坊分分彩', code: '7001', intervalMs: sourceIntervalMs('qkltj:7001')!, chain: 'eth' },
+  'local:five': { name: 'HashPlay 五位厅', code: '', intervalMs: sourceIntervalMs('local:five')!, chain: 'tron' },
 }
-export const isSource = (s: string) => s in SOURCES
+export const isSource = (s: string) => Object.prototype.hasOwnProperty.call(SOURCES, s)
 
 /** 官方入库延迟：区块在分钟 :03（ETH :11），openTime ≈ 区块时间 +10~12s → 新一期最早约在整分 +15s 可取到 */
 const PUBLISH_DELAY_MS = 15_000
@@ -19,13 +20,15 @@ const CATCHUP_MS = 4_000
 const AUDIT_EVERY_MS = 5 * 60_000
 const AUDIT_ROWS = 100
 
-/** 数据版本：任何写入即 +1，供分析缓存 key 使用（同期号字段被修正也会失效） */
+/** 数据版本：开奖事务成功且内容发生改变即 +1，供分析缓存 key 使用（同期号字段被修正也会失效） */
 const versions = new Map<string, number>()
 export const dataVersion = (source: string) => versions.get(source) || 0
 function bump(source: string) { versions.set(source, dataVersion(source) + 1) }
 /** 缓存清理钩子（index.tsx 注册） */
 let cacheInvalidator: ((source: string) => void) | null = null
 export const onInvalidate = (fn: (source: string) => void) => { cacheInvalidator = fn }
+/** 仅在共享开奖表的真实变更成功提交后调用，供同步和补漏共用。 */
+export function notifyDrawChange(source: string): void { bump(source); cacheInvalidator?.(source) }
 
 /** openTime 为 UTC+8 字串 */
 function parseOpenTime(s: string): number {
@@ -75,90 +78,121 @@ function dueInfo(meta: any, cfg: { intervalMs: number }, now: number) {
   return { due: true, mode: now - expectedNext > 2 * cfg.intervalMs ? 'catchup' as const : 'incremental' as const }
 }
 
-/**
- * 实时同步：
- *  - 按开奖节拍调度：下一期理论 openTime 之前不请求；到点后每 4s 追赶直到拿到新期
- *  - 每 5 分钟做一次 100 行审计（逐字段比对、UPSERT 修正）
- *  - force=true：跳过节拍，拉 AUDIT_ROWS 行全量核对，清空该源分析缓存，返回详细报告
- */
-export async function syncSource(db: D1Database, source: string, force = false): Promise<SyncResult> {
-  const cfg = SOURCES[source]; if (!cfg || !cfg.code) return { source, inserted: 0, skipped: true, reason: 'local source' }
+/** 同一数据库/来源的请求共享一次同步，避免慢响应覆盖随后请求的新结果。 */
+const inFlight = new WeakMap<object, Map<string, Promise<SyncResult>>>()
+export function syncSource(db: D1Database, source: string, force = false): Promise<SyncResult> {
+  const cfg = SOURCES[source]
+  if (!cfg || !cfg.code) return Promise.resolve({ source, inserted: 0, skipped: true, reason: 'local source' })
+  let tasks = inFlight.get(db as object)
+  if (!tasks) { tasks = new Map(); inFlight.set(db as object, tasks) }
+  const running = tasks.get(source); if (running) return running
+  const task = synchronize(db, source, force).finally(() => tasks!.delete(source))
+  tasks.set(source, task)
+  return task
+}
+
+function officialNumbers(raw: unknown): number[] | null {
+  if (typeof raw !== 'string') return null
+  const tokens = raw.split(',').map(s => s.trim())
+  return tokens.length === 5 && tokens.every(s => /^[0-9]$/.test(s)) ? tokens.map(Number) : null
+}
+const positiveInteger = (value: unknown) => {
+  const n = Number(value); return Number.isSafeInteger(n) && n > 0 ? n : null
+}
+const textOrNull = (value: unknown) => typeof value === 'string' ? value : null
+const comparedFields = ['block','hash','n1','n2','n3','n4','n5','open_ms','opennumber','lotto_type','lotto_type_cn','open_time','src_id','mismatch','src'] as const
+
+async function synchronize(db: D1Database, source: string, force: boolean): Promise<SyncResult> {
+  const cfg = SOURCES[source]
   const meta = await db.prepare('SELECT * FROM sync_meta WHERE source=?').bind(source).first<any>()
   const now = Date.now()
-  let mode: SyncResult['mode']
-  if (force) mode = 'force'
-  else {
-    const d = dueInfo(meta, cfg, now)
-    const auditDue = meta && now - (meta.last_audit_ms || 0) >= AUDIT_EVERY_MS
-    if (!d.due && !auditDue) return { source, inserted: 0, skipped: true, reason: 'not due', next_due_ms: d.next, latest_expect: meta?.latest_expect, latest_open_ms: meta?.latest_open_ms }
-    mode = auditDue && !d.due ? 'audit' : d.mode
-  }
-  // 抢占：先写 last_sync_ms 防止并发重复拉
-  await db.prepare('INSERT INTO sync_meta (source, last_sync_ms, total) VALUES (?,?,0) ON CONFLICT(source) DO UPDATE SET last_sync_ms=excluded.last_sync_ms').bind(source, now).run()
-  const rows = (!meta || meta.total === 0) ? 1000
-    : mode === 'force' || mode === 'audit' ? AUDIT_ROWS
-    : mode === 'catchup' ? Math.min(1000, Math.ceil((now - (meta.latest_open_ms || meta.last_sync_ms)) / cfg.intervalMs) + 10)
-    : 5
+  const skipped = (reason: string, next: number): SyncResult => ({ source, inserted: 0, skipped: true, reason, next_due_ms: next, latest_expect: meta?.latest_expect, latest_open_ms: meta?.latest_open_ms })
+  // 手动强制同步也不能绕过故障退避或每源最短请求间隔。
+  if (meta?.fail_streak > 0 && meta.next_due_ms > now) return skipped('failure backoff', meta.next_due_ms)
+  if (meta?.last_sync_ms && now - meta.last_sync_ms < CATCHUP_MS) return skipped('throttled', meta.last_sync_ms + CATCHUP_MS)
+  const d = dueInfo(meta, cfg, now), auditDue = !meta || !meta.total || now - (meta.last_audit_ms || 0) >= AUDIT_EVERY_MS
+  if (!force && !d.due && !auditDue) return skipped('not due', d.next || now + CATCHUP_MS)
+  const mode: SyncResult['mode'] = force ? 'force' : auditDue && !d.due ? 'audit' : d.mode
+  const isAudit = force || auditDue
+  await db.prepare('INSERT INTO sync_meta (source,last_sync_ms,total) VALUES (?,?,0) ON CONFLICT(source) DO UPDATE SET last_sync_ms=excluded.last_sync_ms').bind(source, now).run()
+  const behindRows = Math.min(1000, Math.max(5, Math.ceil((now - (meta?.latest_open_ms || meta?.last_sync_ms || now)) / cfg.intervalMs) + 10))
+  const rows = !meta || !meta.total ? 1000 : Math.min(1000, Math.max(isAudit ? AUDIT_ROWS : 5, mode === 'catchup' ? behindRows : 5))
   const t0 = Date.now()
   try {
-    const data = await fetchQkltj(cfg.code, rows)
-    const latency = Date.now() - t0
-    // 本地已有行（用于逐字段比对与变更统计）
-    const local = new Map<string, any>()
-    const lrows = (await db.prepare('SELECT expect, block, hash, opennumber, open_time FROM draws WHERE source=? ORDER BY open_ms DESC LIMIT ?').bind(source, Math.min(1000, data.length + 50)).all<any>()).results
-    for (const r of lrows) local.set(r.expect, r)
-    const stmts: D1PreparedStatement[] = []
-    const diffs: SyncResult['diffs'] = []
-    let inserted = 0, updated = 0, unchanged = 0
-    let latestExpect: string | null = null, latestOpen = 0
-    for (const r of data) {
-      if (!r || !r.hash || !r.expect) continue
-      const expect = String(r.expect)
-      // 严格以官方 opennumber 为准；hash 推算仅用于交叉校验（不一致标记 mismatch=1）
-      const official = typeof r.opennumber === 'string' ? r.opennumber.split(',').map((x: string) => Number(x.trim())) : []
-      const derived = extractFive(r.hash)
-      const five = official.length === 5 && official.every((x: number) => Number.isInteger(x) && x >= 0 && x <= 9) ? official : derived
-      if (!five) continue
-      const mismatch = derived && official.length === 5 && derived.some((v, i) => v !== official[i]) ? 1 : 0
-      const openMs = parseOpenTime(r.openTime)
-      if (openMs > latestOpen) { latestOpen = openMs; latestExpect = expect }
-      const l = local.get(expect)
-      if (!l) inserted++
-      else {
-        const fields: [string, any, any][] = [['block', l.block, Number(r.block) || null], ['hash', l.hash, r.hash], ['opennumber', l.opennumber, r.opennumber ?? null], ['openTime', l.open_time, r.openTime ?? null]]
-        const changed = fields.filter(([, a, b]) => a !== b)
-        if (!changed.length) { unchanged++; continue }
-        updated++
-        for (const [field, a, b] of changed) if (diffs.length < 30) diffs.push({ expect, field, local: a, remote: b })
+    const data = await fetchQkltj(cfg.code, rows), latency = Date.now() - t0
+    if (!data.length) throw new Error('upstream returned no records; existing data retained')
+    const normalized = new Map<string, any>()
+    for (const raw of data.slice(0, 1000)) {
+      if (!raw || typeof raw.hash !== 'string' || !raw.hash.trim() || raw.expect == null) continue
+      const expect = String(raw.expect)
+      if (periodTimeMs(expect, source) == null) continue
+      const derived = extractFive(raw.hash), hasOfficial = raw.opennumber !== undefined && raw.opennumber !== null
+      const official = hasOfficial ? officialNumbers(raw.opennumber) : null
+      // 提供了非法官方号码时拒绝该行，不能悄悄用哈希换掉坏的官方字段。
+      if (hasOfficial && !official) continue
+      const five = official || derived
+      const openMs = typeof raw.openTime === 'string' ? parseOpenTime(raw.openTime) : NaN
+      if (!five || !Number.isFinite(openMs)) continue
+      const record = {
+        expect, block: positiveInteger(raw.block), hash: raw.hash,
+        n1: five[0], n2: five[1], n3: five[2], n4: five[3], n5: five[4], open_ms: openMs,
+        opennumber: hasOfficial ? raw.opennumber : null,
+        lotto_type: textOrNull(raw.lottoType), lotto_type_cn: textOrNull(raw.lottoTypeCn),
+        open_time: raw.openTime, src_id: positiveInteger(raw.id),
+        mismatch: official && derived && derived.some((n, i) => n !== official[i]) ? 1 : 0, src: 'qkltj',
       }
-      stmts.push(db.prepare(`INSERT INTO draws (source, expect, block, hash, n1,n2,n3,n4,n5, open_ms, opennumber, lotto_type, lotto_type_cn, open_time, src_id, mismatch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(source, expect) DO UPDATE SET block=excluded.block, hash=excluded.hash, n1=excluded.n1, n2=excluded.n2, n3=excluded.n3, n4=excluded.n4, n5=excluded.n5, open_ms=excluded.open_ms,
-          opennumber=excluded.opennumber, lotto_type=excluded.lotto_type, lotto_type_cn=excluded.lotto_type_cn, open_time=excluded.open_time, src_id=excluded.src_id, mismatch=excluded.mismatch`)
-        .bind(source, expect, Number(r.block) || null, r.hash, five[0], five[1], five[2], five[3], five[4], openMs, r.opennumber ?? null, r.lottoType ?? null, r.lottoTypeCn ?? null, r.openTime ?? null, r.id ?? null, mismatch))
+      const duplicate = normalized.get(expect)
+      if (duplicate && JSON.stringify(duplicate) !== JSON.stringify(record)) throw new Error(`upstream has conflicting rows for ${expect}; existing data retained`)
+      normalized.set(expect, record)
     }
-    for (let i = 0; i < stmts.length; i += 100) await db.batch(stmts.slice(i, i + 100))
-    const cnt = await db.prepare('SELECT COUNT(*) c, MAX(open_ms) m FROM draws WHERE source=?').bind(source).first<any>()
-    // 元数据：最新期、下一期到点时间、审计统计
-    const curLatestOpen = Math.max(latestOpen, cnt.m || 0)
-    const curLatestExpect = latestOpen >= (cnt.m || 0) ? latestExpect : (meta?.latest_expect ?? latestExpect)
-    const nextDue = curLatestOpen ? curLatestOpen + cfg.intervalMs : now + CATCHUP_MS
-    const isAudit = mode === 'force' || mode === 'audit' || !meta || meta.total === 0
-    await db.prepare(`UPDATE sync_meta SET total=?, last_error=NULL, fail_streak=0, latest_expect=?, latest_open_ms=?, next_due_ms=?, last_ok_ms=?, last_inserted=?, last_rows=?, last_latency_ms=?
-        ${isAudit ? ', last_audit_ms=?, audit_rows=?, audit_diff=?, audit_fixed=?' : ''} WHERE source=?`)
-      .bind(...[cnt.c, curLatestExpect, curLatestOpen, nextDue, Date.now(), inserted, data.length, latency, ...(isAudit ? [Date.now(), data.length, updated, updated] : []), source]).run()
-    await resolveAlerts(db, source, now)
-    if (inserted || updated || force) { bump(source); cacheInvalidator?.(source) }
-    return { source, mode, fetched: data.length, inserted, updated, unchanged, latest_expect: curLatestExpect, latest_open_ms: curLatestOpen, next_due_ms: nextDue, latency_ms: latency, consistent: updated === 0, diffs }
+    if (!normalized.size) throw new Error('upstream has no valid records; existing data retained')
+    const local = new Map<string, any>()
+    const existing = (await db.prepare('SELECT * FROM draws WHERE source=? AND expect IN (SELECT value FROM json_each(?))').bind(source, JSON.stringify([...normalized.keys()])).all<any>()).results
+    for (const row of existing) local.set(row.expect, row)
+    let inserted = 0, updated = 0, unchanged = 0
+    const changes: any[] = [], diffs: NonNullable<SyncResult['diffs']> = []
+    for (const row of normalized.values()) {
+      const old = local.get(row.expect)
+      if (!old) inserted++
+      else {
+        const fields = comparedFields.filter(field => old[field] !== row[field])
+        if (!fields.length) { unchanged++; continue }
+        updated++
+        for (const field of fields) if (diffs.length < 30) diffs.push({ expect: row.expect, field, local: old[field], remote: row[field] })
+      }
+      changes.push(row)
+    }
+    const statements: D1PreparedStatement[] = []
+    if (changes.length) statements.push(db.prepare(`INSERT INTO draws(source,expect,block,hash,n1,n2,n3,n4,n5,open_ms,opennumber,lotto_type,lotto_type_cn,open_time,src_id,mismatch,src)
+      SELECT ?,json_extract(value,'$.expect'),json_extract(value,'$.block'),json_extract(value,'$.hash'),json_extract(value,'$.n1'),json_extract(value,'$.n2'),json_extract(value,'$.n3'),json_extract(value,'$.n4'),json_extract(value,'$.n5'),json_extract(value,'$.open_ms'),json_extract(value,'$.opennumber'),json_extract(value,'$.lotto_type'),json_extract(value,'$.lotto_type_cn'),json_extract(value,'$.open_time'),json_extract(value,'$.src_id'),json_extract(value,'$.mismatch'),json_extract(value,'$.src')
+      FROM json_each(?) WHERE 1
+      ON CONFLICT(source,expect) DO UPDATE SET ${comparedFields.map(field => `${field}=excluded.${field}`).join(',')}`).bind(source, JSON.stringify(changes)))
+    const completed = Date.now()
+    statements.push(db.prepare(`UPDATE sync_meta SET
+      total=(SELECT COUNT(*) FROM draws WHERE source=?),
+      latest_expect=(SELECT expect FROM draws WHERE source=? ORDER BY open_ms DESC,expect DESC LIMIT 1),
+      latest_open_ms=COALESCE((SELECT MAX(open_ms) FROM draws WHERE source=?),0),
+      next_due_ms=COALESCE((SELECT MAX(open_ms)+? FROM draws WHERE source=?),?),
+      last_error=NULL,fail_streak=0,last_ok_ms=?,last_inserted=?,last_rows=?,last_latency_ms=?
+      ${isAudit ? ',last_audit_ms=?,audit_rows=?,audit_diff=?,audit_fixed=?' : ''}
+      WHERE source=? RETURNING total,latest_expect,latest_open_ms,next_due_ms`)
+      .bind(source,source,source,cfg.intervalMs,source,completed+CATCHUP_MS,completed,inserted,data.length,latency,...(isAudit ? [completed,data.length,updated,updated] : []),source))
+    // 单个事务覆盖全部开奖与元数据；任何一行/元数据失败都不会留下“半批”。
+    const committed = await db.batch<any>(statements)
+    const current = committed.at(-1)?.results?.[0] as any
+    if (changes.length) notifyDrawChange(source)
+    // 告警整理失败不撤销已提交的数据，也不把已提交的同步报告为失败。
+    try { await resolveAlerts(db, source, completed) } catch (error) { console.error('sync alert cleanup', source, error) }
+    return { source, mode, fetched: data.length, inserted, updated, unchanged, latest_expect: current?.latest_expect ?? null, latest_open_ms: current?.latest_open_ms ?? 0, next_due_ms: current?.next_due_ms ?? completed + CATCHUP_MS, latency_ms: latency, consistent: updated === 0, diffs }
   } catch (e: any) {
-    const msg = String(e.message || e)
-    await db.prepare('UPDATE sync_meta SET last_error=?, fail_streak=fail_streak+1, last_fail_ms=? WHERE source=?').bind(msg, now, source).run()
-    const m2 = await db.prepare('SELECT fail_streak FROM sync_meta WHERE source=?').bind(source).first<any>()
-    // 连续 3 次失败 → 记一条告警（同一未解决告警不重复）
-    if ((m2?.fail_streak || 0) >= 3) {
+    const msg = String(e.message || e), failedAt = Date.now(), failures = (meta?.fail_streak || 0) + 1
+    const retryAt = failedAt + Math.min(5 * 60_000, CATCHUP_MS * 2 ** Math.min(7, failures - 1))
+    await db.prepare('UPDATE sync_meta SET last_error=?,fail_streak=fail_streak+1,last_fail_ms=?,next_due_ms=? WHERE source=?').bind(msg,failedAt,retryAt,source).run()
+    if (failures >= 3) {
       const open = await db.prepare(`SELECT id FROM sync_alerts WHERE source=? AND kind='fetch_fail' AND resolved_ms IS NULL`).bind(source).first()
-      if (!open) await db.prepare(`INSERT INTO sync_alerts (source, kind, detail, created_ms) VALUES (?,?,?,?)`).bind(source, 'fetch_fail', `连续 ${m2.fail_streak} 次拉取失败：${msg}`, now).run()
+      if (!open) await db.prepare('INSERT INTO sync_alerts(source,kind,detail,created_ms) VALUES (?,?,?,?)').bind(source,'fetch_fail',`连续 ${failures} 次拉取失败：${msg}`,failedAt).run()
     }
-    return { source, mode, inserted: 0, error: msg }
+    return { source, mode, inserted: 0, next_due_ms: retryAt, error: msg }
   }
 }
 /** 成功后调用：关闭未解决告警并记 recovered */
@@ -174,17 +208,22 @@ async function resolveAlerts(db: D1Database, source: string, now: number) {
 /** 同步状态（供 /api/sync/status 与前端状态条） */
 export async function syncStatus(db: D1Database, source: string) {
   const cfg = SOURCES[source]
-  const meta = await db.prepare('SELECT * FROM sync_meta WHERE source=?').bind(source).first<any>()
+  const meta = await db.prepare(`SELECT m.*,
+      (SELECT COUNT(*) FROM draws WHERE source=?) AS canonical_total,
+      (SELECT expect FROM draws WHERE source=? ORDER BY open_ms DESC,expect DESC LIMIT 1) AS canonical_expect,
+      (SELECT MAX(open_ms) FROM draws WHERE source=?) AS canonical_open_ms
+    FROM (SELECT ? AS requested_source) q LEFT JOIN sync_meta m ON m.source=q.requested_source`).bind(source,source,source,source).first<any>()
   const now = Date.now()
-  const lag = meta?.latest_open_ms ? now - meta.latest_open_ms : null
+  const latestOpen = meta?.canonical_open_ms ?? null
+  const lag = latestOpen != null ? now - latestOpen : null
   // 新鲜度：距最新期 openTime 在 (interval + 25s) 内视为实时
   const fresh = lag != null && lag < cfg.intervalMs + PUBLISH_DELAY_MS + 10_000
   return {
     source, name: cfg.name, interval_ms: cfg.intervalMs, now,
-    latest_expect: meta?.latest_expect ?? null, latest_open_ms: meta?.latest_open_ms ?? null, lag_ms: lag,
-    next_due_ms: meta?.next_due_ms ?? null, expected_publish_ms: meta?.latest_open_ms ? meta.latest_open_ms + cfg.intervalMs : null,
+    latest_expect: meta?.canonical_expect ?? null, latest_open_ms: latestOpen, lag_ms: lag,
+    next_due_ms: meta?.next_due_ms ?? null, expected_publish_ms: latestOpen != null ? latestOpen + cfg.intervalMs : null,
     last_sync_ms: meta?.last_sync_ms ?? null, last_ok_ms: meta?.last_ok_ms ?? null, last_latency_ms: meta?.last_latency_ms ?? null,
-    last_inserted: meta?.last_inserted ?? 0, last_rows: meta?.last_rows ?? 0, total: meta?.total ?? 0,
+    last_inserted: meta?.last_inserted ?? 0, last_rows: meta?.last_rows ?? 0, total: meta?.canonical_total ?? 0,
     audit: { last_ms: meta?.last_audit_ms ?? null, rows: meta?.audit_rows ?? 0, diff: meta?.audit_diff ?? 0, fixed: meta?.audit_fixed ?? 0, every_ms: AUDIT_EVERY_MS },
     last_error: meta?.last_error ?? null, fresh, stale: lag != null && lag > staleAfterMs(cfg.intervalMs), fail_streak: meta?.fail_streak || 0, version: dataVersion(source),
   }

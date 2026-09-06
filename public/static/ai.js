@@ -32,7 +32,8 @@
     if (S.loaded) return
     S.loaded = true
     step(4)
-    setTimeout(function () {
+    S.timers.reveal = setTimeout(function () {
+      if (S.configBlocked) return
       $('loader').classList.add('hidden')
       ;['cur', 'stats', 'hist-sec'].forEach(function (id) { var el = $(id); el.classList.remove('hidden'); el.classList.add('fade-in') }); renderSync(S.sync); fetchStake(); fetchSets()
     }, 250)
@@ -75,7 +76,7 @@
       $('cur-meta').innerHTML = (x.sharp ? '<i class="fas fa-bolt text-yellow-300 mr-1"></i>二级精准 ' : '独立生成 ') + nums.length + ' 注 · 与 500 主推重叠 ' + (nums.length - novel) + ' · <span class="text-cyan-300">主推之外 ' + novel + '</span>' + (p.created_ms ? ' · 北京时间 ' + hhmm(p.created_ms) + ' 锁定' : '')
     } else {
       $('cur-grid').innerHTML = p.numbers.map(function (n, i) { var cls = bset[n] ? 'boost' : ''; if (k && i >= k) cls += ' dim'; return '<span class="' + cls.trim() + '">' + n + '</span>' }).join('')
-      $('cur-meta').textContent = (k ? '前缀 ' + k + ' 注（该期无独立生成行）' : p.count + ' 注') + ' · 覆盖 ' + pct(k ? (p.coverage || 0.5) * (k / 500) : (p.coverage || p.count / 1000), 1) + (p.created_ms ? ' · 北京时间 ' + hhmm(p.created_ms) + ' 锁定' : '')
+      $('cur-meta').textContent = (k ? '前缀 ' + k + ' 注（该期无独立生成行）' : p.count + ' 注') + ' · 排序分合计 ' + pct(k ? (p.coverage || 0.5) * (k / 500) : (p.coverage || p.count / 1000), 1) + (p.created_ms ? ' · 北京时间 ' + hhmm(p.created_ms) + ' 锁定' : '')
     }
   }
   function renderSubStats() {
@@ -117,7 +118,7 @@
     if (!f && !b) return gtxt + '<div class="text-slate-500">' + (p.fallback ? '本期 AI 调用未成功（' + esc(p.error || '超时') + '），已用「组合最优 meta」策略兜底，保证每期形成选择。' : '推理内容暂无。') + '</div>'
     var h = [gtxt]
     if (f) {
-      h.push('<div><b>盘面判断</b>：' + esc(f.regime) + ' <span class="text-slate-500">· 自评把握 ' + pct(f.confidence, 0) + '</span></div>')
+      h.push('<div><b>盘面判断</b>：' + esc(f.regime) + ' <span class="text-slate-500">· AI 自评（非命中率） ' + pct(f.confidence, 0) + '</span></div>')
       if (f.reasoning) h.push('<div class="mt-1"><b>推理</b>：' + esc(f.reasoning) + '</div>')
       if (f.pick_plan) h.push('<div class="mt-1"><b>500 注构成方案</b>：' + esc(f.pick_plan) + '</div>')
     }
@@ -244,7 +245,7 @@
     var streak = (r.streak || []).slice().reverse().map(function (h) { return '<i class="' + (h ? 'h' : '') + '"></i>' }).join('')
     var rateCls = r.rate >= BREAK_EVEN ? 'text-emerald-400' : 'text-slate-200'
     $('stats').innerHTML =
-      '<div class="stat"><div class="text-xs text-slate-400">已实盘检验</div><div class="v">' + r.n + '<span class="text-xs text-slate-500 font-normal ml-1">期</span></div></div>' +
+      '<div class="stat"><div class="text-xs text-slate-400">已验证真实预测</div><div class="v">' + r.n + '<span class="text-xs text-slate-500 font-normal ml-1">期</span></div></div>' +
       '<div class="stat"><div class="text-xs text-slate-400">命中率 <span class="text-slate-600">保本 52.6%</span></div><div class="v ' + rateCls + '">' + pct(r.rate) + '<span class="text-xs text-slate-500 font-normal ml-1">' + r.hits + ' 中</span></div></div>' +
       '<div class="stat"><div class="text-xs text-slate-400">累计盈亏 <span class="text-slate-600">950× · 每注 1</span></div><div class="v ' + (r.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + fmtInt(r.pnl) + '</div></div>' +
       '<div class="stat"><div class="text-xs text-slate-400">近 20 期（右=最新）</div><div class="streak mt-2">' + streak + '</div></div>'
@@ -356,18 +357,40 @@
     var pe = d.pick && d.pick.expect; if (pe && pe !== SETS.lastExp) { SETS.lastExp = pe; if (S.loaded) fetchSets() }
     if (d.pick && d.pick.status === 'ready' && SETS.data && SETS.data.expect === pe && !((SETS.data.sets || {})[SETS.n] || []).length && S.loaded) fetchSets()
   }
+  function showConfigState(d) {
+    S.configBlocked = true; S.loaded = false; S.pick = null
+    clearTimeout(S.timers.retry); clearTimeout(S.timers.reveal)
+    clearInterval(S.timers.think); clearTimeout(S.timers.thinkPoll)
+    document.body.classList.add('ai-config-blocked')
+    $('ai-config-state').classList.remove('hidden')
+    $('ai-config-title').textContent = d.code === 'AI_DISABLED' ? 'AI 已停用' : '请先完成 AI 配置'
+    $('ai-config-message').textContent = d.error
+    $('hd-model').textContent = ''
+  }
+  $('ai-config-retry').addEventListener('click', function () { fetchPick(true) })
   function fetchPick(force) {
+    clearTimeout(S.timers.retry)
     var ver = ++S.ver
     return axios.get('/api/arena/pick', { params: { source: S.source, history: 1, _: force ? Date.now() : undefined } }).then(function (r) {
       if (ver !== S.ver) return
-      var d = r.data; if (!d.ok) throw new Error(d.error || 'pick failed')
+      var d = r.data
+      if (d.code === 'AI_DISABLED' || d.code === 'AI_NOT_CONFIGURED') { showConfigState(d); return d }
+      if (!d.ok) throw new Error(d.error || 'pick failed')
+      S.configBlocked = false
+      document.body.classList.remove('ai-config-blocked')
+      $('ai-config-state').classList.add('hidden')
       applyPick(d)
       if (d.pick && d.pick.status !== 'thinking') saveLocal(d)
       if (!S.loaded) { if (d.pick && d.pick.status === 'thinking') step(3); reveal() }
       scheduleThink()
       return d
     }).catch(function (e) {
-      if (!S.loaded) { $('ld-text').innerHTML = '<i class="fas fa-triangle-exclamation text-amber-400 mr-2"></i>加载失败：' + esc(e.message) + '，5 秒后重试…'; setTimeout(function () { fetchPick(true) }, 5000) }
+      if (ver !== S.ver) return
+      var detail = e.response && e.response.data
+      if (detail && (detail.code === 'AI_DISABLED' || detail.code === 'AI_NOT_CONFIGURED')) { showConfigState(detail); return }
+      var message = (detail && detail.error) || e.message
+      if (S.configBlocked) { $('ai-config-message').textContent = message; return }
+      if (!S.loaded) { $('ld-text').innerHTML = '<i class="fas fa-triangle-exclamation text-amber-400 mr-2"></i>加载失败：' + esc(message) + '，5 秒后重试…'; S.timers.retry = setTimeout(function () { fetchPick(true) }, 5000) }
     })
   }
   function scheduleThink() {
@@ -377,6 +400,7 @@
     S.timers.thinkPoll = setTimeout(function () { fetchPick(true) }, POLL_THINK)
   }
   function fetchStatus(tick) {
+    if (S.configBlocked) return Promise.resolve(null)
     return axios.get('/api/sync/status', { params: { source: S.source, tick: tick ? 1 : undefined } }).then(function (r) {
       var st = r.data && r.data.status && r.data.status[S.source]; if (!st) return null
       var prev = S.status; S.status = st
@@ -387,6 +411,7 @@
   }
   // 倒计时：按预计开奖时刻 + 发布延迟；归零后每 4s 轮询 status 直到新期号
   function tickCountdown() {
+    if (S.configBlocked) return
     var st = S.status, el = $('cur-cd')
     if (!st) { el.textContent = '—'; return }
     var target = (st.expected_publish_ms || st.next_due_ms || 0) + PUBLISH_DELAY
@@ -409,13 +434,15 @@
 
   // ---------------------------------------------------------------- 初始化
   function boot() {
-    S.loaded = false; S.pick = null; S.status = null; S.waitStart = 0
+    S.loaded = false; S.pick = null; S.status = null; S.waitStart = 0; S.configBlocked = false
+    document.body.classList.remove('ai-config-blocked')
+    $('ai-config-state').classList.add('hidden')
     clearInterval(S.timers.think); clearTimeout(S.timers.thinkPoll)
     step(1)
     // 陈旧优先：有本地缓存立即显示（不等待网络）
     var local = loadLocal()
     if (local && local.data && local.data.pick) { applyPick(local.data); reveal(); $('cur-state').textContent = '本地缓存 · 刷新中…' }
-    fetchStatus(true).then(function () { if (!S.loaded) step(2) }).then(function () { if (!S.loaded) step(3, '读取 AI 本期推荐…'); return fetchPick(false) })
+    fetchPick(false).then(function (d) { if (d && d.ok) fetchStatus(true) })
   }
   function init() {
     try { S.fmt = localStorage.getItem('ai:fmt') || 'space'; $('fmt').value = S.fmt } catch (e) {}

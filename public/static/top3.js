@@ -35,7 +35,7 @@
         '<div class="text-[10.5px] text-slate-500 mt-1">其 500 注中 <b class="text-slate-300">' + ov + '</b> 注进入融合</div></div>'
     }).join('')
     // tabs
-    var tabs = [{ k: 'fused', label: '<i class="fas fa-layer-group mr-1"></i>融合 500 注（推荐）' }].concat(c.members.map(function (m, i) { return { k: m.key, label: '<span class="rank inline-grid mr-1" style="background:' + medal[i] + ';width:18px;height:18px;font-size:11px">' + (i + 1) + '</span>' + esc(m.short) + ' 500 注' } }))
+    var tabs = [{ k: 'fused', label: '<i class="fas fa-layer-group mr-1"></i>融合 500 注（待验证）' }].concat(c.members.map(function (m, i) { return { k: m.key, label: '<span class="rank inline-grid mr-1" style="background:' + medal[i] + ';width:18px;height:18px;font-size:11px">' + (i + 1) + '</span>' + esc(m.short) + ' 500 注' } }))
     $('tabs').innerHTML = tabs.map(function (t) { return '<button class="tab' + (S.tab === t.k ? ' on' : '') + '" data-k="' + t.k + '">' + t.label + '</button>' }).join('')
     document.querySelectorAll('#tabs .tab').forEach(function (b) { b.addEventListener('click', function () { S.tab = b.getAttribute('data-k'); renderCur() }) })
     // list
@@ -53,7 +53,7 @@
     var r = S.data.record; if (!r) { $('stats').innerHTML = '<div class="stat col-span-4 text-xs text-slate-500">融合策略尚无已结算期，开奖后自动累计</div>'; return }
     var streak = (r.streak || []).slice().reverse().map(function (h) { return '<i class="' + (h ? 'h' : '') + '"></i>' }).join('')
     $('stats').innerHTML =
-      '<div class="stat"><div class="text-xs text-slate-400">融合策略已实盘</div><div class="v">' + r.n + '<span class="text-xs text-slate-500 font-normal ml-1">期</span></div></div>' +
+      '<div class="stat"><div class="text-xs text-slate-400">已验证真实预测</div><div class="v">' + r.n + '<span class="text-xs text-slate-500 font-normal ml-1">期</span></div></div>' +
       '<div class="stat"><div class="text-xs text-slate-400">命中率 <span class="text-slate-600">保本 52.6%</span></div><div class="v ' + (r.rate >= BREAK_EVEN ? 'text-emerald-400' : '') + '">' + pct(r.rate) + '<span class="text-xs text-slate-500 font-normal ml-1">' + r.hits + ' 中</span></div></div>' +
       '<div class="stat"><div class="text-xs text-slate-400">累计盈亏 <span class="text-slate-600">950× · 每注 1</span></div><div class="v ' + (r.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + fmtInt(r.pnl) + '</div></div>' +
       '<div class="stat"><div class="text-xs text-slate-400">近 20 期（右=最新）</div><div class="streak mt-2">' + streak + '</div></div>'
@@ -62,9 +62,9 @@
     var lb = S.data.leaderboard || []; var max = Math.max.apply(null, lb.map(function (x) { return Math.abs(x.z) }).concat([1]))
     var members = (S.data.current && S.data.current.members || []).map(function (m) { return m.key })
     var rl = S.data.rules || {}
-    $('lb').innerHTML = '<div class="text-[11px] text-slate-500 mb-2">入选门槛：样本 ≥ ' + (rl.min_n || 10) + ' 期 且 滚动 z > ' + (rl.min_z == null ? 0 : rl.min_z) + '；取前三，合格者不足三个则只融合合格者，全无则退回组合最优；AI 入选但未到达时最多等 ' + Math.round((rl.ai_wait_ms || 15000) / 1000) + 's</div><div class="lb text-slate-500"><span>#</span><span>策略</span><span class="text-right">滚动 z</span><span class="text-right">近 40 期</span><span class="text-right">累计</span></div>' + lb.map(function (x, i) {
+    $('lb').innerHTML = '<div class="text-[11px] text-slate-500 mb-2">实验筛选规则（不代表显著优势）：样本 ≥ ' + (rl.min_n || 10) + ' 期 且 滚动 z > ' + (rl.min_z == null ? 0 : rl.min_z) + '；取前三，合格者不足三个则只融合合格者，全无则退回组合最优；AI 入选但未到达时最多等 ' + Math.round((rl.ai_wait_ms || 15000) / 1000) + 's</div><div class="lb text-slate-500"><span>#</span><span>策略</span><span class="text-right">滚动 z</span><span class="text-right">近 40 期</span><span class="text-right">累计</span></div>' + lb.map(function (x, i) {
       var top = members.indexOf(x.key) >= 0
-      return '<div class="lb' + (top ? ' top' : '') + '"><span class="mono text-slate-500">' + (i + 1) + '</span><span class="truncate"><i class="inline-block w-2 h-2 rounded-full mr-1" style="background:' + x.color + '"></i>' + esc(x.short) + (top ? ' <span class="chip" style="background:#fbbf24;color:#000">入选</span>' : x.eligible === false ? ' <span class="chip" style="color:#64748b">z≤0 不合格</span>' : '') + '</span>' +
+      return '<div class="lb' + (top ? ' top' : '') + '"><span class="mono text-slate-500">' + (i + 1) + '</span><span class="truncate"><i class="inline-block w-2 h-2 rounded-full mr-1" style="background:' + x.color + '"></i>' + esc(x.short) + (top ? ' <span class="chip" style="background:#fbbf24;color:#000">入选</span>' : x.eligible === false ? ' <span class="chip" style="color:#64748b">未达实验筛选条件</span>' : '') + '</span>' +
         '<span class="mono text-right ' + (x.z > 0 ? 'text-emerald-300' : 'text-slate-400') + '">' + (x.z > 0 ? '+' : '') + x.z + '</span><span class="mono text-right">' + pct(x.rate) + '<span class="text-slate-600 text-[10px]"> /' + x.n + '</span></span><span class="mono text-right ' + (x.total && x.total.pnl >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + (x.total ? fmtInt(x.total.pnl) : '—') + '</span></div>'
     }).join('')
   }

@@ -1,7 +1,8 @@
+const evidenceLabel = m => ({live:'真实预测',replay:'历史回放',legacy:'旧记录（时间未验证）',late:'过期记录',mixed:'混合档案'})[m] || '时间未验证'
 // ================= HashArena 策略竞技场（自动战绩榜） =================
 const $ = (id) => document.getElementById(id)
 const api = axios.create({ baseURL: '/api' })
-const S = { source: new URLSearchParams(location.search).get('source') || 'qkltj:6001', mode: 'all', sources: [], data: null, strat: 'meta', fmt: 'space', ec: {}, histN: 30, defs: [] }
+const S = { source: new URLSearchParams(location.search).get('source') || 'qkltj:6001', mode: 'live', sources: [], data: null, strat: 'meta', fmt: 'space', ec: {}, histN: 30, defs: [] }
 const pct = (x, d = 1) => x === null || x === undefined ? '—' : (x * 100).toFixed(d) + '%'
 const sgn = (x, d = 0) => x === null || x === undefined ? '—' : (x > 0 ? '+' : '') + Number(x).toFixed(d)
 const fmtT = (ms) => new Date(ms).toLocaleString('zh-CN', { hour12: false })
@@ -28,8 +29,8 @@ async function init() {
   loadReport()
   $('modal-close').onclick = () => $('modal').classList.add('hidden'); $('modal').onclick = e => { if (e.target === $('modal')) $('modal').classList.add('hidden') }
   $('rules').innerHTML = `${S.defs.length} 个策略并行，每期开奖前各自锁定 <b class="text-slate-200">${defs.data.count} 注三位号</b>（万/千/百），INSERT OR IGNORE 首次为准、不可改写；开奖后自动结算命中/名次/盈亏（每注 1 单位，赔率 ${defs.data.odds}×）。
-    「组合最优」只用目标期之前已结算的滚动战绩给基础策略加权（z 分数 → 指数权重 → 样本收缩），融合概率后取 Top ${defs.data.count}——这就是「以向前数据为依托、每期自动优化」。「随机对照组」用期号做种子随机取号，理论命中率 50%，所有策略都要和它比。
-    <b class="text-slate-200">回放</b>：对历史已开奖期严格按当时可见数据补算（不含未来），用于快速积累样本；<b class="text-slate-200">实盘</b>：真实开奖前生成的记录。`
+    「组合最优」只用目标期之前已结算的滚动战绩给基础策略加权（z 分数 → 指数权重 → 样本收缩），融合排序分后取 Top ${defs.data.count}——这就是「以向前数据为依托、每期自动优化」。「随机对照组」用期号做种子随机取号，理论命中率 50%，所有策略都要和它比。
+    <b class="text-slate-200">回放</b>：对历史期按当前保存的早期数据补算，仅用于研究，不能充当当时真实预测；<b class="text-slate-200">实盘</b>：真实开奖前生成的记录。`
   SyncBar.mount('sync-bar', { getSource: () => S.source, onNewData: () => load(), onForced: () => load() })
   load()
 }
@@ -182,7 +183,7 @@ function renderAi() {
   const h = ai.history || []
   $('ai-timeline').innerHTML = h.length ? h.map(x => `<div class="ai-row ${x.hit ? 'hit' : ''} ${x.error ? 'err' : ''}">
     <div class="mono text-slate-400">${x.expect.slice(-6)}</div>
-    <div>${x.error ? `<span class="text-red-400">调用失败 · ${x.error}</span>` : `<b class="text-slate-200">${x.regime || '—'}</b> <span class="text-slate-500">把握 ${pct(x.confidence, 0)}</span><div class="text-slate-400 mt-0.5 line-clamp-3">${x.reasoning || ''}</div>${x.pick_plan ? `<div class="text-pink-200/80 text-[10px] mt-0.5 line-clamp-2">选号：${x.pick_plan}</div>` : ''}${x.next_focus ? `<div class="text-pink-300/80 text-[10px] mt-0.5">验证：${x.next_focus}</div>` : ''}`}</div>
+    <div>${x.error ? `<span class="text-red-400">调用失败 · ${x.error}</span>` : `<b class="text-slate-200">${x.regime || '—'}</b> <span class="text-slate-500">AI 自评 ${pct(x.confidence, 0)}（非命中率）</span><div class="text-slate-400 mt-0.5 line-clamp-3">${x.reasoning || ''}</div>${x.pick_plan ? `<div class="text-pink-200/80 text-[10px] mt-0.5 line-clamp-2">选号：${x.pick_plan}</div>` : ''}${x.next_focus ? `<div class="text-pink-300/80 text-[10px] mt-0.5">验证：${x.next_focus}</div>` : ''}`}</div>
     <div class="text-right">${x.actual ? `<div class="mono text-amber-300">${x.actual}</div>${x.hit ? `<div class="text-emerald-400 font-bold">命中 #${x.rank}</div>` : `<div class="text-slate-500">未中 ${x.pnl}</div>`}` : '<div class="text-slate-500">待开奖</div>'}</div>
   </div>`).join('') : '<div class="text-xs text-slate-500">暂无记录</div>'
 }
@@ -211,7 +212,7 @@ function renderCurrent() {
   $('strat-cards').innerHTML = [...c.strategies].sort((a, b) => S.defs.findIndex(x => x.key === a.strategy) - S.defs.findIndex(x => x.key === b.strategy)).map(s => { const def = defOf(s.strategy); return `<div class="strat-card ${s.strategy === S.strat ? 'active' : ''}" data-k="${s.strategy}">
     <div class="text-[11px] truncate" style="color:${def.color}">${def.short}</div>
     <div class="mono text-sm font-bold">${s.count} 注</div>
-    <div class="text-[10px] text-slate-500">倾向覆盖 ${pct(s.coverage)}${def.meta ? '' : ` · 权重 ${pct(s.weight)}`}</div></div>` }).join('')
+    <div class="text-[10px] text-slate-500">排序分合计 ${pct(s.coverage)}${def.meta ? '' : ` · 权重 ${pct(s.weight)}`}</div></div>` }).join('')
     + (d.ai && d.ai.enabled && !c.strategies.some(s => s.strategy === 'ai') ? `<div class="strat-card opacity-70" title="大模型正在推理本期预测，完成后自动出现"><div class="text-[11px] truncate" style="color:#f472b6">AI 预测</div><div class="text-sm font-bold"><i class="fas fa-spinner fa-spin mr-1"></i>推理中</div><div class="text-[10px] text-slate-500">约 10-30 秒</div></div>` : '')
   document.querySelectorAll('.strat-card').forEach(el => el.onclick = () => { S.strat = el.dataset.k; $('cur-strat').value = S.strat; renderCurrent() })
   const nums = curNums() || []
@@ -233,17 +234,17 @@ function renderHist() {
   const cols = d.strategies
   const head = `<div class="head">期号</div><div class="head">开奖</div>` + cols.map(s => `<div class="head" style="color:${s.color}">${s.short}</div>`).join('')
   $('hist').style.gridTemplateColumns = `84px 60px repeat(${cols.length}, 1fr)`
-  $('hist').innerHTML = head + ps.map(p => `<div class="cursor-pointer hover:text-emerald-300 ${p.mode === 'replay' ? 'replay' : ''}" data-e="${p.expect}" title="${p.mode === 'replay' ? '回放' : '实盘'}">${p.expect.slice(-6)}${p.mode === 'replay' ? '<sup>R</sup>' : ''}</div><div class="text-amber-300 font-bold">${p.actual}</div>` +
+  $('hist').innerHTML = head + ps.map(p => `<div class="cursor-pointer hover:text-emerald-300 ${p.mode === 'replay' ? 'replay' : ''}" data-e="${p.expect}" title="${evidenceLabel(p.mode)}">${p.expect.slice(-6)}${p.mode !== 'live' ? '<sup>档</sup>' : ''}</div><div class="text-amber-300 font-bold">${p.actual}</div>` +
     cols.map(s => { const h = p.hit[s.key]; return h === undefined ? '<div class="m">·</div>' : h ? `<div class="h">中 <small>(${p.rank[s.key]})</small></div>` : `<div class="m">${p.pnl[s.key]}</div>` }).join('')).join('')
   $('hist').querySelectorAll('[data-e]').forEach(el => el.onclick = () => openRound(el.dataset.e))
 }
 
 async function openRound(expect) {
   const p = S.data.periods.find(x => x.expect === expect)
-  $('modal-title').innerHTML = `期号 ${expect} · 开奖前三位 <span class="text-amber-300 mono">${p.actual}</span> <span class="text-xs text-slate-500">(${p.mode === 'replay' ? '回放' : '实盘'})</span>`
+  $('modal-title').innerHTML = `期号 ${expect} · 开奖前三位 <span class="text-amber-300 mono">${p.actual}</span> <span class="text-xs text-slate-500">(${evidenceLabel(p.mode)})</span>`
   $('modal-body').innerHTML = '<div class="text-xs text-slate-500">加载中…</div>'; $('modal').classList.remove('hidden')
   const rs = await Promise.all(S.data.strategies.map(s => api.get('/arena/round', { params: { source: S.source, expect, strategy: s.key } }).then(r => r.data).catch(() => null)))
-  $('modal-body').innerHTML = `<div class="space-y-3">` + rs.filter(Boolean).map(r => { const def = defOf(r.strategy); return `<details ${r.hit ? 'open' : ''}><summary class="cursor-pointer text-sm"><span class="inline-block w-2 h-2 rounded-full mr-1" style="background:${def.color}"></span><b>${def.name}</b> · ${r.count} 注 · ${r.hit ? `<span class="text-emerald-400 font-bold">命中 · 名次 #${r.rank}</span>` : '<span class="text-slate-500">未中</span>'} · 盈亏 <span class="mono ${r.pnl > 0 ? 'text-emerald-400' : 'text-red-400'}">${sgn(r.pnl)}</span> · 倾向覆盖 ${pct(r.coverage)}</summary>
+  $('modal-body').innerHTML = `<div class="space-y-3">` + rs.filter(Boolean).map(r => { const def = defOf(r.strategy); return `<details ${r.hit ? 'open' : ''}><summary class="cursor-pointer text-sm"><span class="inline-block w-2 h-2 rounded-full mr-1" style="background:${def.color}"></span><b>${def.name}</b> · ${r.count} 注 · ${evidenceLabel(r.prediction_status)} · ${r.hit ? `<span class="text-emerald-400 font-bold">命中 · 名次 #${r.rank}</span>` : '<span class="text-slate-500">未中</span>'} · 盈亏 <span class="mono ${r.pnl > 0 ? 'text-emerald-400' : 'text-red-400'}">${sgn(r.pnl)}</span> · 排序分合计 ${pct(r.coverage)}</summary>
     <div class="num-grid mt-2">${r.numbers.map((n, i) => `<span class="${n === r.actual ? 'hit' : ''}" title="#${i + 1}">${n}</span>`).join('')}</div></details>` }).join('') + `</div>`
 }
 

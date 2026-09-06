@@ -66,7 +66,7 @@ async function loadPredict() {
   $('en-top').textContent = en.top_label; $('en-top').className = 'text-3xl font-black mt-1 ' + (en.top === 0 ? 'text-red-400' : en.top === 1 ? 'text-blue-400' : 'text-emerald-400')
   $('en-tilt').textContent = en.tilt; $('en-cons').textContent = en.consensus
   $('needle').style.transform = `rotate(${-90 + en.tilt * 1.8}deg)`
-  chart('ch-ensemble', { type: 'bar', data: { labels: m.labels, datasets: [{ label: '集成概率', data: en.p, backgroundColor: m.labels.map((_, i) => COLORS[i % 10]) }, { label: '理论基线', data: m.labels.map(() => bt.baseline), type: 'line', borderColor: '#94a3b8', borderDash: [4, 4], pointRadius: 0 }] }, options: { plugins: { legend: { display: false } }, scales: { y: { min: 0, ticks: { callback: v => pct(v, 0) } } } } })
+  chart('ch-ensemble', { type: 'bar', data: { labels: m.labels, datasets: [{ label: '模型排序分', data: en.p, backgroundColor: m.labels.map((_, i) => COLORS[i % 10]) }, { label: '理论基线', data: m.labels.map(() => bt.baseline), type: 'line', borderColor: '#94a3b8', borderDash: [4, 4], pointRadius: 0 }] }, options: { plugins: { legend: { display: false } }, scales: { y: { min: 0, ticks: { callback: v => pct(v, 0) } } } } })
   $('votes').innerHTML = en.votes.map((v, i) => `<span class="px-2 py-0.5 rounded text-xs" style="background:${COLORS[i % 10]}22;color:${COLORS[i % 10]}">${m.labels[i]} × ${v}</span>`).join('')
   $('snapshot').innerHTML = `<div>当前连开：<b class="text-amber-400">${m.labels[en.streak.v] ?? '—'} × ${en.streak.len}</b></div><div>各类当前遗漏：${en.gaps.map((g, i) => `<span class="mr-2">${m.labels[i]}<b class="font-mono text-slate-200">${g}</b></span>`).join('')}</div><div class="text-slate-500 mt-1">最新期 ${d.latest_expect}</div>`
   // 机制图
@@ -188,9 +188,9 @@ async function loadPick(silent) {
   if (cnt !== PICK.count) return // 期间用户又改了数量
   const isNew = PICK.latest && d.latest_expect !== PICK.latest; PICK.latest = d.latest_expect; PICK.data = d
   // 覆盖率
-  $('pick-cov').innerHTML = `<div class="text-xs text-slate-400">量化覆盖率（前三位 Top-${d.count} 倾向概率合计）</div>
+  $('pick-cov').innerHTML = `<div class="text-xs text-slate-400">入选号码排序分合计（未经概率校准）</div>
     <div class="v text-amber-300 ${isNew ? 'flash' : ''}">${pct(d.coverage.p, 2)}</div>
-    <div class="text-xs text-slate-400">理论基线 ${pct(d.coverage.baseline, 2)} · 倾向倍数 <b class="text-slate-200">${d.coverage.lift}×</b></div>
+    <div class="text-xs text-slate-400">理论基线 ${pct(d.coverage.baseline, 2)} · 排序分倍数 <b class="text-slate-200">${d.coverage.lift}×</b></div>
     <div class="mt-2 text-[10px] text-slate-500">层级：核心 ${d.tiers.core} · 主力 ${d.tiers.main} · 外围 ${d.tiers.edge} · 计算 ${d.compute_ms}ms</div>
     <div class="mt-1 text-[10px] text-slate-500">分散度：${d.diversity.map(v => `${['万', '千', '百'][v.pos]}${v.distinct}种/首数${v.topDigit}占${pct(v.topShare, 0)}`).join(' · ')}</div>`
   // 每位分布
@@ -225,36 +225,43 @@ async function loadPickTrack() {
   let d
   try { d = (await api.get('/analysis/pick/track', { params: { source: S.source, count: PICK.count, temp: $('pick-temp').value, all: all ? 1 : 0 } })).data }
   catch (e) { $('pick-track-live').textContent = '加载失败'; return }
+  api.get('/analysis/audit', { params: { source:S.source } }).then(r => { const v = r.data; $('prediction-audit-note').textContent = v.note + ' 当前来源共有 ' + v.shared_block_periods + ' 期与其他来源共享区块。' }).catch(() => {})
   PICK.track = d
   const tempName = { '1': '集中', '1.5': '均衡', '2.2': '分散' }[String(d.temp)] || d.temp
   $('pick-track-live').textContent = all ? `全部配置 · ${d.n} 期已评分 · ${d.pending} 期待开奖` : `${d.count} 注 · ${tempName} · ${d.n} 期已评分 · ${d.pending} 期待开奖`
   const edge = d.n ? d.rate - d.baseline : 0
   $('pick-track-kpi').innerHTML = `
-    <div><div class="v ${d.n && Math.abs(d.z) >= 1.96 ? (d.z > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-200'}">${d.n ? pct(d.rate, 1) : '—'}</div><div class="text-[10px] text-slate-500">累计命中率（${d.hits}/${d.n}）</div></div>
+    <div><div class="v text-slate-200">${d.n ? pct(d.rate, 1) : '—'}</div><div class="text-[10px] text-slate-500">累计命中率（${d.hits}/${d.n}）</div></div>
     <div><div class="v text-slate-500">${d.n ? pct(d.baseline, 1) : '—'}</div><div class="text-[10px] text-slate-500">理论基线 · 期望 ${d.expected_hits} 中</div></div>
-    <div><div class="v ${edge > 0 ? 'text-emerald-300' : edge < 0 ? 'text-red-300' : 'text-slate-300'}" style="font-size:16px">${d.n ? (edge >= 0 ? '+' : '') + (edge * 100).toFixed(1) + ' pp' : '—'} <span class="text-slate-500 text-xs">z=${d.z}</span></div><div class="text-[10px] text-slate-500">相对基线 · 量化覆盖均值 ${d.quant_avg == null ? '—' : pct(d.quant_avg, 1)}</div></div>
+    <div><div class="v ${edge > 0 ? 'text-emerald-300' : edge < 0 ? 'text-red-300' : 'text-slate-300'}" style="font-size:16px">${d.n ? (edge >= 0 ? '+' : '') + (edge * 100).toFixed(1) + ' pp' : '—'} <span class="text-slate-500 text-xs">描述 z=${d.z == null ? '—' : d.z}</span></div><div class="text-[10px] text-slate-500">相对基线 · 排序分均值 ${d.quant_avg == null ? '—' : pct(d.quant_avg, 1)}</div></div>
     <div class="text-[10px] text-slate-500">命中落点：核心 ${d.tier_hits.core} · 主力 ${d.tier_hits.main} · 外围 ${d.tier_hits.edge}</div>
     ${all && d.by_config.length ? `<div class="text-[10px] text-slate-500">${d.by_config.map(c => `${c.count}注/${{ '1': '集中', '1.5': '均衡', '2.2': '分散' }[String(c.temp)] || c.temp}: ${c.hits}/${c.n} (${pct(c.rate, 0)} vs ${pct(c.baseline, 0)})`).join('<br>')}</div>` : ''}`
   const ch = ec('pick-track-chart'); if (ch) {
     const x = d.series.map(s => s.expect.slice(-4))
     ch.setOption({
       backgroundColor: 'transparent', animation: false,
-      tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e2e8f0', fontSize: 11 }, formatter: ps => { const i = ps[0].dataIndex, s = d.series[i]; return `期 ${s.expect}<br>实开 <b>${s.actual}</b> ${s.hit ? '<span style="color:#34d399">✓ 榜内 #' + s.rank + '</span>' : '<span style="color:#94a3b8">榜外</span>'}<br>累计命中 ${pct(s.rate, 1)} · 基线 ${pct(s.baseline, 1)} · 量化 ${pct(s.quant, 1)}` } },
-      legend: { data: ['累计命中率', '理论基线', '量化覆盖率(均值)'], textStyle: { color: '#94a3b8', fontSize: 10 }, top: 0 },
+      tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e2e8f0', fontSize: 11 }, formatter: ps => { const i = ps[0].dataIndex, s = d.series[i]; return `期 ${s.expect}<br>实开 <b>${s.actual}</b> ${s.hit ? '<span style="color:#34d399">✓ 榜内 #' + s.rank + '</span>' : '<span style="color:#94a3b8">榜外</span>'}<br>累计命中 ${pct(s.rate, 1)} · 基线 ${pct(s.baseline, 1)} · 排序分 ${pct(s.quant, 1)}` } },
+      legend: { data: ['累计命中率', '理论基线', '排序分均值（非命中率）'], textStyle: { color: '#94a3b8', fontSize: 10 }, top: 0 },
       grid: { left: 44, right: 12, top: 26, bottom: 22 },
       xAxis: { type: 'category', data: x, axisLabel: { color: '#64748b', fontSize: 9 }, axisLine: { lineStyle: { color: '#334155' } } },
       yAxis: { type: 'value', min: 0, max: 1, axisLabel: { color: '#64748b', fontSize: 9, formatter: v => (v * 100) + '%' }, splitLine: { lineStyle: { color: '#1e293b' } } },
       series: [
         { name: '累计命中率', type: 'line', data: d.series.map(s => s.rate), showSymbol: false, lineStyle: { width: 2, color: '#34d399' }, areaStyle: { color: 'rgba(52,211,153,0.08)' } },
         { name: '理论基线', type: 'line', data: d.series.map(s => s.baseline), showSymbol: false, lineStyle: { width: 1.5, color: '#94a3b8', type: 'dashed' } },
-        { name: '量化覆盖率(均值)', type: 'line', data: d.series.map(s => s.quant), showSymbol: false, lineStyle: { width: 1, color: '#fbbf24', type: 'dotted' } },
+        { name: '排序分均值（非命中率）', type: 'line', data: d.series.map(s => s.quant), showSymbol: false, lineStyle: { width: 1, color: '#fbbf24', type: 'dotted' } },
         { name: '命中', type: 'scatter', data: d.series.map((s, i) => s.hit ? [i, s.rate] : null).filter(Boolean), symbolSize: 6, itemStyle: { color: '#34d399' }, tooltip: { show: false } },
       ],
       graphic: d.n ? [] : [{ type: 'text', left: 'center', top: 'middle', style: { text: d.pending ? `已锁定 ${d.pending} 期快照，等待开奖评分…` : '尚无战绩数据，快照将在下一期自动锁定', fill: '#64748b', fontSize: 12 } }],
     }, true)
   }
   $('pick-track-recent').innerHTML = d.recent.length ? `<span class="text-[10px] text-slate-500 mr-1 self-center">最近（左=最新）：</span>` + d.recent.map(r => `<span title="${r.expect} 实开 ${r.actual}${r.rank ? ' · 榜内 #' + r.rank + '/' + r.count : ' · 榜外'}" class="px-1.5 py-0.5 rounded text-[10px] font-mono ${r.hit ? 'bg-emerald-500/70 text-black' : 'bg-slate-800 text-slate-400'}">${r.actual}${r.hit ? ' ✓' : ''}</span>`).join('') : ''
-  $('pick-track-verdict').innerHTML = `<i class="fas fa-scale-balanced mr-1 text-slate-500"></i>${d.verdict}`
+  const ci = d.interval95 ? ' · 固定配置历史95%区间 ' + pct(d.interval95.lo, 1) + '–' + pct(d.interval95.hi, 1) : ''
+  const archived = (d.archive || []).filter(x => x.status !== 'live').reduce((sum, x) => sum + x.n, 0)
+  const cal = d.calibration
+  const diagnostic = cal && cal.n ? '<br>排序分检验（数值越低越好）：Brier ' + cal.brier.toFixed(4) + ' / 理论基线 ' + cal.baseline_brier.toFixed(4) + '；对数损失 ' + cal.log_loss.toFixed(4) + ' / 基线 ' + cal.baseline_log_loss.toFixed(4) + '。仅作诊断，尚未校准。' : ''
+  $('pick-track-verdict').innerHTML = '<i class="fas fa-scale-balanced mr-1 text-slate-500"></i>' + d.verdict + ci + ' · 另存旧/非实时档案 ' + archived + ' 条' + diagnostic
+  const bins = cal && cal.bins || []
+  $('pick-calibration').innerHTML = bins.length ? '<div class="text-xs text-slate-400 mt-3 mb-2">排序分与真实命中对照 · 同一固定配置观察</div><div class="flex flex-wrap gap-2">' + bins.map(b => '<div class="rounded bg-slate-900 p-2 text-[11px]"><div>平均排序分 ' + pct(b.mean_score, 1) + '</div><div>实际命中 ' + pct(b.observed_rate, 1) + '</div><div class="text-slate-500">' + b.n + ' 期</div></div>').join('') + '</div>' : ''
 }
 function bindPick() {
   const setCount = (n, from) => {
@@ -391,12 +398,12 @@ function candRow(c, prior, top) {
   const w = Math.min(100, c.p / (prior * 2.2) * 100)          // 以 2.2×先验 为满格
   const bx = Math.min(100, 100 / 2.2)
   const col = c.p > prior * 1.08 ? UP : c.p < prior * 0.92 ? DOWN : '#64748b'
-  return `<div class="cand ${top ? 'top1' : ''}" title="投票 ${c.votes} · 遗漏 ${c.gap} · EV ${c.ev >= 0 ? '+' : ''}${c.ev}">
+  return `<div class="cand ${top ? 'top1' : ''}" title="投票 ${c.votes} · 遗漏 ${c.gap} · 理论EV ${c.ev >= 0 ? '+' : ''}${c.ev}">
     <span class="lb" style="color:${top ? '#fbbf24' : '#e2e8f0'}">${c.label}</span>
     <span class="pb"><i style="width:${w}%;background:${col}"></i><b style="left:${bx}%"></b></span>
     <span class="font-mono w-12 text-right">${pct(c.p)}</span>
     <span class="text-[10px] text-slate-500 w-10 text-right">×${c.odds}</span>
-    <span class="text-[10px] ${c.ev > 0 ? 'text-emerald-400' : 'text-slate-600'} w-12 text-right">EV ${c.ev >= 0 ? '+' : ''}${(c.ev * 100).toFixed(0)}%</span>
+    <span class="text-[10px] ${c.ev > 0 ? 'text-emerald-400' : 'text-slate-600'} w-12 text-right">基线 ${c.ev >= 0 ? '+' : ''}${(c.ev * 100).toFixed(0)}%</span>
     <span class="text-amber-400 text-[9px] w-10">${'★'.repeat(c.star)}</span></div>`
 }
 function renderPlay() {
@@ -424,7 +431,7 @@ async function loadRecommend() {
   $('rec-steps').innerHTML = d.strategy.steps.map(s => `<div class="step-li">${s}</div>`).join('')
   const chip = (x, cls) => `<span class="px-2 py-1 rounded-lg text-[11px] ${cls}">${x.market} → <b>${x.pick}</b> ${pct(x.p)}</span>`
   $('rec-focus').innerHTML = d.strategy.focus.map(x => chip(x, 'bg-emerald-500/15 text-emerald-300 border border-emerald-700/40')).join('') + d.strategy.secondary.map(x => chip(x, 'bg-amber-500/10 text-amber-300 border border-amber-700/40')).join('') + d.strategy.streakWatch.map(x => `<span class="px-2 py-1 rounded-lg text-[11px] bg-orange-500/10 text-orange-300 border border-orange-700/40"><i class="fas fa-fire"></i> ${x.market} ${x.label}连${x.len}</span>`).join('')
-  $('rec-board').innerHTML = d.digitBoard.map(x => `<div class="cand ${x.rank <= 3 ? 'top1' : ''} cursor-pointer" data-d="${x.digit}" title="最可能位置：${x.bestPosName}位 ${pct(x.perPos[x.bestPos])} · 近 30 期出现 ${x.cnt30} 次（期望 15）">
+  $('rec-board').innerHTML = d.digitBoard.map(x => `<div class="cand ${x.rank <= 3 ? 'top1' : ''} cursor-pointer" data-d="${x.digit}" title="最高排序分位置：${x.bestPosName}位 ${pct(x.perPos[x.bestPos])} · 近 30 期出现 ${x.cnt30} 次（期望 15）">
       <span class="text-slate-500 w-4 text-[10px]">${x.rank}</span><span class="lb text-lg" style="color:${x.rank <= 3 ? '#fbbf24' : '#e2e8f0'}">${x.digit}</span>
       <span class="pb"><i style="width:${Math.min(100, x.pAny / 0.6 * 100)}%;background:${x.pAny > x.priorAny ? UP : DOWN}"></i><b style="left:${x.priorAny / 0.6 * 100}%"></b></span>
       <span class="font-mono w-12 text-right">${pct(x.pAny)}</span><span class="text-[10px] w-14 text-right ${x.heat > 0.3 ? 'text-red-400' : x.heat < -0.3 ? 'text-blue-400' : 'text-slate-500'}">热 ${x.heat > 0 ? '+' : ''}${(x.heat * 100).toFixed(0)}%</span><span class="text-[10px] text-slate-500 w-10 text-right">遗 ${x.gapAny}</span></div>`).join('')

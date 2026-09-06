@@ -1,3 +1,4 @@
+import { atlasEntry } from './atlas-entry'
 export const analysisPage = () => `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -54,6 +55,7 @@ export const analysisPage = () => `<!DOCTYPE html>
     <div class="flex items-center gap-2">
       <select id="source-sel" class="bg-slate-800 text-sm rounded-lg px-3 py-1.5 border border-slate-700"></select>
       <button id="sync-btn" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-rotate mr-1"></i>同步</button>
+      ${atlasEntry}
       <a href="/arena" class="hidden md:inline-flex text-xs bg-emerald-600 text-white font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-trophy mr-1"></i>策略竞技场</a>
       <a href="/ai" class="inline-flex text-xs bg-pink-500 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-brain mr-1"></i>AI 推荐</a>
       <a href="/top3" class="hidden md:inline-flex text-xs bg-amber-400 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-trophy mr-1"></i>优质策略</a>
@@ -71,7 +73,7 @@ export const analysisPage = () => `<!DOCTYPE html>
   <!-- 本期推荐 -->
   <section class="card" id="rec-section">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
-      <h2 class="font-bold"><i class="fas fa-bullseye mr-2 text-amber-400"></i>本期推荐 · <span id="rec-next" class="text-amber-300 font-mono"></span> <span class="text-xs text-slate-500 font-normal ml-2">20 机制集成 · 每个玩法全部候选的概率都写出来</span></h2>
+      <h2 class="font-bold"><i class="fas fa-bullseye mr-2 text-amber-400"></i>本期推荐 · <span id="rec-next" class="text-amber-300 font-mono"></span> <span class="text-xs text-slate-500 font-normal ml-2">20 机制集成 · 候选排序分，尚未校准为命中概率</span></h2>
       <div class="flex items-center gap-2 text-xs"><span id="rec-countdown" class="font-mono text-slate-400"></span><span id="rec-regime" class="px-2 py-1 rounded-lg"></span></div>
     </div>
     <!-- 策略卡 -->
@@ -99,7 +101,7 @@ export const analysisPage = () => `<!DOCTYPE html>
   <section class="card" id="pick-section">
     <header class="flex flex-wrap items-center gap-3 mb-3">
       <h2 class="font-bold text-lg"><i class="fas fa-wand-magic-sparkles text-amber-400 mr-2"></i>量化选号器 <span id="pick-title" class="text-slate-400 text-sm font-normal ml-1"></span></h2>
-      <span class="text-xs text-slate-500">前三位（万·千·百）联合概率 Top-N · 机制集成 × 单双 BOLL/MACD/KDJ × 大小 × 前三和/龙虎/形态</span>
+      <span class="text-xs text-slate-500">前三位（万·千·百）联合排序 Top-N · 机制集成 × 单双 BOLL/MACD/KDJ × 大小 × 前三和/龙虎/形态</span>
       <span id="pick-live" class="text-xs text-slate-500 ml-auto"></span>
     </header>
     <div class="grid lg:grid-cols-3 gap-3 mb-3">
@@ -153,7 +155,7 @@ export const analysisPage = () => `<!DOCTYPE html>
     </div>
     <div class="kpi mt-3" id="pick-track">
       <div class="flex flex-wrap items-center gap-2 mb-2">
-        <span class="text-sm font-bold text-slate-200"><i class="fas fa-flag-checkered text-emerald-400 mr-1"></i>实盘战绩追踪</span>
+        <span class="text-sm font-bold text-slate-200"><i class="fas fa-flag-checkered text-emerald-400 mr-1"></i>真实预测检验</span>
         <span class="text-[10px] text-slate-500">每期开奖前自动锁定 Top-N 快照（不可改写）→ 开奖后自动评分 → 累计命中率 vs 理论基线 N/1000</span>
         <label class="ml-auto flex items-center gap-1 text-[11px] text-slate-400"><input id="pick-track-all" type="checkbox" class="accent-emerald-400">汇总全部配置</label>
         <span id="pick-track-live" class="text-[10px] text-slate-500"></span>
@@ -164,6 +166,8 @@ export const analysisPage = () => `<!DOCTYPE html>
       </div>
       <div id="pick-track-recent" class="flex flex-wrap gap-1 mt-2"></div>
       <div id="pick-track-verdict" class="text-[11px] text-slate-400 mt-2"></div>
+      <div id="pick-calibration"></div>
+      <div id="prediction-audit-note" class="text-[11px] text-slate-500 mt-2"></div>
     </div>
   </section>
 
@@ -249,7 +253,7 @@ export const analysisPage = () => `<!DOCTYPE html>
           <div id="en-top" class="text-3xl font-black mt-1"></div>
           <div class="text-xs text-slate-500 mt-1">倾向指数 <b id="en-tilt" class="text-amber-400 font-mono"></b> / 100 · 机制共识 <b id="en-cons" class="text-cyan-400 font-mono"></b>%</div>
         </div>
-        <div class="kpi"><div class="text-xs text-slate-400 mb-2">集成概率分布 vs 理论基线</div><canvas id="ch-ensemble" height="140"></canvas></div>
+        <div class="kpi"><div class="text-xs text-slate-400 mb-2">模型排序分 vs 理论基线</div><canvas id="ch-ensemble" height="140"></canvas></div>
         <div class="kpi"><div class="text-xs text-slate-400 mb-2">机制投票</div><div id="votes" class="flex flex-wrap gap-1"></div></div>
         <div class="kpi text-xs space-y-1"><div class="text-slate-400 mb-1">形态快照</div><div id="snapshot"></div></div>
       </div>
@@ -284,7 +288,7 @@ export const analysisPage = () => `<!DOCTYPE html>
   </section>
 
   <section class="card text-xs text-slate-400 leading-relaxed">
-    <b class="text-slate-200"><i class="fas fa-triangle-exclamation text-amber-400 mr-1"></i>方法论说明</b>：本页所有「倾向」均来自 20 种统计机制对历史序列的加权集成，权重由滚动回测的 log-loss 决定。区块哈希是密码学随机数——在足够长的回测中，任何机制命中率都将收敛到理论基线（两面盘 50%、定位胆 10%）。观察「vs 基线」列长期是否显著为正，就是检验随机性最直接的方式。本页用于统计教学与产品演示，不构成任何预测保证。
+    <b class="text-slate-200"><i class="fas fa-triangle-exclamation text-amber-400 mr-1"></i>方法论说明</b>：本页所有「倾向」均来自 20 种统计机制对历史序列的加权集成，权重由滚动回测的 log-loss 决定。在开奖独立且均匀的假设下，下一期理论基线不因热冷或连开而变化。历史偏离需要固定规则、时间留出验证及多重比较校正，不能凭单次排名认定优势。本页用于统计教学与产品演示，不构成任何预测保证。
   </section>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>

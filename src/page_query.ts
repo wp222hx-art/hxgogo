@@ -1,3 +1,4 @@
+import { atlasEntry } from './atlas-entry'
 /** /query —— 简易逐期命中查询页：按期号 / 日期 / 最近 N 期查 AI 各档位命中情况；顶部显示后台运行状态 */
 export const queryPage = () => `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -40,7 +41,8 @@ td.p { color:#4ade80; } td.m { color:#fb7185; }
     </div>
     <div class="flex items-center gap-3 text-xs">
       <span id="bg-pill" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800"><span class="dot" id="bg-dot"></span><span id="bg-text" class="text-slate-400">后台状态…</span></span>
-      <nav class="hidden md:flex gap-3 text-slate-400"><a href="/ai" class="hover:text-white">AI 推荐</a><a href="/top3" class="hover:text-white">优质策略</a><a href="/arena" class="hover:text-white">战绩榜</a><a href="/settings" class="hover:text-white">设置</a></nav>
+      <nav class="hidden md:flex gap-3 text-slate-400">${atlasEntry}
+      <a href="/ai" class="hover:text-white">AI 推荐</a><a href="/top3" class="hover:text-white">优质策略</a><a href="/arena" class="hover:text-white">战绩榜</a><a href="/settings" class="hover:text-white">设置</a></nav>
     </div>
   </div>
 </header>
@@ -55,14 +57,14 @@ td.p { color:#4ade80; } td.m { color:#fb7185; }
       <div><div class="text-slate-500">24h 推理次数</div><div id="k-24h" class="mono text-slate-200 mt-0.5">—</div></div>
       <div><div class="text-slate-500">累计已结算 / 命中</div><div id="k-scored" class="mono text-slate-200 mt-0.5">—</div></div>
     </div>
-    <p class="text-[11px] text-slate-600 mt-2">后台链路：拉取开奖 → 结算所有策略 → AI 推理下一期（带各档位战绩反馈）→ 记录 → 每 5 分钟漏期链上补齐。<b class="text-slate-500">与网页是否打开无关</b>，由沙盒内独立守护进程每 15s 续命。</p>
+    <p class="text-[11px] text-slate-600 mt-2">后台链路：拉取开奖 → 结算所有策略 → AI 推理下一期（带各档位战绩反馈）→ 记录 → 每 5 分钟漏期链上补齐。<b class="text-slate-500">与网页是否打开无关</b>，本地应用由后台进程持续协调。</p>
   </section>
 
   <!-- 查询 -->
   <section class="card p-4">
     <div class="flex flex-col md:flex-row gap-3 md:items-end">
       <div class="flex-1">
-        <label class="text-xs text-slate-500">期号（12 位，如 202609060146）或期号后 4 位（当日序号）</label>
+        <label class="text-xs text-slate-500">完整期号（随数据源为 11 或 12 位）或当日序号</label>
         <input id="q-expect" class="f mono mt-1" placeholder="202609060146 或 0146" inputmode="numeric">
       </div>
       <div class="md:w-52">
@@ -82,7 +84,7 @@ td.p { color:#4ade80; } td.m { color:#fb7185; }
   <!-- 5 组独立生成 · 组别命中对比 -->
   <section class="card p-4" id="sets-sec">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
-      <h2 class="font-bold text-sm"><i class="fas fa-layer-group mr-2 text-violet-400"></i>AI 5 组独立生成 · 哪一组更会中 <span class="text-xs text-slate-500 font-normal" id="sets-n"></span></h2>
+      <h2 class="font-bold text-sm"><i class="fas fa-layer-group mr-2 text-violet-400"></i>AI 5 组独立生成 · 固定窗口历史对照 <span class="text-xs text-slate-500 font-normal" id="sets-n"></span></h2>
       <div class="flex items-center gap-1 text-xs"><span class="text-slate-500 mr-1">近期窗口</span><div class="flex gap-1" id="sets-k"><button class="qk" data-k="30">30</button><button class="qk on" data-k="60">60</button><button class="qk" data-k="150">150</button></div></div>
     </div>
     <p class="text-[11px] text-slate-500 mb-2"><span style="color:#f472b6">A 融合</span> AI 定位×量化 · <span style="color:#a78bfa">B 定位</span> 纯 AI 三位权重 · <span style="color:#22d3ee">C 量化</span> z&gt;0 量化共识 · <span style="color:#fbbf24">D 聚焦</span> 核心号优先 · <span style="color:#34d399">E 互补</span> 与 A 零重叠。每组独立结算；<i class="fas fa-crown text-amber-300"></i> 历史 z 最高 · <i class="fas fa-fire text-orange-400"></i> 近期 z 最高。</p>
@@ -92,9 +94,9 @@ td.p { color:#4ade80; } td.m { color:#fb7185; }
   <!-- 档位分析：下一期命中概率 / 长龙 / 进坑 / 倍投 -->
   <section class="card p-4" id="ta-sec">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
-      <h2 class="font-bold text-sm"><i class="fas fa-chart-pie mr-2 text-amber-400"></i>投注档位分析 · 下一期命中概率 / 长龙机制 / 连续进坑 / 每 <span id="ta-round">10</span> 期倍投</h2>
+      <h2 class="font-bold text-sm"><i class="fas fa-chart-pie mr-2 text-amber-400"></i>档位检验 · 理论基线 / 连挂频率 / 风险模拟 / 每 <span id="ta-round">10</span> 期倍投</h2>
       <div class="flex items-center gap-2 text-xs">
-        <span class="text-slate-500">倍投触发置信度</span>
+        <span class="text-slate-500">历史模拟自评分阈值</span>
         <div class="flex gap-1" id="ta-conf"><button class="qk" data-c="0">不看</button><button class="qk" data-c="0.5">≥50%</button><button class="qk on" data-c="0.6">≥60%</button><button class="qk" data-c="0.7">≥70%</button></div>
         <span class="text-slate-500 ml-2">每轮</span>
         <div class="flex gap-1" id="ta-rnd"><button class="qk on" data-r="10">10 期</button><button class="qk" data-r="20">20 期</button></div>
@@ -103,9 +105,9 @@ td.p { color:#4ade80; } td.m { color:#fb7185; }
     <div id="ta-next" class="text-xs text-slate-400 mb-3"></div>
     <div id="ta-cards" class="grid md:grid-cols-2 2xl:grid-cols-3 gap-3"><div class="text-slate-500 text-sm">加载中…</div></div>
     <p class="text-[11px] text-slate-600 mt-3 leading-relaxed">
-      <b class="text-slate-500">下一期命中概率</b>：综合估计 = 全量 50% + 近 100 期 30% + 近 30 期 20%；"连挂后条件概率"是历史上处于同样连挂长度时下一期的真实命中率——若与理论无显著差异，说明长龙不会"憋出"命中（独立事件）。
+      <b class="text-slate-500">理论基线</b>：在独立、均匀假设下为 N/1000。全量、近100、近30和连挂后的命中率只描述历史，不能直接当作下一期概率。区间未校正多策略筛选或重复查看。
       <b class="text-slate-500">长龙存活率</b>：已挂 L 期后继续挂的实测概率 vs 理论 q。<b class="text-slate-500">连续进坑</b>：从现在起再连挂 k 期的概率；以及一轮内至少出现一次 ≥4 连挂的概率（马氏链精确解）。
-      <b class="text-slate-500">倍投</b>：每轮独立、轮末清零。「命中后翻倍」= 本期中且下期 AI 置信度达阈值 → 下期 ×2（连中继续翻，最高 ×8），未中回 1；「挂后加码」= 1-2-4 三级马丁；均与平注对比。历史回测，不构成收益承诺。
+      <b class="text-slate-500">倍投</b>：每轮独立、轮末清零。「命中后翻倍」= 历史本期中且下一条 AI 自评分达阈值 → 下期 ×2（连中继续翻，最高 ×8），未中回 1；「挂后加码」= 1-2-4 三级马丁；均与平注对比。仅供风险模拟；AI 自评分未校准，不作为当前加码依据。
     </p>
   </section>
 

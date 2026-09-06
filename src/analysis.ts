@@ -1,9 +1,18 @@
 // ============ 20 种分析机制 + 集成量化 + 滚动回测 ============
-// 重要声明：哈希输出是密码学随机数，任何机制在长期回测中都应收敛于基线 1/k。
+// 独立均匀哈希假设下应对照玩法的理论先验；组合形态的先验不是均匀分布。
 // 本模块的价值是「量化展示这一事实」并提供多维统计视角，而非产生真实预测优势。
-import { computeOutcomes5, type Outcomes5, POS_NAMES } from './engine5'
+import { computeOutcomes5, outcomesFromNumbers, type Outcomes5, POS_NAMES } from './engine5'
 
 export interface Draw { source: string; expect: string; block: number | null; hash: string; n1: number; n2: number; n3: number; n4: number; n5: number; open_ms: number }
+
+/** Official digits are authoritative. Only incomplete legacy rows may fall back to the hash. */
+export function outcomesForDraw(draw: { hash: string; n1?: number | null; n2?: number | null; n3?: number | null; n4?: number | null; n5?: number | null }): Outcomes5 | null {
+  const numbers = [draw.n1, draw.n2, draw.n3, draw.n4, draw.n5]
+  // Explicitly invalid official data is rejected instead of silently replacing it with another result.
+  if (numbers.some(n => n != null && (!Number.isInteger(n) || n < 0 || n > 9))) return null
+  if (numbers.every(n => n != null)) return outcomesFromNumbers(numbers as number[])
+  return typeof draw.hash === 'string' ? computeOutcomes5(draw.hash) : null
+}
 
 // ------------------------------------------------------------ 市场定义
 export interface Market { key: string; name: string; classes: string[]; labels: string[]; label: (o: Outcomes5) => number | null }
@@ -30,7 +39,16 @@ function prior(m: Market): number[] {
 export interface Ctx { seq: number[]; hours: number[]; hashes: string[]; prevSumBig: number[]; k: number; prior: number[] }
 export interface Mechanism { id: number; name: string; group: string; desc: string; predict: (c: Ctx) => number[] }
 
-const norm = (a: number[]) => { const s = a.reduce((x, y) => x + y, 0) || 1; return a.map(x => x / s) }
+/** Normalize finite nonnegative mass; missing mass falls back to the prior. */
+export function normalizeDistribution(a: number[], fallback?: number[]): number[] {
+  if (!a.length) return []
+  const clean = a.map(x => Number.isFinite(x) && x > 0 ? x : 0)
+  const max = Math.max(...clean)
+  if (!max) return fallback?.length === a.length ? normalizeDistribution(fallback) : a.map(() => 1 / a.length)
+  const scaled = clean.map(x => x / max), sum = scaled.reduce((x, y) => x + y, 0)
+  return scaled.map(x => x / sum)
+}
+const norm = normalizeDistribution
 const uniform = (k: number) => Array(k).fill(1 / k)
 const smooth = (counts: number[], alpha = 1) => norm(counts.map(c => c + alpha))
 function countWin(seq: number[], k: number, n: number) { const c = Array(k).fill(0); for (const v of seq.slice(-n)) c[v]++; return c }
@@ -38,14 +56,14 @@ function streak(seq: number[]) { if (!seq.length) return { v: -1, len: 0 }; cons
 function gaps(seq: number[], k: number) { const g = Array(k).fill(seq.length); for (let i = seq.length - 1; i >= 0; i--) { if (g[seq[i]] === seq.length) g[seq[i]] = seq.length - 1 - i } return g }
 function mix(p: number[], q: number[], w: number) { return p.map((x, i) => x * (1 - w) + q[i] * w) }
 
-export const MECHANISMS: Mechanism[] = [
+const RAW_MECHANISMS: Mechanism[] = [
   { id: 1, name: '全量频率', group: '频率', desc: '全部历史出现频率（拉普拉斯平滑）', predict: c => smooth(countWin(c.seq, c.k, c.seq.length)) },
   { id: 2, name: '近 30 期频率', group: '频率', desc: '最近 30 期出现频率', predict: c => smooth(countWin(c.seq, c.k, 30)) },
   { id: 3, name: '近 100 期频率', group: '频率', desc: '最近 100 期出现频率', predict: c => smooth(countWin(c.seq, c.k, 100)) },
   { id: 4, name: '指数加权频率', group: '频率', desc: 'EWMA α=0.05，越近权重越高', predict: c => { const w = Array(c.k).fill(0.5); let a = 1; for (let i = c.seq.length - 1; i >= 0 && a > 1e-4; i--) { w[c.seq[i]] += a; a *= 0.95 } return norm(w) } },
   { id: 5, name: '遗漏回补', group: '遗漏', desc: '当前遗漏越久，权重越高（追冷）', predict: c => { const g = gaps(c.seq, c.k); return norm(g.map(x => 1 + x)) } },
   { id: 6, name: '热号延续', group: '遗漏', desc: '近 20 期出现越多权重越高（追热）', predict: c => { const cnt = countWin(c.seq, c.k, 20); return norm(cnt.map(x => (x + 0.5) ** 1.5)) } },
-  { id: 7, name: '长龙反转', group: '形态', desc: '连续 ≥3 期同结果时押反转，长度越长越强', predict: c => { const s = streak(c.seq); const p = uniform(c.k); if (s.len >= 3 && c.k <= 4) { const shift = Math.min(0.35, 0.08 * s.len); p[s.v] -= shift; const others = c.k - 1; for (let i = 0; i < c.k; i++) if (i !== s.v) p[i] += shift / others } return p } },
+  { id: 7, name: '长龙反转', group: '形态', desc: '连续 ≥3 期同结果时押反转，长度越长越强', predict: c => { const s = streak(c.seq); const p = uniform(c.k); if (s.len >= 3 && c.k > 1 && c.k <= 4) { const shift = Math.min(p[s.v], 0.35, 0.08 * s.len); p[s.v] -= shift; const others = c.k - 1; for (let i = 0; i < c.k; i++) if (i !== s.v) p[i] += shift / others } return p } },
   { id: 8, name: '长龙跟随', group: '形态', desc: '连续 ≥3 期同结果时跟随（顺龙）', predict: c => { const s = streak(c.seq); const p = uniform(c.k); if (s.len >= 3 && c.k <= 4) { const shift = Math.min(0.35, 0.08 * s.len); p[s.v] += shift; for (let i = 0; i < c.k; i++) if (i !== s.v) p[i] -= shift / (c.k - 1) } return p } },
   { id: 9, name: '一阶马尔可夫', group: '转移', desc: 'P(下一期 | 上一期) 转移矩阵', predict: c => { if (c.seq.length < 2) return uniform(c.k); const last = c.seq[c.seq.length - 1]; const cnt = Array(c.k).fill(0); for (let i = 0; i < c.seq.length - 1; i++) if (c.seq[i] === last) cnt[c.seq[i + 1]]++; return smooth(cnt) } },
   { id: 10, name: '二阶马尔可夫', group: '转移', desc: 'P(下一期 | 前两期)', predict: c => { const n = c.seq.length; if (n < 3) return uniform(c.k); const a = c.seq[n - 2], b = c.seq[n - 1]; const cnt = Array(c.k).fill(0); for (let i = 0; i < n - 2; i++) if (c.seq[i] === a && c.seq[i + 1] === b) cnt[c.seq[i + 2]]++; return smooth(cnt, 0.5) } },
@@ -60,18 +78,19 @@ export const MECHANISMS: Mechanism[] = [
   { id: 19, name: '贝叶斯后验', group: '统计', desc: 'Dirichlet 先验(强度 20) + 近 200 期计数的后验均值', predict: c => { const cnt = countWin(c.seq, c.k, 200); return norm(cnt.map((x, i) => x + 20 * c.prior[i])) } },
   { id: 20, name: '块 Bootstrap', group: '统计', desc: '对近 200 期做 40 次块重采样（块长 5），取重采样频率均值', predict: c => { const src = c.seq.slice(-200); if (src.length < 20) return c.prior; const acc = Array(c.k).fill(0); let seed = src.length * 7919 + (src[src.length - 1] + 1) * 104729; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff }; for (let r = 0; r < 40; r++) { const cnt = Array(c.k).fill(0); let got = 0; while (got < src.length) { const s = Math.floor(rnd() * (src.length - 5)); for (let j = 0; j < 5 && got < src.length; j++, got++) cnt[src[s + j]]++ } const f = norm(cnt); for (let i = 0; i < c.k; i++) acc[i] += f[i] } return norm(acc) } },
 ]
+export const MECHANISMS: Mechanism[] = RAW_MECHANISMS.map(mc => ({ ...mc, predict: (c: Ctx) => norm(mc.predict(c), c.prior) }))
 
 // ------------------------------------------------------------ 构建上下文
 export function buildSeries(draws: Draw[], m: Market) {
   // draws: 最新在前 -> 转为最旧在前
   const asc = [...draws].reverse()
-  const seq: number[] = [], hours: number[] = [], hashes: string[] = [], prevSumBig: number[] = [], expects: string[] = []
+  const seq: number[] = [], hours: number[] = [], hashes: string[] = [], prevSumBig: number[] = [], expects: string[] = [], openMs: number[] = []
   for (const d of asc) {
-    const o = computeOutcomes5(d.hash); if (!o) continue
+    const o = outcomesForDraw(d); if (!o) continue
     const l = m.label(o); if (l === null) continue
-    seq.push(l); hours.push(new Date(d.open_ms + 8 * 3600_000).getUTCHours()); hashes.push(d.hash); prevSumBig.push(o.sumSize === 'big' ? 1 : 0); expects.push(d.expect)
+    seq.push(l); hours.push(new Date(d.open_ms + 8 * 3600_000).getUTCHours()); hashes.push(d.hash); prevSumBig.push(o.sumSize === 'big' ? 1 : 0); expects.push(d.expect); openMs.push(d.open_ms)
   }
-  return { seq, hours, hashes, prevSumBig, expects }
+  return { seq, hours, hashes, prevSumBig, expects, openMs }
 }
 
 export interface Backtest { id: number; name: string; group: string; desc: string; acc: number; logloss: number; n: number; edge: number; weight: number; recent: number[] }
@@ -80,39 +99,47 @@ export interface Backtest { id: number; name: string; group: string; desc: strin
 export function backtest(series: ReturnType<typeof buildSeries>, m: Market, steps = 150) {
   const k = m.classes.length, pr = prior(m)
   const n = series.seq.length
-  const start = Math.max(30, n - steps)
+  const requested = Number.isFinite(steps) ? Math.max(0, Math.floor(steps)) : 150
+  const start = Math.min(n, Math.max(30, n - requested))
   const res: Backtest[] = MECHANISMS.map(mc => ({ id: mc.id, name: mc.name, group: mc.group, desc: mc.desc, acc: 0, logloss: 0, n: 0, edge: 0, weight: 0, recent: [] }))
-  const baseLL = -Math.log(1 / k)
+  const baseline = Math.max(...pr)
+  let baseLL = 0
   for (let t = start; t < n; t++) {
     const ctx: Ctx = { seq: series.seq.slice(0, t), hours: series.hours.slice(0, t + 1), hashes: series.hashes.slice(0, t), prevSumBig: series.prevSumBig.slice(0, t), k, prior: pr }
     const truth = series.seq[t]
+    baseLL += -Math.log(Math.max(1e-12, pr[truth]))
     MECHANISMS.forEach((mc, i) => {
       const p = mc.predict(ctx); const pick = p.indexOf(Math.max(...p))
       const hit = pick === truth ? 1 : 0
       res[i].acc += hit; res[i].logloss += -Math.log(Math.max(1e-6, p[truth])); res[i].n++
-      if (res[i].recent.length < 30) res[i].recent.push(hit)
+      res[i].recent.push(hit)
     })
   }
+  baseLL = n > start ? baseLL / (n - start) : -pr.reduce((s, p) => s + (p ? p * Math.log(p) : 0), 0)
   for (const r of res) {
     if (r.n) { r.acc /= r.n; r.logloss /= r.n }
-    r.edge = r.acc - 1 / k
+    r.edge = r.n ? r.acc - baseline : 0
     // 权重：log-loss 优于基线的程度（softmax 温度 5），最低 0.2 防止归零
-    r.weight = Math.max(0.2, Math.exp(5 * (baseLL - r.logloss)))
-    r.recent.reverse()
+    r.weight = r.n ? Math.max(0.2, Math.exp(5 * (baseLL - r.logloss))) : 1
+    r.recent = r.recent.slice(-30).reverse()
   }
   const ws = res.reduce((s, r) => s + r.weight, 0); for (const r of res) r.weight /= ws
-  return { res, steps: n - start, baseline: 1 / k }
+  return { res, steps: n - start, baseline, baseline_logloss: baseLL }
 }
 
 /** 集成预测 + 量化倾向 */
-export function ensemble(series: ReturnType<typeof buildSeries>, m: Market, bt: Backtest[]) {
+export function ensemble(series: ReturnType<typeof buildSeries>, m: Market, bt: Backtest[], forecastOpenMs?: number) {
   const k = m.classes.length, pr = prior(m)
-  const ctx: Ctx = { seq: series.seq, hours: [...series.hours, new Date(Date.now() + 8 * 3600_000).getUTCHours()], hashes: series.hashes, prevSumBig: series.prevSumBig, k, prior: pr }
-  const per = MECHANISMS.map((mc, i) => ({ id: mc.id, name: mc.name, p: mc.predict(ctx), weight: bt[i].weight }))
+  // Historical predictions use the data prefix/explicit target, never today's wall clock.
+  const lastMs = series.openMs.at(-1) ?? 0, previousMs = series.openMs.at(-2) ?? lastMs - 60_000
+  const targetMs = forecastOpenMs ?? lastMs + Math.max(1, lastMs - previousMs)
+  const ctx: Ctx = { seq: series.seq, hours: [...series.hours, new Date(targetMs + 8 * 3600_000).getUTCHours()], hashes: series.hashes, prevSumBig: series.prevSumBig, k, prior: pr }
+  const weights = norm(MECHANISMS.map(mc => bt.find(r => r.id === mc.id)?.weight ?? 0))
+  const per = MECHANISMS.map((mc, i) => ({ id: mc.id, name: mc.name, p: mc.predict(ctx), weight: weights[i] }))
   const agg = Array(k).fill(0); for (const x of per) for (let i = 0; i < k; i++) agg[i] += x.p[i] * x.weight
   const p = norm(agg)
   const top = p.indexOf(Math.max(...p))
-  const tilt = Math.round(((p[top] - 1 / k) / (1 - 1 / k)) * 1000) / 10   // 倾向指数 0~100
+  const tilt = Math.round(Math.max(0, (p[top] - pr[top]) / (1 - pr[top])) * 1000) / 10   // 相对先验的排序倾向，不是命中率
   const votes = Array(k).fill(0); for (const x of per) votes[x.p.indexOf(Math.max(...x.p))]++
   // 一致性：机制间投票熵
   const vf = norm(votes); const H = -vf.reduce((s, x) => s + (x > 0 ? x * Math.log2(x) : 0), 0)
@@ -122,7 +149,7 @@ export function ensemble(series: ReturnType<typeof buildSeries>, m: Market, bt: 
 
 // ------------------------------------------------------------ 多维统计（图表用）
 export function stats(draws: Draw[]) {
-  const asc = [...draws].reverse().map(d => ({ d, o: computeOutcomes5(d.hash)! })).filter(x => x.o)
+  const asc = [...draws].reverse().map(d => ({ d, o: outcomesForDraw(d)! })).filter(x => x.o)
   const n = asc.length
   const digitFreq = [0, 1, 2, 3, 4].map(() => Array(10).fill(0))
   const sumDist = Array(46).fill(0)

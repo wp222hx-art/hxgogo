@@ -1,17 +1,23 @@
+import { createSourceScheduler } from './source-scheduler'
+import { atlasApi } from './atlas-api'
+import { atlasPage } from './page_atlas'
 import { Hono } from 'hono'
+import { nextPeriod, periodTimeMs, normalizePeriodQuery, periodAtTimeMs } from './period'
+import { verifiedLiveSql } from './arena'
+import { evaluationSummary } from './evaluation'
 import { cors } from 'hono/cors'
 import { computeOutcomes, judge, isValidBet, ODDS, LIMITS, ROOMS, sha256, hmacSha256, randomHex, type Room, type BetType } from './engine'
 import { getNowBlock, findFirstBlockAtOrAfter, type TronBlock } from './tron'
 import { page } from './page'
 import { analysisPage } from './page_analysis'
 import { computeOutcomes5, judge5, isBet5Type, ODDS5, type Bet5Type } from './engine5'
-import { SOURCES, isSource, syncSource, loadDraws, syncStatus, dataVersion, onInvalidate, fetchQkltj } from './sync'
-import { MARKETS, marketByKey, buildSeries, backtest, ensemble, stats as drawStats, MECHANISMS } from './analysis'
+import { SOURCES, isSource, syncSource, loadDraws, syncStatus, dataVersion, onInvalidate, fetchQkltj, notifyDrawChange } from './sync'
+import { MARKETS, marketByKey, buildSeries, backtest, ensemble, outcomesForDraw, stats as drawStats, MECHANISMS } from './analysis'
 import { kline, marketKlines } from './kline'
 import { recommend } from './recommend'
 import { parityKline } from './parity_kline'
 import { pick } from './picker'
-import { recordPick, pickTrack } from './pick_track'
+import { recordPick, scorePicks, pickTrack } from './pick_track'
 import { autoArena, arenaBoard, arenaRound, replayArena, settleArena, externalRound, nextOf, STRATEGIES, AI_SUBSETS, ARENA_N, ARENA_ODDS, ARENA_MIN_HIST } from './arena'
 import { arenaPage } from './page_arena'
 import { aiPage } from './page_ai'
@@ -27,9 +33,11 @@ import { generateSets, insertSets, allNs, setsBoard, setsForPeriod, backfillSets
 
 type Bindings = { DB: D1Database } & AiEnv
 const app = new Hono<{ Bindings: Bindings; Variables: { ai: AiEnv } }>()
+app.route('/api/atlas', atlasApi)
+app.get('/atlas', c => c.html(atlasPage()))
 app.use('/api/*', cors())
 // AI 生效配置 = D1 app_config（/settings 页面填写）> 环境变量；每个请求解析一次，后续所有 AI 调用都用 c.var.ai
-app.use('/api/*', async (c, next) => { c.set('ai', await effectiveEnv(c.env.DB, c.env)); ensureHeartbeat(c); await next() })
+app.use('/api/*', async (c, next) => { c.set('ai', await effectiveEnv(c.env.DB, c.env)); if (!(c.env as any).LOCAL_DESKTOP) ensureHeartbeat(c); await next() })
 
 // ------------------------------------------------------------------ helpers
 const now = () => Date.now()
@@ -47,11 +55,7 @@ async function getUser(c: any) {
 const FIVE_BLOCK_OFFSET_MS = 3_000
 function fmtUtc8(ms: number) { return new Date(ms + 8 * 3600_000).toISOString().slice(0, 19).replace('T', ' ') }
 /** 官方期号格式：YYYYMMDD + 当日分钟序号(4位, UTC+8)，如 202609030670 = 09-03 11:10 */
-function officialExpect(minuteMs: number) {
-  const d = new Date(minuteMs + 8 * 3600_000)
-  const ymd = d.toISOString().slice(0, 10).replace(/-/g, '')
-  return ymd + String(d.getUTCHours() * 60 + d.getUTCMinutes()).padStart(4, '0')
-}
+function officialExpect(minuteMs: number) { return periodAtTimeMs(minuteMs, 'local:five') || '' }
 
 function roundWindow(room: Room, t: number) {
   const { roundMs, closeBeforeMs } = ROOMS[room]
@@ -428,7 +432,7 @@ app.get('/api/draws', async (c) => {
   if (!isSource(source)) return bad(c, 'unknown source')
   const limit = Math.min(1000, Number(c.req.query('limit') || 100))
   const rows = await drawsFor(c.env.DB, source, limit)
-  return c.json({ ok: true, source, rows: rows.map(d => ({ ...d, outcomes: computeOutcomes5(d.hash) })) })
+  return c.json({ ok: true, source, rows: rows.map(d => ({ ...d, outcomes: outcomesForDraw(d) })) })
 })
 
 app.get('/api/analysis/markets', (c) => c.json({ ok: true, markets: MARKETS.map(m => ({ key: m.key, name: m.name, classes: m.classes, labels: m.labels })), mechanisms: MECHANISMS.map(m => ({ id: m.id, name: m.name, group: m.group, desc: m.desc })) }))
@@ -502,7 +506,7 @@ app.get('/api/analysis/pick', async (c) => {
   const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) { c.header('X-Cache', 'HIT'); return c.json({ ...hit.v, cached: true, cached_ms: hit.t, cache_age_ms: now() - hit.t }) }
   const src = SOURCES[source as keyof typeof SOURCES]
   const t0 = now()
-  const v: any = { ok: true, source, interval_ms: src.intervalMs, ...pick(rows as any, { count, steps, btSteps: bt, wParity, wSize, wCombo, temp }), compute_ms: 0 }
+  const v: any = { ok: true, source, interval_ms: src.intervalMs, ...pick(rows as any, { source, count, steps, btSteps: bt, wParity, wSize, wCombo, temp }), compute_ms: 0 }
   v.compute_ms = now() - t0
   // 战绩追踪：默认参数下（wp/ws/wc 默认）把下一期 Top-N 快照锁定入库，开奖后自动评分
   if (wParity === 0.6 && wSize === 0.4 && wCombo === 0.35 && steps === 60) {
@@ -518,7 +522,8 @@ const autoTracked = new Map<string, string>()   // source|count|temp → 已记�
 async function autoTrack(db: D1Database, source: string) {
   const latest = (await db.prepare('SELECT expect FROM draws WHERE source=? ORDER BY open_ms DESC LIMIT 1').bind(source).first<any>())?.expect
   if (!latest || !/^\d+$/.test(latest)) return
-  const next = String(BigInt(latest) + 1n)
+  const next = nextPeriod(latest, source)
+  if (!next) return
   let rows: any[] | null = null
   for (const cfg of AUTO_TRACK) {
     const k = `${source}|${cfg.count}|${cfg.temp}`
@@ -526,7 +531,7 @@ async function autoTrack(db: D1Database, source: string) {
     const exists = await db.prepare('SELECT 1 FROM pick_log WHERE source=? AND expect=? AND count=? AND temp=?').bind(source, next, cfg.count, cfg.temp).first()
     if (!exists) {
       rows ||= await loadDraws(db, source, 600)
-      const r = pick(rows as any, { count: cfg.count, temp: cfg.temp, btSteps: 0 })
+      const r = pick(rows as any, { source, count: cfg.count, temp: cfg.temp, btSteps: 0 })
       await recordPick(db, { source, next_expect: r.next_expect, latest_expect: r.latest_expect, count: cfg.count, temp: cfg.temp, numbers: r.numbers.map(x => x.no), coverage: r.coverage.p })
     }
     autoTracked.set(k, next)
@@ -545,13 +550,15 @@ async function arenaTick(db: D1Database, source: string) {
 }
 /** 后台触发 AI 推理（进程内去重；INSERT OR IGNORE 兜底多实例）；返回 Promise 供 waitUntil */
 const aiBusy = new Set<string>()
+const localJobs = new Set<Promise<any>>()
+export async function waitLocalJobs() { await Promise.allSettled([...localJobs]) }
 async function aiKick(db: D1Database, env: AiEnv, source: string, trigger = 'page') {
   if (!aiEnabled(env) || aiBusy.has(source)) return
   aiBusy.add(source)
   try {
     const rows = await loadDraws(db, source, 800)
     // 报单截止 = 下期理论开奖时刻 − AI_LEAD_MS（默认 20s）：留出足够的下单时间；超时则本期由兜底策略顶上
-    const lockByMs = rows.length ? (rows[0] as any).open_ms + SOURCES[source].intervalMs - aiLeadMs(env) : undefined
+    const lockByMs = rows.length ? (periodTimeMs(nextPeriod(rows[0].expect, source) || '', source) ?? 0) - aiLeadMs(env) : undefined
     let cap: { f: any; ctx: any } | null = null
     let setsGen: ReturnType<typeof generateSets> = []
     const customNs = parseCustomNs(env.AI_CUSTOM_N)
@@ -577,25 +584,51 @@ async function aiKick(db: D1Database, env: AiEnv, source: string, trigger = 'pag
  *  链内按 HEARTBEAT_MS 轮询直到 HEARTBEAT_LIFE_MS 到期（Worker 隔离体存活期内持续）。本地 wrangler dev 下等价于常驻。
  *  每一跳只做：syncSource（受 dueInfo 节流，不到点不打网络）→ arenaTick → aiNeeded ? aiKick('heartbeat') */
 const HEARTBEAT_MS = 2_000, HEARTBEAT_LIFE_MS = 20 * 60_000, GAP_CHECK_MS = 5 * 60_000
-let heartbeatUntil = 0, lastGapCheck = 0, heartbeatTicks = 0, heartbeatStarted = 0, lastKeeperMs = 0
-async function heartbeat(db: D1Database, baseEnv: AiEnv) {
+let heartbeatUntil = 0, heartbeatTicks = 0, heartbeatStarted = 0, lastKeeperMs = 0
+async function heartbeat(db: D1Database, baseEnv: AiEnv, signal?: AbortSignal) {
   const until = Date.now() + HEARTBEAT_LIFE_MS; heartbeatUntil = until; if (!heartbeatStarted) heartbeatStarted = Date.now()
-  while (Date.now() < until && heartbeatUntil === until) {
-    heartbeatTicks++
-    const env = await effectiveEnv(db, baseEnv)   // 每跳重新解析：/settings 改了 key / 模型 / 思考档立刻生效
-    for (const s of Object.keys(SOURCES).filter(k => k.startsWith('qkltj:'))) {
-      try {
-        const r = await syncSource(db, s)
-        if (!r.skipped) await arenaTick(db, s)
-        // 只对刚有新开奖或 AI 缺失的期触发；aiKick 自带 busy 锁
-        if (await aiNeeded(db, s)) aiKick(db, env, s, 'heartbeat')
-        // 每 5 分钟：扫近 2 天漏期，链上补齐（每次 ≤10 期，串行、不阻塞主链路）
-        if (Date.now() - lastGapCheck > GAP_CHECK_MS && SOURCES[s].chain === 'tron') { lastGapCheck = Date.now(); const g = await scanGaps(db, s, { days: 2 }); if (g.missing.length) { const r = await fillGapsFromChain(db, s, g.missing, 10); if (r.filled) { invalidateArena(s); console.log('gapfill', s, r.filled) } } }
-      } catch (e) { console.error('heartbeat', s, e) }
+  const sources = Object.keys(SOURCES).filter(k => k.startsWith('qkltj:'))
+  const scheduler = createSourceScheduler({
+    sources,
+    run: async s => {
+      if (signal?.aborted) return
+      const r = await syncSource(db, s)
+      if (signal?.aborted) return
+      if (!r.skipped && !r.error) { await autoTrack(db, s); await scorePicks(db, s); await arenaTick(db, s) }
+      // AI configuration errors must never stop the shared draw synchronization.
+      if (!signal?.aborted && await aiNeeded(db, s)) {
+        try {
+          const env = await effectiveEnv(db, baseEnv)
+          const job = aiKick(db, env, s, 'heartbeat')
+          localJobs.add(job); job.finally(() => localJobs.delete(job)).catch(() => {})
+        } catch (error) { console.error('heartbeat AI configuration', s, error) }
+      }
+    },
+    sweepSources: sources.filter(s => SOURCES[s].chain === 'tron'),
+    sweepEveryMs: GAP_CHECK_MS,
+    sweep: async s => {
+      if (signal?.aborted) return
+      const gaps = await scanGaps(db, s, { days: 2 })
+      if (!signal?.aborted && gaps.missing.length) {
+        const r = await fillGapsFromChain(db, s, gaps.missing, 10)
+        if (r.filled) { notifyDrawChange(s); console.log('gapfill', s, r.filled) }
+      }
+    },
+    onError: (error, source, kind) => console.error('heartbeat', kind, source, error)
+  })
+  try {
+    while (!signal?.aborted && (signal || (Date.now() < until && heartbeatUntil === until))) {
+      if (signal) { heartbeatUntil = Date.now() + HEARTBEAT_LIFE_MS; lastKeeperMs = Date.now() }
+      heartbeatTicks++; scheduler.tick()
+      await new Promise<void>(resolve => {
+        const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve() }
+        const timer = setTimeout(done, HEARTBEAT_MS)
+        signal?.addEventListener('abort', done, { once: true })
+      })
     }
-    await new Promise(r => setTimeout(r, HEARTBEAT_MS))
-  }
+  } finally { await scheduler.stop() }
 }
+export const startLocalBackground = (db: D1Database, env: AiEnv, signal: AbortSignal) => heartbeat(db, env, signal)
 const ensureHeartbeat = (c: any) => { if (Date.now() < heartbeatUntil - 60_000) return; heartbeatUntil = Date.now() + HEARTBEAT_LIFE_MS; bg(c, heartbeat(c.env.DB, c.env)) }
 /**
  * Keeper 续命接口：由沙盒内独立 PM2 进程（keeper.cjs）每 15s 调一次，保证关掉所有网页后
@@ -606,7 +639,7 @@ app.get('/api/keeper/tick', async (c) => {
   const db = c.env.DB
   const src: any[] = []
   for (const s of Object.keys(SOURCES).filter(k => k.startsWith('qkltj:'))) {
-    const pend = await db.prepare(`SELECT expect FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NULL ORDER BY expect DESC LIMIT 1`).bind(s).first<any>()
+    const pend = await db.prepare(`SELECT expect FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NULL AND ${verifiedLiveSql()} AND cutoff_ms>${Date.now()} ORDER BY expect DESC LIMIT 1`).bind(s).first<any>()
     const last = await db.prepare(`SELECT expect, open_ms FROM draws WHERE source=? ORDER BY open_ms DESC LIMIT 1`).bind(s).first<any>()
     src.push({ source: s, latest_draw: last?.expect || null, latest_open_ms: last?.open_ms || null, ai_pending: pend?.expect || null })
   }
@@ -618,14 +651,15 @@ app.get('/api/keeper/status', async (c) => {
   const db = c.env.DB
   const lastF = await db.prepare(`SELECT expect, created_ms, error, trigger FROM ai_forecasts WHERE source=? ORDER BY expect DESC LIMIT 1`).bind(source).first<any>()
   const today = await db.prepare(`SELECT COUNT(*) n, SUM(CASE WHEN error IS NULL THEN 1 ELSE 0 END) ok FROM ai_forecasts WHERE source=? AND created_ms>?`).bind(source, Date.now() - 86400_000).first<any>()
-  const scored = await db.prepare(`SELECT COUNT(*) n, SUM(hit) h FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL`).bind(source).first<any>()
+  const scored = await db.prepare(`SELECT COUNT(*) n, SUM(hit) h FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL AND ${verifiedLiveSql()}`).bind(source).first<any>()
   return c.json({ ok: true, source, now: Date.now(), heartbeat_alive: Date.now() < heartbeatUntil, heartbeat_left_s: Math.max(0, Math.round((heartbeatUntil - Date.now()) / 1000)), ticks: heartbeatTicks, up_since_ms: heartbeatStarted || null, keeper_last_ms: lastKeeperMs || null, keeper_alive: (lastKeeperMs > 0 && Date.now() - lastKeeperMs < 60_000) || (heartbeatStarted > 0 && Date.now() - heartbeatStarted < 30_000), keeper_warming: lastKeeperMs === 0, last_forecast: lastF ? { expect: lastF.expect, created_ms: lastF.created_ms, ok: !lastF.error, trigger: lastF.trigger } : null, forecasts_24h: { n: today?.n || 0, ok: today?.ok || 0 }, scored: { n: scored?.n || 0, hits: scored?.h || 0 } })
 })
 /** 是否需要为当前待开期跑 AI（无 forecast 记录时才需要；有 error 记录 = 本期已放弃） */
 async function aiNeeded(db: D1Database, source: string) {
   const latest = (await db.prepare('SELECT expect FROM draws WHERE source=? ORDER BY expect DESC LIMIT 1').bind(source).first<any>())?.expect
   if (!latest) return false
-  const next = nextOf(latest)
+  const next = nextPeriod(latest, source)
+  if (!next) return false
   const f = await db.prepare('SELECT 1 FROM ai_forecasts WHERE source=? AND expect=?').bind(source, next).first()
   return !f
 }
@@ -648,7 +682,7 @@ async function autoReport(db: D1Database, env: AiEnv, source: string, board: any
   const every = reportEvery(env as any); if (!every || reportBusy.has(source)) return
   const latest = board.periods.at(-1)?.expect; if (!latest) return
   const last = await latestReport(db, source)
-  const liveSince = (await db.prepare(`SELECT COUNT(DISTINCT expect) n FROM arena_rounds WHERE source=? AND mode='live' AND scored_ms IS NOT NULL AND expect>?`).bind(source, last?.expect || '0').first<any>())?.n || 0
+  const liveSince = (await db.prepare(`SELECT COUNT(DISTINCT expect) n FROM arena_rounds WHERE source=? AND mode='live' AND scored_ms IS NOT NULL AND ${verifiedLiveSql()} AND expect>?`).bind(source, last?.expect || '0').first<any>())?.n || 0
   if (last && liveSince < every) return
   if (!last && liveSince < 1) return
   reportBusy.add(source)
@@ -659,7 +693,8 @@ async function autoReport(db: D1Database, env: AiEnv, source: string, board: any
 app.get('/api/arena/board', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
-  const mode = (c.req.query('mode') || 'all') as 'all' | 'live' | 'replay'
+  const mode = (c.req.query('mode') || 'live') as 'all' | 'live' | 'replay'
+  if (!['all', 'live', 'replay'].includes(mode)) return bad(c, 'unknown mode')
   const limit = Number(c.req.query('limit') || 200)
   const tm: Record<string, number> = {}; let tt = now()
   if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source); tm.sync = now() - tt; tt = now()
@@ -672,11 +707,11 @@ app.get('/api/arena/board', async (c) => {
   const key = `board|${source}|${mode}|${limit}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
   const { v: r, cached, age } = await cachedArena(key, 30_000, async () => {
     const r = await arenaBoard(c.env.DB, source, { mode, limit, extraPlans: await aiExtraPlans(c.env.DB, source) })
-    const retired = await aiPlansMaintain(c.env.DB, source, r)
+    const retired = mode === 'live' ? await aiPlansMaintain(c.env.DB, source, r) : 0
     const ai = { enabled: aiEnabled(c.var.ai), model: aiEnabled(c.var.ai) ? aiModel(c.var.ai) : null, effort: aiEffort(c.var.ai), report_every: reportEvery(c.var.ai), history: await aiHistory(c.env.DB, source, 8), plans_retired_now: retired }
     return { ...r, ai }
   })
-  if (aiEnabled(c.var.ai) && reportEvery(c.var.ai) > 0) bg(c, autoReport(c.env.DB, c.var.ai, source, r))
+  if (mode === 'live' && aiEnabled(c.var.ai) && reportEvery(c.var.ai) > 0) bg(c, autoReport(c.env.DB, c.var.ai, source, r))
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
   return c.json({ ok: true, source, mode, ...r, cached, cache_age_ms: age, compute_ms: now() - t0, timing: { ...tm, board: now() - t0 } })
 })
@@ -709,16 +744,16 @@ app.get('/api/ai/history', async (c) => {
 app.get('/api/ai/query', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
-  const q = { expect: (c.req.query('expect') || '').replace(/\D/g, ''), date: c.req.query('date') || '', n: Math.min(1000, Math.max(1, Number(c.req.query('n') || 100))), hit: c.req.query('hit') === '1' }
+  const q = { expect: (c.req.query('expect') || c.req.query('seq') || '').trim(), date: c.req.query('date') || '', n: Math.min(1000, Math.max(1, Number(c.req.query('n') || 100))), hit: c.req.query('hit') === '1' }
   const defs = tierDefs(parseCustomNs(c.var.ai.AI_CUSTOM_N))
   const where: string[] = []; const args: any[] = []
   let mode = 'recent'
-  if (q.expect.length === 12) { where.push('a.expect=?'); args.push(q.expect); mode = 'expect' }
-  else if (q.expect.length >= 1 && q.expect.length <= 4) {
-    const seq = q.expect.padStart(4, '0')
-    let day = q.date.replace(/-/g, '')
-    if (!day) { const last = await c.env.DB.prepare(`SELECT expect FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT 1`).bind(source).first<any>(); day = last ? String(last.expect).slice(0, 8) : '' }
-    where.push('a.expect=?'); args.push(day + seq); mode = 'expect'
+  if (q.date && !normalizePeriodQuery('1', source, q.date.replace(/-/g, ''))) return bad(c, '日期无效')
+  if (q.expect) {
+    const last = q.date ? null : await c.env.DB.prepare('SELECT expect FROM draws WHERE source=? ORDER BY open_ms DESC LIMIT 1').bind(source).first<any>()
+    const expect = normalizePeriodQuery(q.expect, source, q.date ? q.date.replace(/-/g, '') : last?.expect)
+    if (!expect) return bad(c, '期号无效，请检查日期和当前数据源的期数范围')
+    where.push('a.expect=?'); args.push(expect); mode = 'expect'
   } else if (q.date) { where.push('a.expect LIKE ?'); args.push(q.date.replace(/-/g, '') + '%'); mode = 'date' }
   if (q.hit) where.push('a.hit=1')
   const limit = mode === 'date' ? 1440 : q.n
@@ -726,7 +761,7 @@ app.get('/api/ai/query', async (c) => {
   const history = periods.map(p => { const sub: Record<string, 0 | 1 | null> = {}; for (const d of defs) sub[d.key] = p.sub[d.key] ? (p.sub[d.key]!.hit ? 1 : 0) : null
     return { expect: p.expect, actual: p.actual, open_ms: p.open_ms, hit: p.ai.hit, rank: p.ai.rank, pnl: p.ai.pnl, regime: p.regime, confidence: p.confidence, fallback: p.fallback, sub } })
   const summary = defs.map(d => tierStat(periods, d))
-  return c.json({ ok: true, source, mode, query: q, tiers: defs.map(d => ({ key: d.key, n_pick: d.n, custom: d.custom, sharp: !!d.sharp })), history, summary })
+  return c.json({ ok: true, source, mode, query: q, filtered_hits: q.hit, statistics_scope: q.hit ? 'hit_filtered_not_overall_accuracy' : 'verified_live', tiers: defs.map(d => ({ key: d.key, n_pick: d.n, custom: d.custom, sharp: !!d.sharp })), history, summary })
 })
 /**
  * 连挂风险统计：AI 各投注档位（100/150/自定义/300/500）出现「连续 ≥K 期不命中」的概率。
@@ -791,7 +826,7 @@ app.get('/api/ai/tier-analysis', async (c) => {
     const r4 = (x: number | null) => x == null || !isFinite(x) ? null : Math.round(x * 10000) / 10000
     const wilson = (h: number, n: number) => { if (!n) return null; const z = 1.96, p = h / n, d = 1 + z * z / n, ctr = p + z * z / (2 * n), sp = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)); return { lo: r4((ctr - sp) / d), hi: r4((ctr + sp) / d) } }
     // 下一期 AI 置信度（若已锁定）
-    const nextF = await c.env.DB.prepare(`SELECT f.expect, f.confidence FROM ai_forecasts f WHERE f.source=? AND f.error IS NULL AND NOT EXISTS (SELECT 1 FROM arena_rounds a WHERE a.source=f.source AND a.expect=f.expect AND a.strategy='ai' AND a.scored_ms IS NOT NULL) ORDER BY f.expect DESC LIMIT 1`).bind(source).first<any>()
+    const nextF = await c.env.DB.prepare(`SELECT f.expect, f.confidence FROM ai_forecasts f JOIN arena_rounds a ON a.source=f.source AND a.expect=f.expect AND a.strategy='ai' WHERE f.source=? AND f.error IS NULL AND a.scored_ms IS NULL AND ${verifiedLiveSql('a')} AND a.cutoff_ms>${Date.now()} AND NOT EXISTS (SELECT 1 FROM draws d WHERE d.source=a.source AND d.expect=a.expect) ORDER BY f.expect DESC LIMIT 1`).bind(source).first<any>()
     const out = tiers.map(t => {
       const p0 = t.n / 1000, q0 = 1 - p0, be = t.n / 950
       const rows = periodsAll.filter(p => p.sub[t.key])                 // 只用该档位真实结算行
@@ -817,7 +852,7 @@ app.get('/api/ai/tier-analysis', async (c) => {
       // 下一期命中概率的三种估计
       const pAll = rate(hits), p100 = rate(last(100)), p30 = rate(last(30))
       const pCond = cond[cur >= 6 ? '6+' : String(cur)].rate
-      const pEst = pAll != null ? r4(0.5 * pAll + 0.3 * (p100 ?? pAll) + 0.2 * (p30 ?? pAll)) : r4(p0)   // 综合估计：全量 50% + 近 100 30% + 近 30 20%
+      const pEst = r4(p0) // 未经独立校准，只提供理论基线；历史频率单独展示
       const qEst = 1 - (pEst ?? p0)
       // 连续进坑：从现在起再连挂 k 期
       const pit = [1, 2, 3, 4].map(k => ({ k, theory: r4(Math.pow(q0, k)), est: r4(Math.pow(qEst, k)) }))
@@ -860,13 +895,13 @@ app.get('/api/ai/tier-analysis', async (c) => {
       for (let i = 0; i + 1 < hits.length; i++) if (hits[i]) { afterHitN++; if (hits[i + 1]) afterHitH++; const cf = rows[i + 1].confidence; if (cf != null && cf >= CONF) { afterHitConfN++; if (hits[i + 1]) afterHitConfH++ } }
       return {
         key: t.key, n_pick: t.n, custom: t.custom, sharp: !!t.sharp, periods: rows.length, hits: H, breakeven: r4(be),
-        next: { theory: r4(p0), all: r4(pAll), ci_all: wilson(H, T), last100: r4(p100), last30: r4(p30), cond_after_current_streak: pCond, current_streak: cur, estimate: pEst, edge_vs_breakeven: pEst != null ? r4(pEst - be) : null, verdict: pEst == null ? 'n/a' : (pEst >= be + 0.02 && (pAll ?? 0) >= be - 0.01) ? 'favorable' : pEst >= be ? 'marginal' : 'unfavorable' },
-        streak: { dist, longest, current: cur, cond, survive, end_now_p: pCond ?? r4(p0) },
+        next: { theory: r4(p0), all: r4(pAll), ci_all: wilson(H, rows.length), last100: r4(p100), last30: r4(p30), cond_after_current_streak: pCond, current_streak: cur, estimate: pEst, edge_vs_breakeven: pEst != null ? r4(pEst - be) : null, verdict: 'insufficient_evidence', calibrated: false, estimate_kind: 'uniform_baseline' },
+        streak: { dist, longest, current: cur, cond, survive, end_now_p: r4(p0) },
         pit: { steps: pit, at_least_one_4run_in_round: pit10, round: ROUND },
         martingale: { conf_threshold: CONF, round: ROUND, after_hit: { n: afterHitN, hits: afterHitH, rate: afterHitN ? r4(afterHitH / afterHitN) : null }, after_hit_conf: { n: afterHitConfN, hits: afterHitConfH, rate: afterHitConfN ? r4(afterHitConfH / afterHitConfN) : null }, sims },
       }
     })
-    return { periods: T, first: periodsAll[0]?.expect || null, last: periodsAll[T - 1]?.expect || null, next_forecast: nextF ? { expect: nextF.expect, confidence: nextF.confidence, double_ok: CONF === 0 || (nextF.confidence != null && nextF.confidence >= CONF) } : null, tiers: out }
+    return { periods: T, first: periodsAll[0]?.expect || null, last: periodsAll[T - 1]?.expect || null, next_forecast: nextF ? { expect: nextF.expect, confidence: nextF.confidence, double_ok: false, confidence_kind: 'model_self_report_not_probability' } : null, tiers: out }
   })
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
   return c.json({ ok: true, source, ...v })
@@ -929,7 +964,14 @@ app.get('/api/ai/history/:expect', async (c) => {
 app.get('/api/arena/pick', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
-  if (!aiEnabled(c.var.ai)) return c.json({ ok: false, error: 'AI 未配置（需 DEEPSEEK_API_KEY 或 OPENAI_API_KEY+OPENAI_BASE_URL）' }, 400)
+  if (!aiEnabled(c.var.ai)) {
+    const disabled = c.var.ai.AI_PROVIDER === 'disabled'
+    return c.json({
+      ok: false, code: disabled ? 'AI_DISABLED' : 'AI_NOT_CONFIGURED',
+      error: disabled ? 'AI 已停用。请在配置中心选择服务并保存后，再查看推荐。' : 'AI 配置尚未完成。请在配置中心检查服务地址、模型和所需密钥。',
+      settings_url: '/settings'
+    })
+  }
   const hist = Math.min(60, Number(c.req.query('history') || 12))
   if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)
   await arenaTick(c.env.DB, source)
@@ -939,18 +981,20 @@ app.get('/api/arena/pick', async (c) => {
   const key = `pick|${source}|${hist}|c${c.var.ai.AI_CUSTOM_N || ''}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
   const { v, cached, age } = await cachedArena(key, 20_000, async () => {
     const db = c.env.DB
-    const pend = (await db.prepare(`SELECT expect, strategy, based_on, numbers, count, coverage, weight FROM arena_rounds WHERE source=? AND scored_ms IS NULL AND strategy NOT LIKE 'ai-set-%' ORDER BY expect DESC LIMIT 60`).bind(source).all<any>()).results
+    const pend = (await db.prepare(`SELECT expect, strategy, based_on, numbers, count, coverage, weight, created_ms, cutoff_ms, prediction_version, prediction_status FROM arena_rounds WHERE source=? AND scored_ms IS NULL AND ${verifiedLiveSql()} AND cutoff_ms>${Date.now()} AND strategy NOT LIKE 'ai-set-%' ORDER BY expect DESC LIMIT 60`).bind(source).all<any>()).results
     const expect = pend[0]?.expect
     const current = expect ? { expect, based_on: pend[0].based_on, strategies: pend.filter(r => r.expect === expect) } : null
     const pick = await aiPick(db, source, current, c.var.ai.AI_CUSTOM_N)
-    const st = await db.prepare(`SELECT COUNT(*) n, SUM(hit) h, SUM(pnl) pnl FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL`).bind(source).first<any>()
+    const st = await db.prepare(`SELECT COUNT(*) n, SUM(hit) h, SUM(pnl) pnl FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL AND ${verifiedLiveSql()}`).bind(source).first<any>()
     const rows = (await db.prepare(`SELECT a.expect, a.numbers, a.count, a.actual, a.hit, a.rank, a.pnl, a.created_ms, f.regime, f.confidence, f.reasoning, f.output, d.open_ms
       FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect LEFT JOIN draws d ON d.source=a.source AND d.expect=a.expect
-      WHERE a.source=? AND a.strategy='ai' AND a.scored_ms IS NOT NULL ORDER BY a.expect DESC LIMIT ?`).bind(source, hist).all<any>()).results
-    const history = rows.map(r => { let o: any = null; try { o = JSON.parse(r.output) } catch {} const sub: Record<string, { hit: boolean; pnl: number }> = {}; for (const x of [...AI_SUBSETS.map(a => ({ key: a.key, n: a.n })), ...parseCustomNs(c.var.ai.AI_CUSTOM_N).map(n => ({ key: `ai-custom-${n}`, n }))]) sub[x.key] = { hit: !!r.hit && r.rank != null && r.rank <= x.n, pnl: (!!r.hit && r.rank != null && r.rank <= x.n) ? ARENA_ODDS - x.n : -x.n }
+      WHERE a.source=? AND a.strategy='ai' AND a.scored_ms IS NOT NULL AND ${verifiedLiveSql('a')} ORDER BY a.expect DESC LIMIT ?`).bind(source, hist).all<any>()).results
+    const tierPeriods = await loadTierPeriods(db, source, tierDefs(parseCustomNs(c.var.ai.AI_CUSTOM_N)), { limit: hist })
+    const tierByExpect = new Map(tierPeriods.map(p => [p.expect, p.sub]))
+    const history = rows.map(r => { let o: any = null; try { o = JSON.parse(r.output) } catch {} const sub = tierByExpect.get(r.expect) || {}
       return { expect: r.expect, numbers: r.numbers, count: r.count, actual: r.actual, hit: !!r.hit, rank: r.rank, pnl: r.pnl, open_ms: r.open_ms, regime: r.regime, confidence: r.confidence, reasoning: r.reasoning, pick_plan: o?.pick_plan || '', boost: o?.boost || [], subsets: sub } })
     // 最近 20 期命中序列（新→旧）供迷你条形图
-    const streak = (await db.prepare(`SELECT hit FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT 20`).bind(source).all<any>()).results.map(r => r.hit ? 1 : 0)
+    const streak = (await db.prepare(`SELECT hit FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL AND ${verifiedLiveSql()} ORDER BY expect DESC LIMIT 20`).bind(source).all<any>()).results.map(r => r.hit ? 1 : 0)
     // 报单同步：近 20 期 AI 是否在截止前锁定、平均锁定用时
     const sy = (await db.prepare(`SELECT f.created_ms, f.error, f.lock_by_ms, p.open_ms prev_open FROM ai_forecasts f LEFT JOIN draws p ON p.source=f.source AND p.expect=f.based_on WHERE f.source=? ORDER BY f.expect DESC LIMIT 20`).bind(source).all<any>()).results
     const okRows = sy.filter(r => !r.error && (!r.lock_by_ms || r.created_ms <= r.lock_by_ms))
@@ -988,7 +1032,7 @@ app.get('/api/ai/self-check', async (c) => {
   // 待开期：AI 是否正指向「上游最新期 + 1」
   const latestUp = upstream[0]?.expect || null
   const pending = ai.find(x => !x.scored_ms)
-  const expectedNext = latestUp ? nextOf(latestUp) : null
+  const expectedNext = latestUp ? nextPeriod(latestUp, source) : null
   const pendingOk = !!pending && pending.expect === expectedNext && pending.based_on === latestUp
   const localLatest = local[0]?.expect || null
   const summary = { upstream_latest: latestUp, local_latest: localLatest, in_sync: latestUp === localLatest, upstream_ms: upMs, upstream_error: upErr,
@@ -1008,7 +1052,7 @@ app.get('/api/arena/stake-curve', async (c) => {
   const limit = Math.min(3000, Number(c.req.query('limit') || 2000))
   const out: any[] = []
   for (const k of keys) {
-    const rows = (await c.env.DB.prepare(`SELECT hit, rank, count FROM arena_rounds WHERE source=? AND strategy=? AND scored_ms IS NOT NULL ORDER BY expect DESC LIMIT ?`).bind(source, k, limit).all<any>()).results
+    const rows = (await c.env.DB.prepare(`SELECT hit, rank, count FROM arena_rounds WHERE source=? AND strategy=? AND scored_ms IS NOT NULL AND ${verifiedLiveSql()} ORDER BY expect DESC LIMIT ?`).bind(source, k, limit).all<any>()).results
     if (!rows.length) continue
     const curve = Ns.map(N => {
       // N > 该期实际注数时无法推断 → 只统计 count ≥ N 的期；N ≤ 500 时全部可用
@@ -1036,7 +1080,7 @@ app.post('/api/draws/gapfill', async (c) => {
   const g = await scanGaps(c.env.DB, source, { days: Math.min(30, Number(c.req.query('days') || 7)) })
   if (!g.missing.length) return c.json({ ok: true, source, checked: g.checked, filled: 0, failed: 0, missing_total: 0 })
   const r = await fillGapsFromChain(c.env.DB, source, g.missing, Math.min(50, Number(c.req.query('max') || 20)))
-  if (r.filled) { invalidateArena(source) }
+  if (r.filled) { notifyDrawChange(source) }
   return c.json({ ok: true, source, checked: g.checked, ...r, missing_total: g.missing_total })
 })
 /** 拉取告警 */
@@ -1079,7 +1123,7 @@ app.get('/api/ai/sync-audit', async (c) => {
 app.get('/api/arena/plans', async (c) => {
   const source = c.req.query('source') || 'qkltj:6001'
   if (!isSource(source)) return bad(c, 'unknown source')
-  const board = await arenaBoard(c.env.DB, source, { mode: 'all', limit: 600, extraPlans: await aiExtraPlans(c.env.DB, source) })
+  const board = await arenaBoard(c.env.DB, source, { mode: 'live', limit: 600, extraPlans: await aiExtraPlans(c.env.DB, source) })
   const rows = await listAiPlans(c.env.DB, source, true)
   return c.json({ ok: true, source, active: board.plans.filter((p: any) => p.ai), retired: rows.filter(r => r.retired_ms).map(r => ({ id: r.id, name: r.name, report_expect: r.report_expect, rationale: r.rationale, created_ms: r.created_ms, retired_ms: r.retired_ms, retire_reason: r.retire_reason, rule: JSON.parse(r.rule) })), builtin: board.plans.filter((p: any) => !p.ai) })
 })
@@ -1107,7 +1151,7 @@ app.post('/api/arena/report', async (c) => {
   if (!isSource(source)) return bad(c, 'unknown source')
   if (!aiEnabled(c.var.ai)) return bad(c, 'AI 未配置（需 DEEPSEEK_API_KEY 或 OPENAI_API_KEY+OPENAI_BASE_URL）', 503)
   try {
-    const board = await arenaBoard(c.env.DB, source, { mode: 'all', limit: 300, extraPlans: await aiExtraPlans(c.env.DB, source) })
+    const board = await arenaBoard(c.env.DB, source, { mode: 'live', limit: 300, extraPlans: await aiExtraPlans(c.env.DB, source) })
     const r = await generateReport(c.env.DB, c.var.ai, source, board)
     return c.json({ ok: true, source, ...r })
   } catch (e: any) { return bad(c, 'AI 报告生成失败：' + (e.message || e), 502) }
@@ -1193,10 +1237,25 @@ app.get('/api/analysis/recommend', async (c) => {
   const ck = `rc|${source}|${steps}|${latest}|v${dataVersion(source)}`
   const hit = analysisCache.get(ck); if (hit && now() - hit.t < 60_000) { c.header('X-Cache', 'HIT'); return c.json({ ...hit.v, cached: true, cached_ms: hit.t, cache_age_ms: now() - hit.t }) }
   const src = SOURCES[source as keyof typeof SOURCES]
-  const nextExpect = latest && /^\d+$/.test(latest) ? String(BigInt(latest) + 1n) : ''
+  const nextExpect = latest ? nextPeriod(latest, source) || '' : ''
   const v = { ok: true, source, latest_expect: latest, next_expect: nextExpect, interval_ms: src.intervalMs, ...recommend(rows as any, steps) }
   analysisCache.set(ck, { t: now(), v })
   return c.json(v)
+})
+
+
+/** Fixed-strategy descriptive audit. Cross-source rows sharing a block are not independent evidence. */
+app.get('/api/analysis/audit', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const strategy = c.req.query('strategy') || 'ai'
+  if (!STRATEGIES.some(s => s.key === strategy) && strategy !== 'top3') return bad(c, 'unknown strategy')
+  const rows = (await c.env.DB.prepare(`SELECT expect,count,hit,coverage FROM arena_rounds WHERE source=? AND strategy=? AND scored_ms IS NOT NULL AND ${verifiedLiveSql()} ORDER BY expect DESC LIMIT 2000`).bind(source, strategy).all<any>()).results
+  const archive = (await c.env.DB.prepare('SELECT prediction_status status,COUNT(*) n FROM arena_rounds WHERE source=? AND strategy=? GROUP BY prediction_status').bind(source, strategy).all<any>()).results
+  const duplicates = await c.env.DB.prepare(`SELECT COUNT(DISTINCT d.expect) n FROM draws d WHERE d.source=? AND d.block IS NOT NULL AND EXISTS
+    (SELECT 1 FROM draws x WHERE x.source<>d.source AND x.block=d.block AND x.hash=d.hash)`).bind(source).first<any>()
+  return c.json({ ok:true, source, strategy, evaluation:evaluationSummary(rows), archive, shared_block_periods:duplicates?.n || 0,
+    note:'只统计开奖截止前锁定的记录。多个数据源共享同一区块时，不能合并为独立证据。当前没有经过独立校准的下一期命中概率。' })
 })
 
 // ------------------------------------------------------------------ 页面
@@ -1241,8 +1300,10 @@ app.get('/api/top3/pick', async (c) => {
   if (source.startsWith('qkltj:')) await syncSource(c.env.DB, source)
   await arenaTick(c.env.DB, source)
   const t0 = now()
-  const key = `top3|${source}|${hist}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
-  const { v, cached, age } = await cachedArena(key, 20_000, () => top3View(c.env.DB, source, hist))
+  const mode = (c.req.query('mode') || 'live') as 'live' | 'replay' | 'all'
+  if (!['live','replay','all'].includes(mode)) return bad(c, 'unknown mode')
+  const key = `top3|${source}|${hist}|${mode}|v${dataVersion(source)}|a${arenaVer.get(source) || 0}`
+  const { v, cached, age } = await cachedArena(key, 20_000, () => top3View(c.env.DB, source, hist, mode))
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
   return c.json({ ok: true, source, strategy: TOP3_KEY, interval_ms: SOURCES[source].intervalMs, ...v, cached, cache_age_ms: age, compute_ms: now() - t0 })
 })
@@ -1256,7 +1317,7 @@ app.put('/api/config', async (c) => {
   // 数值项做基本校验
   if (patch.AI_LEAD_MS && !(Number(patch.AI_LEAD_MS) >= 5000 && Number(patch.AI_LEAD_MS) <= 120000)) return bad(c, 'AI_LEAD_MS 需在 5000–120000 毫秒之间')
   if (patch.AI_TIMEOUT_MS && !(Number(patch.AI_TIMEOUT_MS) >= 3000 && Number(patch.AI_TIMEOUT_MS) <= 90000)) return bad(c, 'AI_TIMEOUT_MS 需在 3000–90000 毫秒之间')
-  if (patch.AI_PROVIDER && !['', 'deepseek', 'openai'].includes(patch.AI_PROVIDER)) return bad(c, 'AI_PROVIDER 只能是 deepseek / openai / 空')
+  if (patch.AI_PROVIDER && !['', 'deepseek', 'openai', 'local', 'disabled'].includes(patch.AI_PROVIDER)) return bad(c, '请选择有效的 AI 服务')
   if (patch.DEEPSEEK_THINKING && !['', 'off', 'low', 'high', 'max'].includes(patch.DEEPSEEK_THINKING)) return bad(c, 'DEEPSEEK_THINKING 只能是 off / low / high / max')
   if (patch.AI_CUSTOM_N) { const ns = parseCustomNs(patch.AI_CUSTOM_N); if (!ns.length) return bad(c, 'AI_CUSTOM_N 需为 10–900 的整数（逗号分隔，最多 4 个，不能与 100/150/300/450/500 重复）'); patch.AI_CUSTOM_N = ns.join(',') }
   await saveConfig(c.env.DB, patch)

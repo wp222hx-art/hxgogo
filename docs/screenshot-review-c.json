@@ -1,0 +1,230 @@
+[
+  {
+    "file": "ScreenShot_2026-09-03_091318_184.png",
+    "features": [
+      "跳位差值条件"
+    ],
+    "observations": "A–E分组各2–9；确认/关闭/清空；截图未展示分组对应位置。",
+    "uncertain": [
+      "A–E映射未知"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091338_968.png",
+    "features": [
+      "跳位合值条件"
+    ],
+    "observations": "A–E分组各0–9。",
+    "uncertain": [
+      "A–E映射未知"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091359_765.png",
+    "features": [
+      "两码差值条件"
+    ],
+    "observations": "A–E分组各1–10。",
+    "uncertain": [
+      "A–E映射未知"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091420_823.png",
+    "features": [
+      "龙头凤尾"
+    ],
+    "observations": "首尾单双/质合/012路，多组开出个数筛选。",
+    "uncertain": []
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091439_145.png",
+    "features": [
+      "连号落码"
+    ],
+    "observations": "连号个数0–4、段数0–2、落码0–5，多组开出个数。",
+    "uncertain": [
+      "落码暂按与上一期重复个数，截图没有定义"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091457_249.png",
+    "features": [
+      "号码属性"
+    ],
+    "observations": "偶数/合数/小数个数0–5，多组开出个数。",
+    "uncertain": [
+      "质合中1的归类未知"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091537_022.png",
+    "features": [
+      "两码组合"
+    ],
+    "observations": "基础1–11，搭配大小单双质合，杀/含、导入、全两码对选择。",
+    "uncertain": []
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091619_243.png",
+    "features": [
+      "邻空分布"
+    ],
+    "observations": "最大邻码1–7、边空/间空0–6、边邻3–7；遗漏矩阵、期数窗口、页脚统计选择提交。",
+    "uncertain": [
+      "边邻原公式未知"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091638_193.png",
+    "features": [
+      "和值数据"
+    ],
+    "observations": "A/B 0–2、首尾单双质合及012；分组遗漏矩阵。",
+    "uncertain": [
+      "和值数据A/B公式未知"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091655_256.png",
+    "features": [
+      "和值走势"
+    ],
+    "observations": "五个号码求和，15–45遗漏矩阵。",
+    "uncertain": []
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091710_318.png",
+    "features": [
+      "和值分布"
+    ],
+    "observations": "15–20、21–26、27–33、34–39、40–45区间；合值0–9。",
+    "uncertain": []
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091728_363.png",
+    "features": [
+      "差值跨度"
+    ],
+    "observations": "任意两码差值1–10、同差1–9、跨度4–10。",
+    "uncertain": [
+      "同差按出现至少两次的差值，样本支持但原文无公式"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091746_443.png",
+    "features": [
+      "连号落码走势"
+    ],
+    "observations": "连号链接数、连号段数、与上期交集数；遗漏矩阵。",
+    "uncertain": []
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091801_659.png",
+    "features": [
+      "和合分布"
+    ],
+    "observations": "任意两码和值3–21及两码和尾0–9，多值命中。",
+    "uncertain": []
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091821_220.png",
+    "features": [
+      "跳位合值走势"
+    ],
+    "observations": "跳位合分布和一/二等分组，横向滚动。",
+    "uncertain": [
+      "各分组位置映射未知"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091911_963.png",
+    "features": [
+      "012路分布"
+    ],
+    "observations": "号码按模3分组，各组数量0–4，期数窗口与统计。",
+    "uncertain": []
+  },
+  {
+    "file": "ScreenShot_2026-09-03_091957_992.png",
+    "features": [
+      "开奖位置分布"
+    ],
+    "observations": "每期排序后第一到第五位；截图原始开奖顺序单独保留。",
+    "uncertain": []
+  },
+  {
+    "file": "ScreenShot_2026-09-03_092020_558.png",
+    "features": [
+      "智能数据模型"
+    ],
+    "observations": "11选5知识助手，预测下期/软件条件/软件功能/玩法四个快捷问题。",
+    "uncertain": []
+  },
+  {
+    "file": "ScreenShot_2026-09-03_092105_228.png",
+    "features": [
+      "遗漏监测"
+    ],
+    "observations": "双方案号码集；保存/复制/清除/提交/开始停止；粘贴与提醒阈值；逐期包含状态。",
+    "uncertain": []
+  },
+  {
+    "file": "ScreenShot_2026-09-03_092134_280.png",
+    "features": [
+      "遗漏数据"
+    ],
+    "observations": "号码全集按当前遗漏排名，起止序号区间，保存清除复制提交，开始停止。",
+    "uncertain": []
+  },
+  {
+    "file": "ScreenShot_2026-09-03_092156_450.png",
+    "features": [
+      "组合遗漏"
+    ],
+    "observations": "二/三/四/六/七/八/九/十码；当前/最大遗漏排序，窗口查询，表当前/最大/次数。",
+    "uncertain": [
+      "大于开奖号数量的组合事件需公开定义"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_092214_228.png",
+    "features": [
+      "代码胆拖"
+    ],
+    "observations": "1拖6/7/8，胆码1–11，热胆，300期统计与次数/操作。",
+    "uncertain": [
+      "拖码命中事件原定义未知"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_092317_298.png",
+    "features": [
+      "大乐透主界面"
+    ],
+    "observations": "前区条件/走势，后区条件/走势；前5后2展示；21425712组合；分页/复制/导出/遗漏查询/倍投计算/格式设置。",
+    "uncertain": [
+      "截图玩法规则为静态历史截图，不能当现行官方规则"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_092332_706.png",
+    "features": [
+      "大乐透前区条件"
+    ],
+    "observations": "胆码、和值、跨度、定位胆、连号个数、号码属性、AC值、龙头首、凤尾首、最大邻码跨度、同尾个数、号码散度值、号码偏度值。",
+    "uncertain": [
+      "散度/偏度原公式未知"
+    ]
+  },
+  {
+    "file": "ScreenShot_2026-09-03_092522_140.png",
+    "features": [
+      "足球入口"
+    ],
+    "observations": "智能模型、胜平负/让球胜平负、半全场、总进球、猜比分、混合过关、传统足球、足球情报、遗漏图表、组合K线、比分直播、系统设置、手机版。",
+    "uncertain": [
+      "只有菜单，无比赛API/盘口/赔率公式；作为独立赛事接口和菜单扩展"
+    ]
+  }
+]

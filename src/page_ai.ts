@@ -1,3 +1,4 @@
+import { atlasEntry } from './atlas-entry'
 export const aiPage = () => `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -53,6 +54,7 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
 .pw { display:grid; grid-template-columns: 28px repeat(10, 1fr); gap:2px; font-size:10px; align-items:end; height:44px; }
 .pw .b { background:linear-gradient(180deg,#f472b6,#be185d); border-radius:2px 2px 0 0; min-height:2px; }
 .fade-in { animation: fi .35s ease; } @keyframes fi { from { opacity:0; transform: translateY(4px) } to { opacity:1; transform:none } }
+body.ai-config-blocked #loader, body.ai-config-blocked #cur, body.ai-config-blocked #stats, body.ai-config-blocked #hist-sec, body.ai-config-blocked #sets-sec, body.ai-config-blocked #stake-sec, body.ai-config-blocked #sync-line, body.ai-config-blocked #chk-sec { display:none !important; }
 </style>
 </head>
 <body class="text-slate-200">
@@ -64,6 +66,7 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
     </div>
     <nav class="flex items-center gap-2 text-xs whitespace-nowrap">
       <select id="source-sel" class="bg-slate-800 rounded-lg px-3 py-1.5 border border-slate-700"></select>
+      ${atlasEntry}
       <a href="/top3" class="inline-flex whitespace-nowrap bg-amber-400 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-trophy mr-1"></i>优质策略</a>
       <a href="/query" title="逐期命中查询" class="inline-flex bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-magnifying-glass mr-1 text-cyan-400"></i>查询</a>
       <a href="/settings" title="配置中心" class="inline-flex bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-gear text-sky-400"></i></a>
@@ -77,6 +80,15 @@ textarea.nums { width:100%; height:96px; background:#fff; color:#111; border-rad
 <main class="max-w-5xl mx-auto px-4 py-5 space-y-4">
   <div id="stale-bar" class="hidden bg-rose-600/20 border border-rose-500/50 text-rose-200 text-sm rounded-xl px-4 py-2"></div>
   <!-- 加载进度（数据到达前的唯一可见内容） -->
+  <section id="ai-config-state" class="hidden rounded-xl border border-slate-700 bg-[#0f172a] p-6" role="status">
+    <h1 id="ai-config-title" class="text-xl font-bold text-amber-300">AI 尚未启用</h1>
+    <p id="ai-config-message" class="mt-3 text-sm text-slate-300"></p>
+    <p class="mt-2 text-xs text-slate-400">历史数据仍保存在本机，数据同步不受影响。</p>
+    <div class="mt-5 flex gap-3">
+      <a id="ai-config-link" href="/settings" class="rounded-lg bg-pink-500 px-4 py-2 text-sm font-semibold text-black">去配置 AI</a>
+      <button id="ai-config-retry" class="rounded-lg border border-slate-600 px-4 py-2 text-sm">已配置，重新检查</button>
+    </div>
+  </section>
   <section id="loader" class="hero p-5">
     <div class="flex items-center justify-between text-sm mb-2"><span id="ld-text" class="text-slate-200"><i class="fas fa-brain text-pink-400 mr-2"></i>正在连接…</span><span id="ld-pct" class="mono text-slate-400">0%</span></div>
     <div class="prog" id="ld-bar"><div style="width:0%"></div></div>

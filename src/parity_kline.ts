@@ -2,8 +2,8 @@
 // 把「某位置开单」当成一只股票：单指数 = 100 + Σ(开单 ? +1 : -1)，双指数 = 100 + Σ(开双 ? +1 : -1)
 // 逐期为 tick，按 bucket 期聚合成 OHLC 蜡烛；在收盘价序列上计算 BOLL / MACD / KDJ，
 // 三指标投票 → 下一期开单/开双概率；并对历史逐根回测，给出真实命中率（对照 50% 基线）。
-import { computeOutcomes5, POS_NAMES } from './engine5'
-import type { Draw } from './analysis'
+import { POS_NAMES } from './engine5'
+import { outcomesForDraw, type Draw } from './analysis'
 
 const r2 = (x: number, d = 2) => Math.round(x * 10 ** d) / 10 ** d
 type Num = number | null
@@ -130,7 +130,7 @@ function analyze(hits: number[], meta: { expect: string; t: number }[], bucket: 
 }
 
 export function parityKline(draws: Draw[], opt: { pos: number; bucket: number }) {
-  const asc = [...draws].reverse().map(d => ({ d, o: computeOutcomes5(d.hash)! })).filter(x => x.o)
+  const asc = [...draws].reverse().map(d => ({ d, o: outcomesForDraw(d)! })).filter(x => x.o)
   const meta = asc.map(x => ({ expect: x.d.expect, t: x.d.open_ms }))
   const digits = asc.map(x => x.o.nums[opt.pos])
   const oddHits = digits.map(v => v % 2)          // 1=单

@@ -4,6 +4,7 @@
 // 并按滚动战绩给策略加权融合成「组合最优」。若长期没有策略能显著跑赢随机对照组，即说明信号无预测力。
 import { type Draw } from './analysis'
 import { weightsFor, ALL_KEYS, positionDists, comboSignals, comboFactor, type PickOpts } from './picker'
+import { nextPeriod, periodTimeMs } from './period'
 
 export const ARENA_N = 500                       // 每策略每期注数
 export const ARENA_ODDS = 950                    // 三位直选参考赔率（公平赔率 1000，庄家抽水 5%）
@@ -185,17 +186,47 @@ export function roundFromScores(strategy: string, scores: number[], weight = 1):
 // ------------------------------------------------------------ 持久化 / 结算
 export const pnlOf = (hit: boolean, count: number) => hit ? ARENA_ODDS - count : -count
 
-async function insertRounds(db: D1Database, source: string, expect: string, basedOn: string, mode: 'live' | 'replay', gen: RoundGen[], actual?: string) {
+export const PREDICTION_VERSION = 'audit-v1'
+export function verifiedLiveSql(alias = 'arena_rounds', hasMode = true) {
+  const a = alias ? `${alias}.` : ''
+  return `${hasMode ? `${a}mode='live' AND ` : ''}${a}prediction_status='live' AND ${a}prediction_version<>'legacy-unverified' AND ${a}cutoff_ms IS NOT NULL AND ${a}created_ms<${a}cutoff_ms`
+}
+/** 截止时间与生成版本一经写入不再改写；旧记录无法证明提前锁定，保留为 legacy。 */
+export async function predictionAudit(db: D1Database, source: string, expect: string, basedOn: string, mode: 'live' | 'replay', createdMs = Date.now()) {
+  const cutoff = periodTimeMs(expect, source)
+  const cutoff_ms = typeof cutoff === 'number' && Number.isFinite(cutoff) && cutoff > 0 ? cutoff : null
+  let prediction_status: 'live' | 'replay' | 'late' | 'legacy' = mode === 'replay' ? 'replay' : 'legacy'
+  if (mode === 'live' && cutoff_ms !== null && nextPeriod(basedOn, source) === expect) {
+    const known = await db.prepare('SELECT 1 FROM draws WHERE source=? AND expect=?').bind(source, expect).first()
+    prediction_status = !known && createdMs < cutoff_ms ? 'live' : 'late'
+  }
+  return { prediction_version: PREDICTION_VERSION, cutoff_ms, prediction_status }
+}
+/** 每期按实际覆盖数计算。z 与区间仅描述历史，不代表已验证的预测优势。 */
+export function scoreSummary(rows: { hit: boolean | number; count: number; pnl?: number }[]) {
+  const n = rows.length, hits = rows.reduce((s, r) => s + Number(!!r.hit), 0)
+  const staked = rows.reduce((s, r) => s + r.count, 0), expected = staked / SPACE
+  const variance = rows.reduce((s, r) => { const p = r.count / SPACE; return s + p * (1 - p) }, 0)
+  const pnl = rows.reduce((s, r) => s + (r.pnl ?? pnlOf(!!r.hit, r.count)), 0)
+  const rate = n ? hits / n : null, z = variance > 0 ? (hits - expected) / Math.sqrt(variance) : 0
+  const w = 1.96, den = 1 + w * w / Math.max(n, 1)
+  const center = n ? (rate! + w * w / (2 * n)) / den : 0
+  const half = n ? w * Math.sqrt(rate! * (1 - rate!) / n + w * w / (4 * n * n)) / den : 0
+  return { n, hits, rate, expected, variance, z, staked, pnl, baseline: n ? expected / n : null,
+    roi: staked ? pnl / staked : null, ev_per_period: n ? pnl / n : null,
+    breakeven: n ? staked / n / ARENA_ODDS : null,
+    rate_interval_95: n ? [Math.max(0, center - half), Math.min(1, center + half)] : null }
+}
+export async function insertRounds(db: D1Database, source: string, expect: string, basedOn: string, mode: 'live' | 'replay', gen: RoundGen[], actual?: string) {
   const ts = Date.now()
+  const audit = await predictionAudit(db, source, expect, basedOn, mode, ts)
   const stmts = gen.map(g => {
-    const nums = g.numbers.map(no3)
-    if (actual) {
-      const idx = nums.indexOf(actual); const hit = idx >= 0
-      return db.prepare(`INSERT OR IGNORE INTO arena_rounds (source, expect, strategy, mode, based_on, numbers, count, coverage, weight, created_ms, actual, hit, rank, pnl, scored_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(source, expect, g.strategy, mode, basedOn, nums.join(' '), nums.length, g.coverage, g.weight, ts, actual, hit ? 1 : 0, hit ? idx + 1 : null, pnlOf(hit, nums.length), ts)
-    }
-    return db.prepare(`INSERT OR IGNORE INTO arena_rounds (source, expect, strategy, mode, based_on, numbers, count, coverage, weight, created_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(source, expect, g.strategy, mode, basedOn, nums.join(' '), nums.length, g.coverage, g.weight, ts)
+    const nums = [...new Set(g.numbers.filter(i => Number.isInteger(i) && i >= 0 && i < SPACE))].map(no3)
+    const idx = actual ? nums.indexOf(actual) : -1, hit = idx >= 0
+    return db.prepare(`INSERT OR IGNORE INTO arena_rounds (source, expect, strategy, mode, based_on, numbers, count, coverage, weight, created_ms, actual, hit, rank, pnl, scored_ms, prediction_version, cutoff_ms, prediction_status)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(source, expect, g.strategy, mode, basedOn, nums.join(' '), nums.length, g.coverage, g.weight, ts,
+        actual || null, actual ? Number(hit) : null, hit ? idx + 1 : null, actual ? pnlOf(hit, nums.length) : null, actual ? ts : null,
+        audit.prediction_version, audit.cutoff_ms, audit.prediction_status)
   })
   for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40))
 }
@@ -203,7 +234,7 @@ async function insertRounds(db: D1Database, source: string, expect: string, base
 /** 对已开奖但未结算的记录打分 */
 export async function settleArena(db: D1Database, source: string) {
   const pend = (await db.prepare(`SELECT a.expect, a.strategy, a.numbers, a.count, d.n1, d.n2, d.n3 FROM arena_rounds a
-    JOIN draws d ON d.source = a.source AND d.expect = a.expect WHERE a.source = ? AND a.scored_ms IS NULL LIMIT 400`).bind(source).all<any>()).results
+    JOIN draws d ON d.source = a.source AND d.expect = a.expect WHERE a.source = ? AND (a.scored_ms IS NULL OR a.actual<>(CAST(d.n1 AS TEXT)||CAST(d.n2 AS TEXT)||CAST(d.n3 AS TEXT))) LIMIT 400`).bind(source).all<any>()).results
   if (!pend.length) return 0
   const ts = Date.now()
   const stmts = pend.map(r => {
@@ -216,30 +247,16 @@ export async function settleArena(db: D1Database, source: string) {
 }
 
 /** 加载目标期之前的已结算战绩（各策略最近 META_K 条，升序） */
-export async function loadPerf(db: D1Database, source: string, beforeExpect: string): Promise<PerfMap> {
-  const rows = (await db.prepare(`SELECT strategy, expect, hit, count FROM arena_rounds WHERE source=? AND expect<? AND scored_ms IS NOT NULL AND strategy NOT LIKE 'ai-set-%' ORDER BY expect DESC LIMIT ?`)
+export async function loadPerf(db: D1Database, source: string, beforeExpect: string, mode: 'live' | 'replay' = 'live'): Promise<PerfMap> {
+  const rows = (await db.prepare(`SELECT strategy, expect, hit, count FROM arena_rounds WHERE source=? AND expect<? AND scored_ms IS NOT NULL AND strategy NOT LIKE 'ai-set-%' AND ${mode === 'live' ? verifiedLiveSql() : "(prediction_status='replay' OR " + verifiedLiveSql() + ')'} ORDER BY expect DESC LIMIT ?`)
     .bind(source, beforeExpect, META_K * STRATEGIES.length).all<any>()).results
   const perf: PerfMap = {}
   for (const r of rows.reverse()) (perf[r.strategy] ||= []).push({ expect: r.expect, hit: r.hit, p: r.count / SPACE })
   return perf
 }
 
-/**
- * 下一期期号。哈希分分彩 expect = YYYYMMDD + 当日序号 0001..1440，1440 之后要跨到次日 0001（而非 1441）。
- * 其他格式（非 12 位）退化为数值 +1。
- */
-export const nextOf = (expect: string) => {
-  if (!/^\d+$/.test(expect)) return ''
-  if (expect.length === 12) {
-    const seq = Number(expect.slice(8))
-    if (seq >= 1440) {
-      const d = new Date(Date.UTC(+expect.slice(0, 4), +expect.slice(4, 6) - 1, +expect.slice(6, 8)) + 86400_000)
-      return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}0001`
-    }
-    return expect.slice(0, 8) + String(seq + 1).padStart(4, '0')
-  }
-  return String(BigInt(expect) + 1n)
-}
+/** 按来源日历递进；保留旧调用签名。 */
+export const nextOf = (expect: string, source = 'qkltj:6001') => nextPeriod(expect, source)
 const arenaDone = new Map<string, string>()   // source → 已生成的下一期（进程内去重）
 
 /** 外部（AI）选手：给定上下文，返回 1000 维得分；null = 本期不参赛 */
@@ -249,7 +266,7 @@ export type ExternalScorer = (ctx: { next: string; hist: Draw[]; perf: PerfMap; 
 export async function autoArena(db: D1Database, source: string, draws: Draw[], backfill = 2, external?: { key: string; scorer: ExternalScorer }) {
   if (draws.length < ARENA_MIN_HIST) return { generated: false }
   await settleArena(db, source)
-  const latest = draws[0].expect; const next = nextOf(latest)
+  const latest = draws[0].expect; const next = nextOf(latest, source)
   let generated = false, externalDone = false
   if (next) {
     const haveRows = (await db.prepare('SELECT strategy FROM arena_rounds WHERE source=? AND expect=?').bind(source, next).all<any>()).results.map(r => r.strategy)
@@ -277,7 +294,7 @@ export type TierScorer = (n: number) => number[] | null        // 某注数的�
 export type SharpBuilder = (firstLevel: { key: string; numbers: number[] }[]) => Record<number, number[]>   // 二级蒸馏：n → 号码
 export async function externalRound(db: D1Database, source: string, draws: Draw[], key: string, scorer: ExternalScorer, extraNs: number[] = [], opts: { tierScorer?: TierScorer; sharp?: SharpBuilder; extraFirstLevel?: { key: string; numbers: number[] }[] } = {}) {
   if (draws.length < ARENA_MIN_HIST) return false
-  const latest = draws[0].expect; const next = nextOf(latest); if (!next) return false
+  const latest = draws[0].expect; const next = nextOf(latest, source); if (!next) return false
   const have = await db.prepare('SELECT 1 FROM arena_rounds WHERE source=? AND expect=? AND strategy=?').bind(source, next, key).first()
   if (have) return false
   const perf = await loadPerf(db, source, next)
@@ -312,7 +329,7 @@ export async function replayArena(db: D1Database, source: string, draws: Draw[],
   if (!targets.length) return 0
   // 机制权重按本批最旧目标之前的历史计算一次（对更新的目标无前视），其余信号逐期严格滚动
   const W = weightsFor(draws.slice(targets[0] + 1), 60, ALL_KEYS)
-  const perf = await loadPerf(db, source, draws[targets[0]].expect)
+  const perf = await loadPerf(db, source, draws[targets[0]].expect, 'replay')
   for (const k of targets) {
     const target = draws[k]; const hist = draws.slice(k + 1)
     const { rounds } = generateRound(hist, `${source}|${target.expect}`, perf, W)
@@ -327,25 +344,25 @@ export async function replayArena(db: D1Database, source: string, draws: Draw[],
 export interface ExtraPlan { key: string; id: number; name: string; desc: string; since: string; rationale: string; created_ms: number; simulate: (periods: { expect: string; hit: Record<string, number>; pnl: Record<string, number>; weight: Record<string, number> }[]) => any }
 export async function arenaBoard(db: D1Database, source: string, opt: { mode?: 'all' | 'live' | 'replay'; limit?: number; extraPlans?: ExtraPlan[] }) {
   await settleArena(db, source)
-  const mode = opt.mode && opt.mode !== 'all' ? opt.mode : null
+  const mode = opt.mode || 'live'
   const limit = Math.max(20, Math.min(600, opt.limit ?? 200))
-  const mw = mode ? ' AND mode=?' : ''; const mb = mode ? [mode] : []
+  const mw = mode === 'live' ? ` AND ${verifiedLiveSql()}` : mode === 'replay' ? " AND prediction_status='replay'" : ''; const mb: string[] = []
   // 总体：按策略聚合（AI 选手仅实盘参赛，其 n 自然少于其他策略）
-  const agg = (await db.prepare(`SELECT strategy, COUNT(*) n, SUM(hit) hits, SUM(count)/1000.0 exp, SUM(pnl) pnl, AVG(coverage) cov, AVG(rank) avg_rank, MIN(expect) first_expect, MAX(expect) last_expect
+  const agg = (await db.prepare(`SELECT strategy, COUNT(*) n, SUM(hit) hits, SUM(count)/1000.0 exp, SUM(count) staked, SUM((count/1000.0)*(1-count/1000.0)) variance, SUM(pnl) pnl, AVG(coverage) cov, AVG(rank) avg_rank, MIN(expect) first_expect, MAX(expect) last_expect
     FROM arena_rounds WHERE source=? AND scored_ms IS NOT NULL${mw} GROUP BY strategy`).bind(source, ...mb).all<any>()).results
   // 序列：最近 limit 期（每期全部策略）
-  const rows = (await db.prepare(`SELECT expect, strategy, mode, count, coverage, weight, actual, hit, rank, pnl FROM arena_rounds
+  const rows = (await db.prepare(`SELECT expect, strategy, mode, prediction_status, prediction_version, cutoff_ms, created_ms, count, coverage, weight, actual, hit, rank, pnl FROM arena_rounds
     WHERE source=? AND scored_ms IS NOT NULL AND strategy NOT LIKE 'ai-set-%'${mw} ORDER BY expect DESC LIMIT ?`).bind(source, ...mb, limit * STRATEGIES.length).all<any>()).results
   const byExpect = new Map<string, any[]>()
   for (const r of rows) { if (!byExpect.has(r.expect)) byExpect.set(r.expect, []); byExpect.get(r.expect)!.push(r) }
   const expects = [...byExpect.keys()].sort()   // 升序
-  const periods = expects.map(e => { const rs = byExpect.get(e)!; const o: any = { expect: e, actual: rs[0].actual, mode: rs[0].mode, hit: {}, pnl: {}, rank: {}, weight: {} }; for (const r of rs) { o.hit[r.strategy] = r.hit; o.pnl[r.strategy] = r.pnl; o.rank[r.strategy] = r.rank; o.weight[r.strategy] = r.weight } return o })
+  const periods = expects.map(e => { const rs = byExpect.get(e)!; const o: any = { expect: e, actual: rs[0].actual, mode: new Set(rs.map(r => r.prediction_status)).size > 1 ? 'mixed' : rs[0].prediction_status, hit: {}, pnl: {}, rank: {}, weight: {}, count: {}, prediction_status: {} }; for (const r of rs) { o.hit[r.strategy] = r.hit; o.pnl[r.strategy] = r.pnl; o.rank[r.strategy] = r.rank; o.weight[r.strategy] = r.weight; o.count[r.strategy] = r.count; o.prediction_status[r.strategy] = r.prediction_status } return o })
   // 每策略：累计曲线 + 滚动 + 回撤 + 连败
   const strategies = STRATEGIES.map(s => {
     const a = agg.find(x => x.strategy === s.key)
     const n = a?.n || 0, hits = a?.hits || 0, exp = a?.exp || 0
-    const pBar = n ? exp / n : ARENA_N / SPACE
-    const z = n ? (hits - exp) / Math.sqrt(n * pBar * (1 - pBar)) : 0
+    const pBar = n ? exp / n : (s.n ?? ARENA_N) / SPACE
+    const z = a?.variance > 0 ? (hits - exp) / Math.sqrt(a.variance) : 0
     let cum = 0, peak = 0, dd = 0, streak = 0, streakBroken = false
     const cumPnl: (number | null)[] = [], cumRate: (number | null)[] = []; let ch = 0, cn = 0
     periods.forEach((p) => {
@@ -354,26 +371,25 @@ export async function arenaBoard(db: D1Database, source: string, opt: { mode?: '
       cumPnl.push(cum); cumRate.push(ch / cn)
     })
     for (let i = periods.length - 1; i >= 0 && !streakBroken; i--) { const h = periods[i].hit[s.key]; if (h === undefined) continue; if (h) streakBroken = true; else streak++ }
-    const roll = periods.slice(-META_K).map(p => p.hit[s.key]).filter(h => h !== undefined) as number[]
-    const rollHits = roll.reduce((x, y) => x + y, 0)
-    const rollZ = roll.length ? (rollHits - roll.length * 0.5) / Math.sqrt(roll.length * 0.25) : 0
+    const roll = periods.slice(-META_K).filter(p => p.hit[s.key] !== undefined).map(p => ({ hit: p.hit[s.key], count: p.count[s.key], pnl: p.pnl[s.key] }))
+    const rollStat = scoreSummary(roll), rollHits = rollStat.hits, rollZ = rollStat.z
     return {
-      ...s, n, hits, rate: n ? r4(hits / n) : null, baseline: r4(pBar), lift: exp ? r3(hits / exp) : null, z: r3(z), pnl: a?.pnl || 0, roi: n ? r4((a?.pnl || 0) / (n * ARENA_N)) : null,
+      ...s, n, hits, rate: n ? r4(hits / n) : null, baseline: r4(pBar), lift: exp ? r3(hits / exp) : null, z: r3(z), pnl: a?.pnl || 0, staked: a?.staked || 0, roi: a?.staked ? r4((a?.pnl || 0) / a.staked) : null,
       coverage: a ? r4(a.cov) : null, avg_rank: a?.avg_rank ? Math.round(a.avg_rank) : null, max_dd: dd, streak_miss: streak,
-      rolling: { k: roll.length, hits: rollHits, rate: roll.length ? r4(rollHits / roll.length) : null, z: r3(rollZ) },
-      ev_per_period: n ? r3((hits / n) * ARENA_ODDS - ARENA_N) : null,
+      rolling: { baseline: rollStat.baseline, rate_interval_95: rollStat.rate_interval_95, k: roll.length, hits: rollHits, rate: roll.length ? r4(rollHits / roll.length) : null, z: r3(rollZ) },
+      ev_per_period: n ? r3((a?.pnl || 0) / n) : null,
       cum_pnl: cumPnl, cum_rate: cumRate.map(v => v === null ? null : r4(v)),
-      verdict: n < 30 ? '样本不足' : z > 1.96 ? '显著优于基线' : z < -1.96 ? '显著劣于基线' : '与基线无显著差异',
+      verdict: n < 200 ? '样本不足，继续前向观察' : '历史描述，尚未完成独立验证及多重比较校正',
     }
   })
   // 当前期（未结算的最新一期）
-  const pendRows = (await db.prepare(`SELECT expect, strategy, based_on, numbers, count, coverage, weight, created_ms FROM arena_rounds WHERE source=? AND scored_ms IS NULL ORDER BY expect DESC LIMIT ?`).bind(source, STRATEGIES.length * 3).all<any>()).results
+  const pendRows = (await db.prepare(`SELECT expect, strategy, based_on, numbers, count, coverage, weight, created_ms, prediction_status, prediction_version, cutoff_ms FROM arena_rounds WHERE source=? AND scored_ms IS NULL AND ${verifiedLiveSql()} AND cutoff_ms>${Date.now()} ORDER BY expect DESC LIMIT ?`).bind(source, STRATEGIES.length * 3).all<any>()).results
   const curExpect = pendRows[0]?.expect
   const current = curExpect ? {
     expect: curExpect, based_on: pendRows[0].based_on, created_ms: pendRows[0].created_ms,
-    strategies: pendRows.filter(r => r.expect === curExpect).map(r => ({ strategy: r.strategy, numbers: r.numbers, count: r.count, coverage: r.coverage, weight: r.weight })),
+    strategies: pendRows.filter(r => r.expect === curExpect).map(r => ({ strategy: r.strategy, numbers: r.numbers, count: r.count, coverage: r.coverage, weight: r.weight, prediction_status: r.prediction_status, prediction_version: r.prediction_version, cutoff_ms: r.cutoff_ms })),
   } : null
-  const pending = (await db.prepare(`SELECT COUNT(DISTINCT expect) n FROM arena_rounds WHERE source=? AND scored_ms IS NULL`).bind(source).first<any>())?.n || 0
+  const pending = (await db.prepare(`SELECT COUNT(DISTINCT expect) n FROM arena_rounds WHERE source=? AND scored_ms IS NULL AND ${verifiedLiveSql()} AND cutoff_ms>${Date.now()}`).bind(source).first<any>())?.n || 0
   // 当前权重（用于下一期）
   const perf = await loadPerf(db, source, curExpect || '99999999999999')
   const weights = metaWeights(perf)
@@ -410,20 +426,19 @@ export async function arenaBoard(db: D1Database, source: string, opt: { mode?: '
   const best = ranked[0]; const ctrl = strategies.find(s => s.control)!
   const breakEven = r4(ARENA_N / ARENA_ODDS)
   const advice: string[] = []
-  if (!best || best.n < 30) advice.push(`样本不足（已结算 ${best?.n || 0} 期，至少 30 期才做判断），先让竞技场自动跑，或用「回放补齐」把历史期一次性补齐。`)
+  if (!best || best.n < 200) advice.push(`当前仅 ${best?.n || 0} 期，继续积累开奖前锁定的前向样本；样本数门槛本身不能证明优势，历史回放不补充实盘证据。`)
   else {
     advice.push(`滚动 ${META_K} 期表现最好：「${best.name}」命中率 ${((best.rolling.rate || 0) * 100).toFixed(1)}%（z=${best.rolling.z}），累计 ${best.n} 期 ${((best.rate || 0) * 100).toFixed(1)}% vs 基线 ${(best.baseline * 100).toFixed(0)}%，累计盈亏 ${best.pnl >= 0 ? '+' : ''}${best.pnl}。`)
-    advice.push(`随机对照组 ${ctrl.n} 期命中率 ${((ctrl.rate || 0) * 100).toFixed(1)}%（盈亏 ${ctrl.pnl}）。任何策略必须长期显著跑赢对照组（z>1.96）才算有信号。`)
+    advice.push(`随机对照组 ${ctrl.n} 期命中率 ${((ctrl.rate || 0) * 100).toFixed(1)}%（盈亏 ${ctrl.pnl}）。多策略与多窗口排名存在选择偏差；当前 z 仅描述历史，不能据此判定预测优势。`)
     const meta = strategies.find(s => s.key === 'meta')!
     advice.push(`组合最优（自适应加权）：${meta.n} 期命中率 ${((meta.rate || 0) * 100).toFixed(1)}%，z=${meta.z}，最大回撤 ${meta.max_dd}，${meta.verdict}。`)
     if (planBest) { const ctrlPlan = plans.find(p => p.control)!; advice.push(`投资策略模拟（全部 walk-forward）盈亏最好：「${planBest.name}」下注 ${planBest.bets} 期 / 观望 ${planBest.skips} 期，命中率 ${((planBest.rate || 0) * 100).toFixed(1)}%，盈亏 ${planBest.pnl >= 0 ? '+' : ''}${planBest.pnl}，ROI ${((planBest.roi || 0) * 100).toFixed(2)}%，最大回撤 ${planBest.max_dd}；逆向对照方案盈亏 ${ctrlPlan.pnl}。择时/切换在独立序列上没有理论优势，多方案中挑最好的一套本身就带有选择偏差，需要它在后续实盘持续领先才算成立。`) }
-    const sig = ranked.filter(s => s.n >= 30 && s.z > 1.96)
-    advice.push(sig.length ? `目前统计显著跑赢基线的策略：${sig.map(s => s.name).join('、')}。` : `目前没有任何策略在统计上显著跑赢 50% 基线——这与「哈希逐期独立」的理论一致。`)
+    advice.push('尚未实施预注册样本外检验及多重比较校正，因此本页不作显著优势结论。')
   }
   advice.push(`按参考赔率 ${ARENA_ODDS}× 计算，500 注的保本命中率为 ${(breakEven * 100).toFixed(1)}%（理论命中率 50%，每期期望 −${ARENA_N - ARENA_ODDS / 2}），任何投注在数学期望上都是负的；本页只做统计验证，不构成投资建议。`)
   return {
-    n_periods: periods.length, pending, odds: ARENA_ODDS, per_strategy_count: ARENA_N, break_even_rate: breakEven, meta_k: META_K,
-    strategies, periods: periods.map(p => ({ expect: p.expect, actual: p.actual, mode: p.mode, hit: p.hit, pnl: p.pnl, rank: p.rank })),
+    audit: { mode, version: PREDICTION_VERSION, inference: 'descriptive-only', note: '实盘仅纳入可验证的开奖前记录；旧记录与回放保留在全部历史中。' }, n_periods: periods.length, pending, odds: ARENA_ODDS, per_strategy_count: ARENA_N, break_even_rate: breakEven, meta_k: META_K,
+    strategies, periods: periods.map(p => ({ expect: p.expect, actual: p.actual, mode: p.mode, prediction_status: p.prediction_status, count: p.count, hit: p.hit, pnl: p.pnl, rank: p.rank })),
     current, weights, best: best?.key || null, advice, plans, plan_best: planBest?.key || null,
     disclaimer: '区块哈希逐期独立，任意三位号概率恒为 1/1000；竞技场是对各类选号思路的统计验证，不是预测。',
   }

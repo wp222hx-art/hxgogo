@@ -1,0 +1,80 @@
+name: Windows release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Validate version and existing release
+        id: version
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $tag = 'v' + $pkg.version
+          if ($env:GITHUB_REF -ne "refs/tags/$tag") { throw "Run on the version tag matching package.json." }
+          $notes = "downloads/versions/$tag.md"
+          if (!(Test-Path $notes) -or (Get-Content $notes -Raw).Contains('RELEASE_NOTES_TODO')) { throw 'Complete version notes first.' }
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
+          $existing = $null
+          try { $existing = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" -Headers $headers }
+          catch { if ([int]$_.Exception.Response.StatusCode -ne 404) { throw } }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$($pkg.version)" >> $env:GITHUB_OUTPUT
+          "published=$([bool]($existing -and !$existing.draft))".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+          "exists=$([bool]$existing)".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.version.outputs.published != 'true'
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+        if: steps.version.outputs.published != 'true'
+      - run: npm run desktop:test
+        if: steps.version.outputs.published != 'true'
+      - run: npm run build
+        if: steps.version.outputs.published != 'true'
+      - run: npm run desktop:dist
+        if: steps.version.outputs.published != 'true'
+      - name: Test packaged portable app
+        if: steps.version.outputs.published != 'true'
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $exe = Join-Path $env:GITHUB_WORKSPACE "release/$version/HashPlay-Portable-$version.exe"
+          $data = Join-Path $env:RUNNER_TEMP 'hashplay-release-smoke'
+          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test",("--data-dir=`"$data`"") -WindowStyle Hidden -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Packaged smoke failed: $($process.ExitCode)" }
+          $result = Get-Content (Join-Path $data 'smoke-result.json') -Raw | ConvertFrom-Json
+          if ($result.errors.Count -gt 0 -or !$result.atlas.automaticUpdate.onlineRecovery -or !$result.restartPersistence) { throw 'Incomplete packaged checks.' }
+      - run: npm run release:assets
+        if: steps.version.outputs.published != 'true'
+      - name: Publish verified downloads
+        if: steps.version.outputs.published != 'true'
+        shell: pwsh
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+          $version = '${{ steps.version.outputs.version }}'
+          if ('${{ steps.version.outputs.exists }}' -ne 'true') {
+            gh release create $tag --verify-tag --draft --title "HashPlay $tag" --notes-file "downloads/versions/$tag.md"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create release draft.' }
+          }
+          $assets = @("release/$version/HashPlay-Portable-$version.exe", "release/$version/HashPlay-Setup-$version.exe", "release/$version/SHA256SUMS.txt", "release/$version/release-manifest.json")
+          gh release upload $tag @assets --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Upload failed; release remains draft.' }
+          gh release edit $tag --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish release.' }

@@ -1,3 +1,4 @@
+import { atlasEntry } from './atlas-entry'
 export const arenaPage = () => `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -50,6 +51,7 @@ textarea.nums { width:100%; height:110px; background:#fff; color:#111; border-ra
     <div class="flex items-center gap-2">
       <select id="source-sel" class="bg-slate-800 text-sm rounded-lg px-3 py-1.5 border border-slate-700"></select>
       <button id="sync-btn" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-rotate mr-1"></i>同步</button>
+      ${atlasEntry}
       <a href="/ai" class="inline-flex text-xs bg-pink-500 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-brain mr-1"></i>AI 推荐</a>
       <a href="/top3" class="inline-flex text-xs bg-amber-400 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-trophy mr-1"></i>优质策略</a>
       <a href="/settings" title="配置中心" class="inline-flex text-xs bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-gear text-sky-400"></i></a>
@@ -80,7 +82,7 @@ textarea.nums { width:100%; height:110px; background:#fff; color:#111; border-ra
       <h2 class="font-bold"><i class="fas fa-flag-checkered mr-2 text-emerald-400"></i>赛制</h2>
       <div class="flex items-center gap-2 text-xs">
         <span class="text-slate-500">范围</span>
-        <div class="flex gap-1" id="mode-tabs"><span class="tab active" data-m="all">全部</span><span class="tab" data-m="live">实盘</span><span class="tab" data-m="replay">回放</span></div>
+        <div class="flex gap-1" id="mode-tabs"><span class="tab" data-m="all">全部档案</span><span class="tab active" data-m="live">真实预测</span><span class="tab" data-m="replay">回放</span></div>
         <button id="replay-btn" class="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-backward mr-1"></i>回放补齐历史 <span id="replay-left" class="text-slate-500"></span></button>
       </div>
     </div>
@@ -155,7 +157,7 @@ textarea.nums { width:100%; height:110px; background:#fff; color:#111; border-ra
       <h2 class="font-bold"><i class="fas fa-rotate mr-2 text-pink-400"></i>AI 建议自动回测 · 二阶闭环 <span class="text-xs text-slate-500 font-normal ml-2" id="ai-plans-meta"></span></h2>
       <span class="text-xs text-slate-500" id="ai-plans-cadence"></span>
     </div>
-    <p class="text-xs text-slate-400 mb-3 leading-relaxed">AI 分析官每份报告里「下一阶段投资策略」的择时 / 切换 / 仓位 / 止损建议，会被<b class="text-slate-200">规则编译器</b>翻译成受限 DSL（只允许用该期之前已结算数据可算的指标），自动成为一套新的投资策略模拟：<b class="text-slate-200">样本内</b> = 提出前的历史回测（AI 看过这些数据，仅供参考）；<b class="text-pink-300">样本外</b> = 提出之后的实盘逐期验证（真正的检验）。样本外 ≥30 次下注且 z&lt;−1 的方案自动退役；活跃方案最多 4 套。下一份报告会收到这些样本外战绩——AI 提建议 → 系统验证 → 反馈给 AI。</p>
+    <p class="text-xs text-slate-400 mb-3 leading-relaxed">AI 分析官每份报告里「下一阶段投资策略」的择时 / 切换 / 仓位 / 止损建议，会被<b class="text-slate-200">规则编译器</b>翻译成受限 DSL（只允许用该期之前已结算数据可算的指标），自动成为一套新的投资策略模拟：<b class="text-slate-200">样本内</b> = 提出前的历史回测（AI 看过这些数据，仅供参考）；<b class="text-pink-300">样本外</b> = 提出之后的实盘逐期验证（仍需固定规则持续检验）。样本外 ≥30 次下注且 z&lt;−1 的方案自动退役；活跃方案最多 4 套。下一份报告会收到这些样本外战绩——AI 提建议 → 系统验证 → 反馈给 AI。</p>
     <div id="ai-plans" class="grid md:grid-cols-2 gap-3"></div>
     <details class="mt-3" id="ai-plans-retired-wrap"><summary class="text-xs text-slate-500 cursor-pointer">已退役方案 <span id="ai-plans-retired-n"></span></summary><div id="ai-plans-retired" class="mt-2 space-y-1.5 text-xs"></div></details>
   </section>

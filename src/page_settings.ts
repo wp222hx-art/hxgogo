@@ -1,3 +1,4 @@
+import { atlasEntry } from './atlas-entry'
 export const settingsPage = () => `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -42,6 +43,7 @@ input.f.mono { font-family: ui-monospace, monospace; letter-spacing:.3px; }
       <span>配置<span class="text-sky-400">中心</span> <span class="text-xs font-normal text-slate-500 ml-1">AI 供应商 · 模型 · 报单窗口</span></span>
     </div>
     <nav class="flex items-center gap-2 text-xs">
+      ${atlasEntry}
       <a href="/ai" class="bg-pink-500 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-brain mr-1"></i>AI 推荐</a>
       <a href="/arena" class="hidden md:inline-flex bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"><i class="fas fa-trophy mr-1 text-emerald-400"></i>竞技场</a>
       <a href="/" class="bg-amber-500 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-dice mr-1"></i>游戏</a>
@@ -68,8 +70,11 @@ input.f.mono { font-family: ui-monospace, monospace; letter-spacing:.3px; }
 
   <!-- 供应商 -->
   <section class="card">
-    <h2 class="font-bold mb-3"><i class="fas fa-plug mr-2 text-sky-400"></i>供应商与密钥 <span class="text-xs text-slate-500 font-normal ml-2">密钥仅存服务端 D1，页面只显示打码；留空 = 沿用环境变量</span></h2>
+    <h2 class="font-bold mb-3"><i class="fas fa-plug mr-2 text-sky-400"></i>供应商与密钥 <span class="text-xs text-slate-500 font-normal ml-2">由后台统一调用，密钥只显示打码；桌面版使用系统加密存储</span></h2>
+    <div class="text-xs text-slate-400 mb-3">选择服务后点击保存。停用 AI 可暂停自动模型调用；数据同步和历史查询仍可使用。</div>
     <div class="grid md:grid-cols-3 gap-2 mb-4" id="prov-pick">
+      <div class="prov" data-v="disabled"><i class="fas fa-pause text-amber-400"></i><div><div class="text-sm font-bold">停用 AI</div><div class="text-[11px] text-slate-500">保留配置，暂停自动调用</div></div></div>
+      <div class="prov" data-v="local"><i class="fas fa-desktop text-emerald-400"></i><div><div class="text-sm font-bold">本机模型</div><div class="text-[11px] text-slate-500">使用本机 OpenAI 兼容接口</div></div></div>
       <div class="prov" data-v=""><i class="fas fa-wand-magic-sparkles text-slate-400"></i><div><div class="text-sm font-bold">自动</div><div class="text-[11px] text-slate-500">有 DeepSeek key 就用 DeepSeek，否则 OpenAI</div></div></div>
       <div class="prov" data-v="deepseek"><i class="fas fa-fish text-sky-400"></i><div><div class="text-sm font-bold">DeepSeek <span class="text-[10px] text-emerald-400 font-normal">推荐</span></div><div class="text-[11px] text-slate-500">deepseek-chat · 快 · 便宜</div></div></div>
       <div class="prov" data-v="openai"><i class="fas fa-robot text-slate-300"></i><div><div class="text-sm font-bold">OpenAI 兼容</div><div class="text-[11px] text-slate-500">gpt-5-mini 或任意兼容网关</div></div></div>
@@ -103,12 +108,13 @@ input.f.mono { font-family: ui-monospace, monospace; letter-spacing:.3px; }
         <div id="res-ds" class="hidden"></div>
       </div>
       <div class="card space-y-3" id="card-oa">
-        <div class="font-bold text-sm text-slate-300"><i class="fas fa-robot mr-1"></i>OpenAI 兼容</div>
+        <div class="font-bold text-sm text-slate-300"><i class="fas fa-robot mr-1"></i>OpenAI 兼容 / 本机模型</div>
+        <p class="text-xs text-slate-400">本机模型：在下方填写已启动的兼容服务地址（例如 http://127.0.0.1:11434/v1）和实际模型名称，不需要密钥。模型服务需自行安装并启动；选择本机模型不会向它发送云端密钥。</p>
         <div><label class="f">OPENAI_API_KEY <span class="src" id="src-OPENAI_API_KEY"></span></label><div class="flex gap-2"><input class="f mono" id="in-OPENAI_API_KEY" type="password" placeholder="sk-…（留空不修改）" autocomplete="off"><button class="btn bg-slate-800 border border-slate-700 px-3 eye" data-for="in-OPENAI_API_KEY"><i class="fas fa-eye"></i></button></div><div class="text-[11px] text-slate-500 mt-1" id="cur-OPENAI_API_KEY"></div></div>
         <div><label class="f">OPENAI_BASE_URL <span class="src" id="src-OPENAI_BASE_URL"></span></label><input class="f mono" id="in-OPENAI_BASE_URL" placeholder="https://api.openai.com/v1"></div>
         <div><label class="f">AI_MODEL <span class="src" id="src-AI_MODEL"></span></label><input class="f mono" id="in-AI_MODEL" placeholder="gpt-5-mini"></div>
         <div><label class="f">AI_EFFORT（推理强度，仅 OpenAI 推理模型） <span class="src" id="src-AI_EFFORT"></span></label><select class="f" id="in-AI_EFFORT"><option value="">low（默认）</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></div>
-        <button class="btn bg-slate-700 hover:bg-slate-600 w-full" id="btn-test-oa"><i class="fas fa-vial mr-1"></i>用上面填的内容校验 OpenAI</button>
+        <button class="btn bg-slate-700 hover:bg-slate-600 w-full" id="btn-test-oa"><i class="fas fa-vial mr-1"></i>校验兼容接口 / 本机模型</button>
         <div id="res-oa" class="hidden"></div>
       </div>
     </div>

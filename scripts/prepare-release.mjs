@@ -1,0 +1,14 @@
+import {readFileSync,writeFileSync,mkdirSync,existsSync} from 'node:fs';
+const version=process.argv[2];
+if(!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version||''))throw Error('Usage: npm run release:prepare -- 0.3.2');
+const pkg=JSON.parse(readFileSync('package.json','utf8')),lock=JSON.parse(readFileSync('package-lock.json','utf8'));
+const before=pkg.version.split('.').map(Number),after=version.split('.').map(Number);
+const i=after.findIndex((n,i)=>n!==before[i]);
+if(i<0||after[i]<before[i])throw Error('Use a new version higher than '+pkg.version);
+const notes='downloads/versions/v'+version+'.md';
+if(existsSync(notes))throw Error('Version notes already exist.');
+pkg.version=version;pkg.build.directories.output='release/'+version;lock.version=version;lock.packages[''].version=version;
+mkdirSync('downloads/versions',{recursive:true});
+writeFileSync(notes,'# HashPlay v'+version+'\n\nRELEASE_NOTES_TODO\n\n填写实际修改、验证结果和升级注意事项，删除占位标记后再发布。\n');
+writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n');writeFileSync('package-lock.json',JSON.stringify(lock,null,2)+'\n');
+console.log('Prepared v'+version+'. Complete '+notes+', test, commit, then push tag v'+version+'. Nothing has been published.');

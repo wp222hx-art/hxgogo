@@ -8,12 +8,18 @@ const SECRET_KEYS: ConfigKey[] = ['DEEPSEEK_API_KEY', 'OPENAI_API_KEY']
 
 let cache: { t: number; kv: Record<string, string> } | null = null
 const TTL = 15_000
+let secretStore: { load(): Promise<Record<string, string>>; save(patch: Record<string, string | null>): Promise<void> } | null = null
+export function setSecretStore(store: typeof secretStore) { secretStore = store; bumpConfig() }
 export const bumpConfig = () => { cache = null }
 
 export async function loadConfig(db: D1Database): Promise<Record<string, string>> {
   if (cache && Date.now() - cache.t < TTL) return cache.kv
   const kv: Record<string, string> = {}
   try { for (const r of (await db.prepare('SELECT key, value FROM app_config').all<any>()).results) kv[r.key] = r.value } catch { /* 表未建 */ }
+  if (secretStore) {
+    for (const key of SECRET_KEYS) delete kv[key]
+    Object.assign(kv, await secretStore.load())
+  }
   cache = { t: Date.now(), kv }
   return kv
 }
@@ -28,11 +34,14 @@ export async function effectiveEnv(db: D1Database, env: AiEnv): Promise<AiEnv> {
 
 export async function saveConfig(db: D1Database, patch: Record<string, string | null>) {
   const now = Date.now(); const stmts: D1PreparedStatement[] = []
+  const secrets: Record<string, string | null> = {}
   for (const [k, v] of Object.entries(patch)) {
     if (!(CONFIG_KEYS as readonly string[]).includes(k)) continue
+    if (secretStore && SECRET_KEYS.includes(k as ConfigKey)) { secrets[k] = v; continue }
     if (v == null || v === '') stmts.push(db.prepare('DELETE FROM app_config WHERE key=?').bind(k))
     else stmts.push(db.prepare('INSERT INTO app_config (key, value, updated_ms) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_ms=excluded.updated_ms').bind(k, String(v).trim(), now))
   }
+  if (secretStore && Object.keys(secrets).length) await secretStore.save(secrets)
   if (stmts.length) await db.batch(stmts)
   bumpConfig()
 }
@@ -54,7 +63,7 @@ export async function configView(db: D1Database, env: AiEnv) {
   const eff = await effectiveEnv(db, env)
   const pv = aiProvider(eff)
   const preview = pv ? buildChatBody(pv, { json: true, maxTokens: 1500, effort: 'low', temperature: 0.7 }, [{ role: 'system', content: '…' }, { role: 'user', content: '…' }]) : null
-  return { items, effective: pv ? { provider: pv.name, model: pv.model, base: pv.base, thinking: pv.thinking || null, endpoint: `${pv.base}/chat/completions`, request_preview: preview } : null, deepseek_models: DEEPSEEK_MODELS, deepseek_legacy: DEEPSEEK_LEGACY }
+  return { items, secret_storage: secretStore ? 'os-encrypted' : 'database', effective: pv ? { provider: pv.name, model: pv.model, base: pv.base, thinking: pv.thinking || null, endpoint: `${pv.base}/chat/completions`, request_preview: preview } : null, deepseek_models: DEEPSEEK_MODELS, deepseek_legacy: DEEPSEEK_LEGACY }
 }
 
 /** 校验：用给定（或当前生效）配置真实调一次模型，要求返回 JSON；返回延迟、模型、余额提示等 */
@@ -66,7 +75,7 @@ export async function validateProvider(env: AiEnv, opts: { rounds?: number } = {
   let models: string[] = []; let modelsErr: string | null = null
   try {
     const ac = new AbortController(); const tm = setTimeout(() => ac.abort(), 8000)
-    const res = await fetch(`${pv.base}/models`, { headers: { Authorization: `Bearer ${pv.key}` }, signal: ac.signal }); clearTimeout(tm)
+    const res = await fetch(`${pv.base}/models`, { headers: pv.key ? { Authorization: `Bearer ${pv.key}` } : {}, signal: ac.signal }); clearTimeout(tm)
     const j: any = await res.json().catch(() => ({}))
     if (!res.ok) modelsErr = j?.error?.message || `HTTP ${res.status}`
     else models = (j.data || []).map((m: any) => m.id).filter(Boolean).slice(0, 50)

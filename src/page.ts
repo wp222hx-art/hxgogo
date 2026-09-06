@@ -1,3 +1,4 @@
+import { atlasEntry } from './atlas-entry'
 export const page = () => `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -23,7 +24,8 @@ export const page = () => `<!DOCTYPE html>
       <button data-room="seed" class="room-tab"><i class="fas fa-key mr-1"></i>种子承诺厅</button>
       <button data-room="five" class="room-tab"><i class="fas fa-hashtag mr-1"></i>五位数厅</button>
     </nav>
-    <a href="/analysis" class="hidden md:inline-flex items-center text-xs bg-cyan-600 hover:bg-cyan-500 text-white px-3 py-1.5 rounded-lg"><i class="fas fa-chart-line mr-1"></i>量化分析</a>
+    ${atlasEntry}
+      <a href="/analysis" class="hidden md:inline-flex items-center text-xs bg-cyan-600 hover:bg-cyan-500 text-white px-3 py-1.5 rounded-lg"><i class="fas fa-chart-line mr-1"></i>量化分析</a>
     <a href="/arena" class="hidden md:inline-flex items-center text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg"><i class="fas fa-trophy mr-1"></i>策略竞技场</a>
     <a href="/ai" class="inline-flex items-center text-xs bg-pink-500 hover:bg-pink-400 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-brain mr-1"></i>AI 推荐</a>
     <a href="/top3" class="hidden md:inline-flex items-center text-xs bg-amber-400 hover:bg-amber-300 text-black font-semibold px-3 py-1.5 rounded-lg"><i class="fas fa-trophy mr-1"></i>优质策略</a>

@@ -7,7 +7,7 @@
 //   E 互补覆盖   ：先剔除 A 组已选号码，在剩余空间按融合分 top-N（与主推零重叠，作对冲/覆盖）
 // 每组作为独立策略 `ai-set-{N}-{A..E}` 写入 arena_rounds，走现有结算；ai_sets 表记录元数据。
 // 统计端按 (N, 组) 汇总命中率 / z / ROI，标出"哪一组历史上更会中"，供用户筛选。
-import { ARENA_N, ARENA_ODDS, AI_SUBSETS, AI_SHARP, rollingZ, type PerfMap } from './arena'
+import { ARENA_N, ARENA_ODDS, AI_SUBSETS, AI_SHARP, rollingZ, insertRounds, verifiedLiveSql, scoreSummary, type PerfMap } from './arena'
 import { type AiForecast } from './ai'
 
 const SPACE = 1000
@@ -73,13 +73,8 @@ export function generateSets(f: AiForecast, vec: Record<string, number[]>, perf:
 /** 写入 arena_rounds（走现有结算）+ ai_sets 元数据 */
 export async function insertSets(db: D1Database, source: string, expect: string, basedOn: string, sets: SetGen[]) {
   const ts = Date.now()
-  const stmts: D1PreparedStatement[] = []
-  for (const g of sets) {
-    const nums = g.numbers.map(no3)
-    stmts.push(db.prepare(`INSERT OR IGNORE INTO arena_rounds (source, expect, strategy, mode, based_on, numbers, count, coverage, weight, created_ms) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .bind(source, expect, g.key, 'live', basedOn, nums.join(' '), nums.length, g.coverage, 1, ts))
-    stmts.push(db.prepare(`INSERT OR IGNORE INTO ai_sets (source, expect, n, set_id, overlap_a, created_ms) VALUES (?,?,?,?,?,?)`).bind(source, expect, g.n, g.id, g.overlap_a, ts))
-  }
+  await insertRounds(db, source, expect, basedOn, 'live', sets.map(g => ({ strategy: g.key, numbers: g.numbers, coverage: g.coverage, weight: 1 })))
+  const stmts = sets.map(g => db.prepare(`INSERT OR IGNORE INTO ai_sets (source, expect, n, set_id, overlap_a, created_ms) VALUES (?,?,?,?,?,?)`).bind(source, expect, g.n, g.id, g.overlap_a, ts))
   for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40))
 }
 
@@ -91,13 +86,12 @@ export function allNs(customNs: number[]) { return [...new Set([...AI_SUBSETS.ma
  */
 export async function setsBoard(db: D1Database, source: string, Ns: number[], recentK = 60) {
   const keys = Ns.flatMap(n => SET_IDS.map(id => setKey(n, id)))
-  const rows = (await db.prepare(`SELECT strategy, expect, hit, rank, pnl, count FROM arena_rounds WHERE source=? AND strategy LIKE 'ai-set-%' AND scored_ms IS NOT NULL ORDER BY expect ASC`).bind(source).all<any>()).results
+  const rows = (await db.prepare(`SELECT strategy, expect, hit, rank, pnl, count FROM arena_rounds WHERE source=? AND strategy LIKE 'ai-set-%' AND scored_ms IS NOT NULL AND ${verifiedLiveSql()} ORDER BY expect ASC`).bind(source).all<any>()).results
   const by: Record<string, any[]> = {}; for (const r of rows) (by[r.strategy] ||= []).push(r)
   const stat = (rs: any[], n: number) => {
-    const T = rs.length, h = rs.filter(r => r.hit).length, p = n / SPACE
-    const pnl = rs.reduce((a, r) => a + (r.pnl || 0), 0)
+    const summary = scoreSummary(rs)
     let cur = 0; for (let i = rs.length - 1; i >= 0 && !rs[i].hit; i--) cur++
-    return { n: T, hits: h, rate: T ? r4(h / T) : null, breakeven: r4(n / ARENA_ODDS), z: T ? r4((h - T * p) / Math.sqrt(T * p * (1 - p))) : null, pnl, roi: T ? r4(pnl / (T * n)) : null, streak: rs.slice(-20).map(r => r.hit ? 1 : 0), current_miss: cur }
+    return { ...summary, streak: rs.slice(-20).map(r => r.hit ? 1 : 0), current_miss: cur }
   }
   const tiers = Ns.map(n => {
     const sets = SET_IDS.map(id => { const k = setKey(n, id); const rs = by[k] || []; return { id, key: k, ...SET_META[id], all: stat(rs, n), recent: stat(rs.slice(-recentK), n) } })
@@ -108,16 +102,16 @@ export async function setsBoard(db: D1Database, source: string, Ns: number[], re
     return { n, best, best_recent: bestRecent, sets }
   })
   const periods = new Set(rows.map(r => r.expect)).size
-  return { periods, tiers, recent_k: recentK }
+  return { periods, tiers, recent_k: recentK, inference: 'descriptive-only', audit_mode: 'verified-live' }
 }
 
 /** 某期各组号码（供 /ai 与 /query 展示、复制） */
 export async function setsForPeriod(db: D1Database, source: string, expect: string, Ns: number[]) {
-  const rows = (await db.prepare(`SELECT strategy, numbers, count, coverage, hit, rank, pnl, actual, scored_ms FROM arena_rounds WHERE source=? AND expect=? AND strategy LIKE 'ai-set-%'`).bind(source, expect).all<any>()).results
+  const rows = (await db.prepare(`SELECT strategy, numbers, count, coverage, hit, rank, pnl, actual, scored_ms, prediction_status, prediction_version, created_ms, cutoff_ms FROM arena_rounds WHERE source=? AND expect=? AND strategy LIKE 'ai-set-%'`).bind(source, expect).all<any>()).results
   const meta = (await db.prepare(`SELECT n, set_id, overlap_a FROM ai_sets WHERE source=? AND expect=?`).bind(source, expect).all<any>()).results
   const ov: Record<string, number> = {}; for (const m of meta) ov[setKey(m.n, m.set_id)] = m.overlap_a
   const out: Record<number, any[]> = {}
-  for (const r of rows) { const p = parseSetKey(r.strategy); if (!p || !Ns.includes(p.n)) continue; (out[p.n] ||= []).push({ id: p.id, key: r.strategy, ...SET_META[p.id], numbers: String(r.numbers).split(' '), count: r.count, coverage: r.coverage, overlap_a: ov[r.strategy] ?? null, hit: r.scored_ms ? !!r.hit : null, rank: r.rank, pnl: r.scored_ms ? r.pnl : null, actual: r.actual }) }
+  for (const r of rows) { const p = parseSetKey(r.strategy); if (!p || !Ns.includes(p.n)) continue; (out[p.n] ||= []).push({ id: p.id, key: r.strategy, ...SET_META[p.id], numbers: String(r.numbers).split(' '), count: r.count, coverage: r.coverage, overlap_a: ov[r.strategy] ?? null, hit: r.scored_ms ? !!r.hit : null, rank: r.rank, pnl: r.scored_ms ? r.pnl : null, actual: r.actual, prediction_status: r.prediction_status, prediction_version: r.prediction_version, created_ms: r.created_ms, cutoff_ms: r.cutoff_ms }) }
   for (const n of Object.keys(out)) out[+n].sort((a, b) => a.id.localeCompare(b.id))
   return out
 }
@@ -138,17 +132,13 @@ export async function backfillSets(db: D1Database, source: string, draws: { expe
     const k = draws.findIndex(d => d.expect === r.expect); if (k < 0) continue
     const hist = draws.slice(k + 1, k + 1 + 800) as any; if (hist.length < 120) continue
     let f: AiForecast; try { f = normalize(JSON.parse(r.output)) } catch { continue }
-    const perf = await loadPerf(db, source, r.expect)
+    const perf = await loadPerf(db, source, r.expect, 'replay')
     const gen = generateRound(hist, `${source}|${r.expect}`, perf)
     const sets = generateSets(f, gen.vec, perf, Ns)
     const actual = `${draws[k].n1}${draws[k].n2}${draws[k].n3}`
-    const ts = Date.now(); const stmts: D1PreparedStatement[] = []
-    for (const g of sets) {
-      const nums = g.numbers.map(no3); const idx = nums.indexOf(actual); const hit = idx >= 0
-      stmts.push(db.prepare(`INSERT OR IGNORE INTO arena_rounds (source, expect, strategy, mode, based_on, numbers, count, coverage, weight, created_ms, actual, hit, rank, pnl, scored_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .bind(source, r.expect, g.key, 'replay', hist[0].expect, nums.join(' '), nums.length, g.coverage, 1, ts, actual, hit ? 1 : 0, hit ? idx + 1 : null, hit ? ARENA_ODDS - nums.length : -nums.length, ts))
-      stmts.push(db.prepare(`INSERT OR IGNORE INTO ai_sets (source, expect, n, set_id, overlap_a, created_ms) VALUES (?,?,?,?,?,?)`).bind(source, r.expect, g.n, g.id, g.overlap_a, ts))
-    }
+    const ts = Date.now()
+    await insertRounds(db, source, r.expect, hist[0].expect, 'replay', sets.map(g => ({ strategy: g.key, numbers: g.numbers, coverage: g.coverage, weight: 1 })), actual)
+    const stmts = sets.map(g => db.prepare(`INSERT OR IGNORE INTO ai_sets (source, expect, n, set_id, overlap_a, created_ms) VALUES (?,?,?,?,?,?)`).bind(source, r.expect, g.n, g.id, g.overlap_a, ts))
     for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40))
     done++
   }
@@ -232,34 +222,35 @@ export function tierDefs(customNs: number[]): TierDef[] {
     { key: 'ai', n: ARENA_N, custom: false },
   ].sort((a, b) => a.n - b.n || (a.sharp ? -1 : 1))
 }
-export interface TierPeriod { expect: string; actual: string | null; open_ms: number | null; regime: string | null; confidence: number | null; fallback: boolean; ai: { hit: boolean; rank: number | null; pnl: number }; sub: Record<string, { hit: boolean; rank: number | null; pnl: number } | null> }
+export interface TierPeriod { expect: string; actual: string | null; open_ms: number | null; regime: string | null; confidence: number | null; fallback: boolean; ai: { hit: boolean; rank: number | null; pnl: number; count: number }; sub: Record<string, { hit: boolean; rank: number | null; pnl: number; count: number } | null> }
 /**
  * 读取最近 limit 期（按 ai 主榜已结算期为锚），每期附各档位自己的结算行。
  * 历史上没有独立行的期（改造前），sub[key] 为 null —— 统计时跳过，不再用前缀推算冒充。
  */
-export async function loadTierPeriods(db: D1Database, source: string, defs: TierDef[], opts: { limit?: number; where?: string; args?: any[]; order?: 'ASC' | 'DESC' } = {}): Promise<TierPeriod[]> {
+export async function loadTierPeriods(db: D1Database, source: string, defs: TierDef[], opts: { limit?: number; where?: string; args?: any[]; order?: 'ASC' | 'DESC'; mode?: 'live' | 'replay' | 'all' } = {}): Promise<TierPeriod[]> {
   const limit = opts.limit ?? 1000, order = opts.order ?? 'DESC'
-  const anchors = (await db.prepare(`SELECT a.expect, a.actual, a.hit, a.rank, a.pnl, f.regime, f.confidence, f.error, d.open_ms
+  const filter = (alias: string) => opts.mode === 'all' ? '1=1' : opts.mode === 'replay' ? `${alias}.prediction_status='replay'` : verifiedLiveSql(alias)
+  const anchors = (await db.prepare(`SELECT a.expect, a.actual, a.hit, a.rank, a.pnl, a.count, f.regime, f.confidence, f.error, d.open_ms
     FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect LEFT JOIN draws d ON d.source=a.source AND d.expect=a.expect
-    WHERE a.source=? AND a.strategy='ai' AND a.scored_ms IS NOT NULL ${opts.where ? 'AND ' + opts.where : ''} ORDER BY a.expect ${order} LIMIT ?`).bind(source, ...(opts.args || []), limit).all<any>()).results
+    WHERE a.source=? AND a.strategy='ai' AND a.scored_ms IS NOT NULL AND ${filter('a')} ${opts.where ? 'AND ' + opts.where : ''} ORDER BY a.expect ${order} LIMIT ?`).bind(source, ...(opts.args || []), limit).all<any>()).results
   if (!anchors.length) return []
   const lo = anchors.reduce((m, r) => r.expect < m ? r.expect : m, anchors[0].expect), hi = anchors.reduce((m, r) => r.expect > m ? r.expect : m, anchors[0].expect)
   const keys = defs.map(d => d.key).filter(k => k !== 'ai')
-  const rows = keys.length ? (await db.prepare(`SELECT expect, strategy, hit, rank, pnl FROM arena_rounds WHERE source=? AND expect>=? AND expect<=? AND scored_ms IS NOT NULL AND strategy IN (${keys.map(() => '?').join(',')})`).bind(source, lo, hi, ...keys).all<any>()).results : []
+  const rows = keys.length ? (await db.prepare(`SELECT a.expect, a.strategy, a.hit, a.rank, a.pnl, a.count FROM arena_rounds a WHERE a.source=? AND a.expect>=? AND a.expect<=? AND a.scored_ms IS NOT NULL AND ${filter('a')} AND a.strategy IN (${keys.map(() => '?').join(',')})`).bind(source, lo, hi, ...keys).all<any>()).results : []
   const map = new Map<string, Record<string, any>>()
-  for (const r of rows) { if (!map.has(r.expect)) map.set(r.expect, {}); map.get(r.expect)![r.strategy] = { hit: !!r.hit, rank: r.rank, pnl: r.pnl } }
-  return anchors.map(a => { const m = map.get(a.expect) || {}; const sub: TierPeriod['sub'] = {}; for (const d of defs) sub[d.key] = d.key === 'ai' ? { hit: !!a.hit, rank: a.rank, pnl: a.pnl } : (m[d.key] || null)
-    return { expect: a.expect, actual: a.actual, open_ms: a.open_ms, regime: a.regime || null, confidence: a.confidence, fallback: !a.regime || !!a.error, ai: { hit: !!a.hit, rank: a.rank, pnl: a.pnl }, sub } })
+  for (const r of rows) { if (!map.has(r.expect)) map.set(r.expect, {}); map.get(r.expect)![r.strategy] = { hit: !!r.hit, rank: r.rank, pnl: r.pnl, count: r.count } }
+  return anchors.map(a => { const m = map.get(a.expect) || {}; const sub: TierPeriod['sub'] = {}; for (const d of defs) sub[d.key] = d.key === 'ai' ? { hit: !!a.hit, rank: a.rank, pnl: a.pnl, count: a.count } : (m[d.key] || null)
+    return { expect: a.expect, actual: a.actual, open_ms: a.open_ms, regime: a.regime || null, confidence: a.confidence, fallback: !a.regime || !!a.error, ai: { hit: !!a.hit, rank: a.rank, pnl: a.pnl, count: a.count }, sub } })
 }
 /** 汇总某档位在一组期上的战绩（跳过 null） */
 export function tierStat(periods: TierPeriod[], d: TierDef) {
-  const rs = periods.map(p => p.sub[d.key]).filter(Boolean) as { hit: boolean; rank: number | null; pnl: number }[]
-  const n = rs.length, hits = rs.filter(r => r.hit).length, pnl = rs.reduce((a, r) => a + (r.pnl || 0), 0), p = d.n / SPACE
-  return { key: d.key, n_pick: d.n, custom: d.custom, sharp: !!d.sharp, n, hits, rate: n ? r4(hits / n) : null, breakeven: r4(d.n / ARENA_ODDS), pnl, roi: n ? r4(pnl / (n * d.n)) : null, z: n ? r4((hits - n * p) / Math.sqrt(n * p * (1 - p))) : null }
+  const rs = periods.map(p => p.sub[d.key]).filter(Boolean) as { hit: boolean; rank: number | null; pnl: number; count: number }[]
+  const summary = scoreSummary(rs)
+  return { key: d.key, n_pick: d.n, custom: d.custom, sharp: !!d.sharp, ...summary, inference: 'descriptive-only' }
 }
 
 /**
- * 独立生成档 + 二级精准 的历史重算：用当期 AI 真实输出重新以各自镜头独立生成（取代此前的"500 注前缀"行），并即时结算。
+ * 独立生成档 + 二级精准 的历史重算：用当期 AI 真实输出重新以各自镜头独立生成（仅补缺失行，旧行原样保留），并即时结算。
  * 严格无前视。每次最多 max 期（新 → 旧）。以 ai-sharp-100 是否存在作为"是否已重算"判据。
  */
 export async function backfillIndependentTiers(db: D1Database, source: string, draws: { expect: string; n1: number; n2: number; n3: number }[], customNs: number[], max = 8) {
@@ -276,7 +267,7 @@ export async function backfillIndependentTiers(db: D1Database, source: string, d
     const k = draws.findIndex(d => d.expect === r.expect); if (k < 0) continue
     const hist = draws.slice(k + 1, k + 1 + 800) as any; if (hist.length < 120) continue
     let f: AiForecast; try { f = normalize(JSON.parse(r.output)) } catch { continue }
-    const perf = await loadPerf(db, source, r.expect)
+    const perf = await loadPerf(db, source, r.expect, 'replay')
     const gen = generateRound(hist, `${source}|${r.expect}`, perf)
     const actual = `${draws[k].n1}${draws[k].n2}${draws[k].n3}`
     const main = (await db.prepare(`SELECT numbers FROM arena_rounds WHERE source=? AND expect=? AND strategy='ai'`).bind(source, r.expect).first<any>())
@@ -290,15 +281,8 @@ export async function backfillIndependentTiers(db: D1Database, source: string, d
     else for (const g of generateSets(f, gen.vec, perf, allNs(customNs))) first.push({ key: g.key, numbers: g.numbers })
     const sharp = sharpBuilder(perf)(first)
     for (const s of AI_SHARP) { const nums = sharp[s.n]; if (nums?.length) out.push({ key: s.key, numbers: nums }) }
-    const ts = Date.now(); const stmts: D1PreparedStatement[] = []
-    for (const g of out) {
-      const nums = g.numbers.map(no3); const idx = nums.indexOf(actual); const hit = idx >= 0
-      // 覆盖旧的前缀行：先删再插
-      stmts.push(db.prepare(`DELETE FROM arena_rounds WHERE source=? AND expect=? AND strategy=?`).bind(source, r.expect, g.key))
-      stmts.push(db.prepare(`INSERT OR IGNORE INTO arena_rounds (source, expect, strategy, mode, based_on, numbers, count, coverage, weight, created_ms, actual, hit, rank, pnl, scored_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .bind(source, r.expect, g.key, 'replay', hist[0].expect, nums.join(' '), nums.length, 0, 1, ts, actual, hit ? 1 : 0, hit ? idx + 1 : null, hit ? ARENA_ODDS - nums.length : -nums.length, ts))
-    }
-    for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40))
+    // 回放只补缺失记录，绝不删除或改写已保存的真实预测。
+    await insertRounds(db, source, r.expect, hist[0].expect, 'replay', out.map(g => ({ strategy: g.key, numbers: g.numbers, coverage: 0, weight: 1 })), actual)
     done++
   }
   return { done, remaining_hint: rows.length === max }

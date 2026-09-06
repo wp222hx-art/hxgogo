@@ -2,8 +2,8 @@
 // 思路：对目标事件（某位置出现某数字 / 总和 / 大率 / 单率）计算滚动频率序列，
 // 再按 bucket 期为一根 K 线，取 开(首)/高(最大)/低(最小)/收(末)，成交量 = 该 bucket 内实际命中次数。
 // 阳线（收 > 开）= 该数字在这一段时间内“升温”，阴线 = “降温”。均线 MA5/MA20 = 频率的中长期趋势。
-import { computeOutcomes5, POS_NAMES } from './engine5'
-import type { Draw } from './analysis'
+import { POS_NAMES } from './engine5'
+import { outcomesForDraw, type Draw } from './analysis'
 
 export interface Candle { i: number; expect: string; from: string; to: string; t: number; o: number; h: number; l: number; c: number; v: number; ev: number }
 
@@ -32,7 +32,7 @@ function rolling(hits: number[], W: number, denomPer: number) { const out: numbe
 export interface KlineOpts { digit: number; pos: number | 'any'; bucket: number; window: number }
 
 export function kline(draws: Draw[], opt: KlineOpts) {
-  const asc = [...draws].reverse().map(d => ({ d, o: computeOutcomes5(d.hash)! })).filter(x => x.o)
+  const asc = [...draws].reverse().map(d => ({ d, o: outcomesForDraw(d)! })).filter(x => x.o)
   const n = asc.length
   const meta = asc.map(x => ({ expect: x.d.expect, t: x.d.open_ms }))
   const per = opt.pos === 'any' ? 5 : 1                       // 每期可命中的位数
@@ -79,7 +79,7 @@ export function kline(draws: Draw[], opt: KlineOpts) {
 
 /** 其它维度的 K 线：总和、大率、单率、龙率（同一 bucket） */
 export function marketKlines(draws: Draw[], bucket: number, window: number) {
-  const asc = [...draws].reverse().map(d => ({ d, o: computeOutcomes5(d.hash)! })).filter(x => x.o)
+  const asc = [...draws].reverse().map(d => ({ d, o: outcomesForDraw(d)! })).filter(x => x.o)
   const meta = asc.map(x => ({ expect: x.d.expect, t: x.d.open_ms }))
   const sums = asc.map(x => x.o.sum)
   const big = asc.map(x => x.o.sumSize === 'big' ? 1 : 0), odd = asc.map(x => x.o.sumParity === 'odd' ? 1 : 0), drg = asc.map(x => x.o.dragon === 'dragon' ? 1 : 0)

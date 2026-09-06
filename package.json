@@ -11,15 +11,87 @@
     "db:migrate:local": "wrangler d1 migrations apply webapp-production --local",
     "db:migrate:prod": "wrangler d1 migrations apply webapp-production",
     "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local",
-    "clean-port": "fuser -k 3000/tcp 2>/dev/null || true"
+    "clean-port": "fuser -k 3000/tcp 2>/dev/null || true",
+    "desktop:build": "node desktop/build.mjs",
+    "desktop:start": "npm run desktop:build && electron .",
+    "desktop:test": "npm run desktop:build && node --test desktop/tests/*.test.mjs",
+    "desktop:pack": "npm run desktop:build && electron-builder --dir --win",
+    "desktop:dist": "npm run desktop:build && electron-builder --win",
+    "desktop:smoke": "electron . --smoke-test --data-dir=./output/desktop-smoke",
+    "release:prepare": "node scripts/prepare-release.mjs",
+    "release:assets": "node scripts/release-assets.mjs"
   },
   "dependencies": {
     "hono": "^4.13.5"
   },
   "devDependencies": {
+    "@fortawesome/fontawesome-free": "^6.4.0",
+    "@hono/node-server": "^2.1.1",
     "@hono/vite-build": "^1.11.1",
     "@hono/vite-dev-server": "^0.26.1",
+    "axios": "^1.6.0",
+    "chart.js": "^4.4.1",
+    "echarts": "^5.5.0",
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^3.4.17",
     "vite": "^8.1.4",
     "wrangler": "^4.110.0"
+  },
+  "version": "0.3.1",
+  "description": "HashPlay 本地工作台",
+  "author": "HashPlay",
+  "main": "desktop/main.cjs",
+  "build": {
+    "appId": "com.hashplay.desktop",
+    "productName": "HashPlay",
+    "directories": {
+      "output": "release/0.3.1"
+    },
+    "files": [
+      "desktop/main.cjs",
+      "desktop/worker.cjs",
+      "desktop/vault.cjs",
+      "desktop-build/**/*",
+      "!desktop-build/**/*.map",
+      "desktop/atlas-smoke.cjs"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "win": {
+      "icon": "desktop-build/icon.ico",
+      "executableName": "HashPlay",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "HashPlay 本地工作台",
+      "artifactName": "HashPlay-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "HashPlay-Portable-${version}.${ext}"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "afterExtract": "./desktop/prepare-windows.cjs"
   }
 }

@@ -27,8 +27,8 @@
     pickThink(S.think, true)
     updatePreview()
     var e = cfg.effective
-    $('eff-line').innerHTML = e ? '<span class="' + (e.provider === 'deepseek' ? 'text-sky-400' : 'text-slate-200') + '">' + esc(e.provider) + '</span> · <span class="mono">' + esc(e.model) + '</span>' : '<span class="text-amber-400">未配置任何供应商</span>'
-    $('eff-sub').textContent = e ? e.base : '请在下方填写 DeepSeek 或 OpenAI 的 key'
+    $('eff-line').innerHTML = e ? '<span class="' + (e.provider === 'deepseek' ? 'text-sky-400' : 'text-slate-200') + '">' + esc(e.provider) + '</span> · <span class="mono">' + esc(e.model) + '</span>' : (S.provider === 'disabled' ? '<span class="text-amber-400">AI 已停用</span>' : '<span class="text-amber-400">尚未配置有效服务</span>')
+    $('eff-sub').textContent = e ? e.base : '在下方选择云端服务或本机模型，并填写配置'
     ;['card-ds', 'card-oa'].forEach(function (id) { $(id).classList.remove('active') })
     if (e) $(e.provider === 'deepseek' ? 'card-ds' : 'card-oa').classList.add('active')
     calcWindow()
@@ -163,9 +163,9 @@
     validate(d, $('btn-test-ds'), $('res-ds'), 2)
   })
   $('btn-test-oa').addEventListener('click', function () {
-    var d = { AI_PROVIDER: 'openai' }
+    var d = { AI_PROVIDER: S.provider === 'local' ? 'local' : 'openai' }
     ;['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'AI_MODEL', 'AI_EFFORT'].forEach(function (k) { var v = $('in-' + k).value.trim(); if (v) d[k] = v })
-    if (!d.OPENAI_API_KEY && !(S.cfg.items.OPENAI_API_KEY && S.cfg.items.OPENAI_API_KEY.set)) { renderResult($('res-oa'), { ok: false, error: '请先填写 OPENAI_API_KEY' }); return }
+    if (d.AI_PROVIDER !== 'local' && !d.OPENAI_API_KEY && !(S.cfg.items.OPENAI_API_KEY && S.cfg.items.OPENAI_API_KEY.set)) { renderResult($('res-oa'), { ok: false, error: '请先填写 OPENAI_API_KEY' }); return }
     validate(d, $('btn-test-oa'), $('res-oa'), 1)
   })
   $('btn-test-live').addEventListener('click', function () { validate({}, $('btn-test-live'), $('live-res'), 2) })
@@ -188,6 +188,8 @@
 
   // ---------------------------------------------------------------- 本期 AI 状态（证明后台链路在跑）
   function livePick() {
+    if (!S.cfg) return
+    if (S.provider === 'disabled') { $('live-pill').textContent = 'AI 已停用 · 配置已保存在本机'; return }
     axios.get('/api/arena/pick', { params: { source: S.source, history: 1 } }).then(function (r) {
       var d = r.data, p = d.pick, el = $('live-pill')
       if (!d.ok) { el.innerHTML = '<i class="fas fa-triangle-exclamation text-amber-400"></i>' + esc(d.error || 'AI 未配置'); return }
@@ -196,7 +198,7 @@
         : p.status === 'thinking' ? '<i class="fas fa-circle-notch fa-spin text-pink-400"></i>本期 ' + p.expect + ' AI 推理中…'
         : '<i class="fas fa-triangle-exclamation text-amber-400"></i>本期 ' + p.expect + ' 兜底 · ' + esc(p.error || '')
       el.innerHTML = st
-    }).catch(function () {})
+    }).catch(function () { $('live-pill').textContent = '数据源暂不可用 · 配置仍可保存' })
   }
 
   // ---------------------------------------------------------------- 开奖数据完整性 / 链上补齐
