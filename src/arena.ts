@@ -34,6 +34,7 @@ export const STRATEGIES: StrategyDef[] = [
   { key: 'ai-100', name: 'AI 精选 100 注', short: 'AI·100', desc: 'AI 排序前 100 注（保本 10.5%），每注 1，命中 +850 / 未中 −100', color: '#fb7185', ai: true, derived: 'ai', n: 100 },
   { key: 'ai-150', name: 'AI 精选 150 注', short: 'AI·150', desc: 'AI 排序前 150 注（保本 15.8%），回测 ROI 最优档', color: '#f43f5e', ai: true, derived: 'ai', n: 150 },
   { key: 'ai-300', name: 'AI 精选 300 注', short: 'AI·300', desc: 'AI 排序前 300 注（保本 31.6%）', color: '#e11d48', ai: true, derived: 'ai', n: 300 },
+  { key: 'ai-450', name: 'AI 精选 450 注', short: 'AI·450', desc: 'AI 排序前 450 注（保本 47.4%），比 500 注少压 50 个最弱组合，命中 +500 / 未中 −450', color: '#be123c', ai: true, derived: 'ai', n: 450 },
 ]
 export const BASE_KEYS = STRATEGIES.filter(s => !s.control && !s.meta && !s.ai).map(s => s.key)
 export const AI_SUBSETS = STRATEGIES.filter(s => s.derived === 'ai') as (StrategyDef & { n: number })[]

@@ -156,7 +156,7 @@ const SYSTEM = `你是「HashArena 竞技场」的 AI 预测官，负责对一�
 你清楚：哈希逐期独立，任何号码理论概率恒为 1/1000；你的任务不是宣称能预测，而是在同一 walk-forward 规则下，综合所有统计信号、各策略近期战绩以及你自己过往预测的复盘，给出你认为「倾向最高」的分布，让真实开奖来检验。
 要求：
 - 只输出 JSON，字段：regime(string, ≤40字), confidence(0-1), pos_weights(3×10 数组，每位 0-9 的相对权重 0-100，不要全部相同), strategy_blend(对象，key 为基础策略 key，值 0-100), boost(≤30 个三位号字符串), avoid(≤30 个三位号字符串), reasoning(中文 ≤200 字，说明依据与本期与上期思路的差异), pick_plan(中文 ≤150 字，面向投注者的选号方案：三位各自重点覆盖哪几个数字、主要参考哪些策略、加注/回避的逻辑，这 500 注就是按你的权重实际生成的), next_focus(≤60 字，下期复盘要验证的假设)。
-- your_tier_performance 是你自己各精选档位（前 100/150/300/500 注及用户自定义档）的真实战绩与命中位次分布：这是对你排序质量的直接反馈，请据此决定本期是更集中（头部有效）还是更分散（头部过度自信）。
+- your_tier_performance 是你自己各精选档位（前 100/150/300/450/500 注及用户自定义档）的真实战绩与命中位次分布：这是对你排序质量的直接反馈，请据此决定本期是更集中（头部有效）还是更分散（头部过度自信）。
 - strategy_blend 只对 blend_eligible=true（滚动 z>0）的策略生效，其余会被系统清零；请把融合权重集中在有正信号的策略上，没有合格策略时可以给空对象。
 - pos_weights 是你对 500 注构成的直接控制：权重高的数字会在该位获得更多注数。要有取舍（每位建议 3-5 个重点数字权重明显高于其余），但不要把任何数字压到 0。
 - 认真利用「你上几期的预测与结果」：如果连续失误，要调整思路（例如从追热切换为回补、降低对某策略的信任）；如果命中，说明哪部分假设成立。
@@ -294,7 +294,7 @@ export async function aiHistory(db: D1Database, source: string, k = 6, beforeExp
 export async function tierDigest(db: D1Database, source: string, beforeExpect: string, customNs: number[]) {
   const rows = (await db.prepare(`SELECT hit, rank FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL AND expect<? ORDER BY expect DESC LIMIT 400`).bind(source, beforeExpect).all<any>()).results
   if (!rows.length) return null
-  const Ns = [...new Set([100, 150, 300, 500, ...customNs])].sort((a, b) => a - b)
+  const Ns = [...new Set([100, 150, 300, 450, 500, ...customNs])].sort((a, b) => a - b)
   const stat = (rs: any[], N: number) => { const n = rs.length, h = rs.filter(r => r.hit && r.rank != null && r.rank <= N).length, p = N / SPACE; return { N, n, rate: r3(h / n), breakeven: r3(N / 950), edge: r3(h / n - N / 950), z: r3((h - n * p) / Math.sqrt(n * p * (1 - p) || 1)), roi: r3((h * (950 - N) - (n - h) * N) / (n * N)) } }
   const recent = rows.slice(0, 60)
   // 命中位次分布：命中时落在前 100 / 101–200 / 201–300 / 301–500 的比例
@@ -408,7 +408,7 @@ export async function latestReport(db: D1Database, source: string) {
 export async function backfillAiSubsets(db: D1Database, source: string, max = 300) {
   const ODDS = 950
   const rows = (await db.prepare(`SELECT a.expect, a.based_on, a.mode, a.numbers, a.actual, a.rank, a.scored_ms, a.created_ms FROM arena_rounds a
-    WHERE a.source=? AND a.strategy='ai' AND NOT EXISTS (SELECT 1 FROM arena_rounds b WHERE b.source=a.source AND b.expect=a.expect AND b.strategy=?) ORDER BY a.expect DESC LIMIT ?`).bind(source, AI_SUBSETS[0].key, max).all<any>()).results
+    WHERE a.source=? AND a.strategy='ai' AND NOT EXISTS (SELECT 1 FROM arena_rounds b WHERE b.source=a.source AND b.expect=a.expect AND b.strategy=?) ORDER BY a.expect DESC LIMIT ?`).bind(source, AI_SUBSETS[AI_SUBSETS.length - 1].key, max).all<any>()).results   // 以最新加入的档位为「是否已回填」判据
   const stmts: D1PreparedStatement[] = []
   for (const r of rows) {
     const nums: string[] = String(r.numbers).split(' ')

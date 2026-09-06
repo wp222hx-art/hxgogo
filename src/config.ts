@@ -108,6 +108,6 @@ export async function validateProvider(env: AiEnv, opts: { rounds?: number } = {
 /** 自定义精选注数：逗号分隔，10–900，最多 4 个，去重、排除固定档（100/150/300/500） */
 export function parseCustomNs(v?: string | null): number[] {
   const out: number[] = []
-  for (const x of String(v || '').split(/[,，\s]+/)) { const n = Math.round(Number(x)); if (Number.isInteger(n) && n >= 10 && n <= 900 && ![100, 150, 300, 500].includes(n) && !out.includes(n)) out.push(n) }
+  for (const x of String(v || '').split(/[,，\s]+/)) { const n = Math.round(Number(x)); if (Number.isInteger(n) && n >= 10 && n <= 900 && ![100, 150, 300, 450, 500].includes(n) && !out.includes(n)) out.push(n) }
   return out.sort((a, b) => a - b).slice(0, 4)
 }

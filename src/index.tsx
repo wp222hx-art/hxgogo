@@ -603,7 +603,7 @@ app.get('/api/keeper/status', async (c) => {
   const lastF = await db.prepare(`SELECT expect, created_ms, error, trigger FROM ai_forecasts WHERE source=? ORDER BY expect DESC LIMIT 1`).bind(source).first<any>()
   const today = await db.prepare(`SELECT COUNT(*) n, SUM(CASE WHEN error IS NULL THEN 1 ELSE 0 END) ok FROM ai_forecasts WHERE source=? AND created_ms>?`).bind(source, Date.now() - 86400_000).first<any>()
   const scored = await db.prepare(`SELECT COUNT(*) n, SUM(hit) h FROM arena_rounds WHERE source=? AND strategy='ai' AND scored_ms IS NOT NULL`).bind(source).first<any>()
-  return c.json({ ok: true, source, now: Date.now(), heartbeat_alive: Date.now() < heartbeatUntil, heartbeat_left_s: Math.max(0, Math.round((heartbeatUntil - Date.now()) / 1000)), ticks: heartbeatTicks, up_since_ms: heartbeatStarted || null, keeper_last_ms: lastKeeperMs || null, keeper_alive: lastKeeperMs > 0 && Date.now() - lastKeeperMs < 60_000, last_forecast: lastF ? { expect: lastF.expect, created_ms: lastF.created_ms, ok: !lastF.error, trigger: lastF.trigger } : null, forecasts_24h: { n: today?.n || 0, ok: today?.ok || 0 }, scored: { n: scored?.n || 0, hits: scored?.h || 0 } })
+  return c.json({ ok: true, source, now: Date.now(), heartbeat_alive: Date.now() < heartbeatUntil, heartbeat_left_s: Math.max(0, Math.round((heartbeatUntil - Date.now()) / 1000)), ticks: heartbeatTicks, up_since_ms: heartbeatStarted || null, keeper_last_ms: lastKeeperMs || null, keeper_alive: (lastKeeperMs > 0 && Date.now() - lastKeeperMs < 60_000) || (heartbeatStarted > 0 && Date.now() - heartbeatStarted < 30_000), keeper_warming: lastKeeperMs === 0, last_forecast: lastF ? { expect: lastF.expect, created_ms: lastF.created_ms, ok: !lastF.error, trigger: lastF.trigger } : null, forecasts_24h: { n: today?.n || 0, ok: today?.ok || 0 }, scored: { n: scored?.n || 0, hits: scored?.h || 0 } })
 })
 /** 是否需要为当前待开期跑 AI（无 forecast 记录时才需要；有 error 记录 = 本期已放弃） */
 async function aiNeeded(db: D1Database, source: string) {
@@ -765,6 +765,108 @@ app.get('/api/ai/streaks', async (c) => {
       }
     })
     return { k: K, periods: total, first: rows[0]?.expect || null, last: rows[rows.length - 1]?.expect || null, tiers: out }
+  })
+  c.header('X-Cache', cached ? 'HIT' : 'MISS')
+  return c.json({ ok: true, source, ...v })
+})
+/**
+ * 投注档位综合分析（/query「档位分析」面板）：
+ *  对每个档位（100/150/300/450/500 + 自定义）用全部已结算 AI 记录：
+ *   • 下一期命中概率：理论 p=N/1000；实测全量/近 100/近 30 命中率（Wilson 95% 区间）；条件概率 P(中 | 当前已连挂 c 期)——检验"长龙后更容易中"是否成立
+ *   • 长龙机制：连挂段长度分布、长度 ≥L 段的存活率（实测 vs 理论 q），下一期终结当前连挂的概率
+ *   • 连续进坑：从现在起再连挂 1/2/3/4 期的概率（理论与按实测命中率计算），以及 10 期内至少出现一次 ≥4 连挂的概率
+ *   • 倍投模拟（每 10 期为一轮）：策略 A「命中后翻倍」——本期中 → 下期 ×2（若 AI 置信度≥阈值），再中继续，未中回 1；策略 B「挂后加码」（马丁 1-2-4，最多 3 级）；对比平注
+ *  ?source&conf=0.6（倍投触发的 AI 置信度阈值，0 = 不看置信度）&round=10
+ */
+app.get('/api/ai/tier-analysis', async (c) => {
+  const source = c.req.query('source') || 'qkltj:6001'
+  if (!isSource(source)) return bad(c, 'unknown source')
+  const CONF = Math.max(0, Math.min(1, Number(c.req.query('conf') ?? 0.6)))
+  const ROUND = Math.max(5, Math.min(50, Number(c.req.query('round') || 10)))
+  const customNs = parseCustomNs(c.var.ai.AI_CUSTOM_N)
+  const tiers = [...AI_SUBSETS.map(a => ({ key: a.key, n: a.n, custom: false })), ...customNs.map(x => ({ key: `ai-custom-${x}`, n: x, custom: true })), { key: 'ai', n: 500, custom: false }].sort((a, b) => a.n - b.n)
+  const key = `tieran|${source}|${CONF}|${ROUND}|c${c.var.ai.AI_CUSTOM_N || ''}|a${arenaVer.get(source) || 0}`
+  const { v, cached } = await cachedArena(key, 20_000, async () => {
+    const rows = (await c.env.DB.prepare(`SELECT a.expect, a.hit, a.rank, f.confidence FROM arena_rounds a LEFT JOIN ai_forecasts f ON f.source=a.source AND f.expect=a.expect WHERE a.source=? AND a.strategy='ai' AND a.scored_ms IS NOT NULL ORDER BY a.expect ASC`).bind(source).all<any>()).results
+    const T = rows.length
+    const r4 = (x: number | null) => x == null || !isFinite(x) ? null : Math.round(x * 10000) / 10000
+    const wilson = (h: number, n: number) => { if (!n) return null; const z = 1.96, p = h / n, d = 1 + z * z / n, ctr = p + z * z / (2 * n), sp = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)); return { lo: r4((ctr - sp) / d), hi: r4((ctr + sp) / d) } }
+    // 下一期 AI 置信度（若已锁定）
+    const nextF = await c.env.DB.prepare(`SELECT f.expect, f.confidence FROM ai_forecasts f WHERE f.source=? AND f.error IS NULL AND NOT EXISTS (SELECT 1 FROM arena_rounds a WHERE a.source=f.source AND a.expect=f.expect AND a.strategy='ai' AND a.scored_ms IS NOT NULL) ORDER BY f.expect DESC LIMIT 1`).bind(source).first<any>()
+    const out = tiers.map(t => {
+      const p0 = t.n / 1000, q0 = 1 - p0, be = t.n / 950
+      const hits: boolean[] = rows.map(r => !!r.hit && r.rank != null && r.rank <= t.n)
+      const H = hits.filter(Boolean).length
+      const last = (k: number) => hits.slice(-k)
+      const rate = (arr: boolean[]) => arr.length ? arr.filter(Boolean).length / arr.length : null
+      // 当前连挂
+      let cur = 0; for (let i = hits.length - 1; i >= 0 && !hits[i]; i--) cur++
+      // 条件概率：在历史中"已连挂 c 期"之后下一期命中的频率（c = 0..6+）
+      const cond: Record<string, { n: number; hits: number; rate: number | null }> = {}
+      for (let c0 = 0; c0 <= 6; c0++) cond[c0 === 6 ? '6+' : String(c0)] = { n: 0, hits: 0, rate: null }
+      let run = 0
+      for (let i = 0; i < hits.length; i++) { const k = run >= 6 ? '6+' : String(run); cond[k].n++; if (hits[i]) cond[k].hits++; run = hits[i] ? 0 : run + 1 }
+      for (const k of Object.keys(cond)) cond[k].rate = cond[k].n >= 5 ? r4(cond[k].hits / cond[k].n) : null
+      // 连挂段与存活率：处于长度 ≥L 的段占比 → 挂了 L 期后继续挂的实测概率
+      const runs: number[] = []; let rl = 0
+      for (const h of hits) { if (h) { if (rl) runs.push(rl); rl = 0 } else rl++ } if (rl) runs.push(rl)
+      const survive: { L: number; reached: number; continued: number; p_continue: number | null; theory: number }[] = []
+      for (let L = 1; L <= 6; L++) { const reached = runs.filter(x => x >= L).length, continued = runs.filter(x => x > L).length; survive.push({ L, reached, continued, p_continue: reached >= 5 ? r4(continued / reached) : null, theory: r4(q0) as number }) }
+      const dist: Record<string, number> = { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0, '6+': 0 }; for (const L of runs) dist[L >= 6 ? '6+' : String(L)]++
+      const longest = runs.length ? Math.max(...runs) : 0
+      // 下一期命中概率的三种估计
+      const pAll = rate(hits), p100 = rate(last(100)), p30 = rate(last(30))
+      const pCond = cond[cur >= 6 ? '6+' : String(cur)].rate
+      const pEst = pAll != null ? r4(0.5 * pAll + 0.3 * (p100 ?? pAll) + 0.2 * (p30 ?? pAll)) : r4(p0)   // 综合估计：全量 50% + 近 100 30% + 近 30 20%
+      const qEst = 1 - (pEst ?? p0)
+      // 连续进坑：从现在起再连挂 k 期
+      const pit = [1, 2, 3, 4].map(k => ({ k, theory: r4(Math.pow(q0, k)), est: r4(Math.pow(qEst, k)) }))
+      // 10 期内至少出现一次 ≥4 连挂（马氏链精确计算）
+      const atLeastOneRun = (q: number, n: number, K: number) => { // 状态 = 当前连挂长度 0..K-1；到达 K 即吸收
+        let st = new Array(K).fill(0); st[0] = 1; let absorbed = 0
+        for (let i = 0; i < n; i++) { const nx = new Array(K).fill(0); for (let s = 0; s < K; s++) { if (!st[s]) continue; nx[0] += st[s] * (1 - q); if (s + 1 >= K) absorbed += st[s] * q; else nx[s + 1] += st[s] * q } st = nx }
+        return absorbed
+      }
+      const pit10 = { theory: r4(atLeastOneRun(q0, ROUND, 4)), est: r4(atLeastOneRun(qEst, ROUND, 4)) }
+      // ---------------- 倍投模拟（每 ROUND 期一轮，轮内独立，轮末清零）
+      const ODDS = ARENA_ODDS, N = t.n
+      const simulate = (mode: 'flat' | 'win-double' | 'loss-martin') => {
+        let pnl = 0, staked = 0, maxDD = 0, peak = 0, doubled = 0, doubledHit = 0, roundsWin = 0, roundsN = 0, worstRound = 0
+        for (let s = 0; s < hits.length; s += ROUND) {
+          const seg = hits.slice(s, s + ROUND), segConf = rows.slice(s, s + ROUND).map(r => r.confidence)
+          let mult = 1, rp = 0
+          for (let i = 0; i < seg.length; i++) {
+            const m = mode === 'flat' ? 1 : mult
+            const stake = N * m; staked += stake
+            const gain = seg[i] ? (ODDS - N) * m : -N * m
+            pnl += gain; rp += gain
+            if (m > 1) { doubled++; if (seg[i]) doubledHit++ }
+            peak = Math.max(peak, pnl); maxDD = Math.max(maxDD, peak - pnl)
+            if (mode === 'win-double') {
+              // 命中 → 下期翻倍（若下一期 AI 置信度 ≥ CONF；CONF=0 则总是）；未中 → 回 1 倍
+              const nextConf = segConf[i + 1]; const ok = CONF === 0 || (nextConf != null && nextConf >= CONF)
+              mult = seg[i] && ok ? Math.min(mult * 2, 8) : 1
+            } else if (mode === 'loss-martin') {
+              mult = seg[i] ? 1 : Math.min(mult * 2, 4)   // 1-2-4 三级
+            }
+          }
+          roundsN++; if (rp > 0) roundsWin++; worstRound = Math.min(worstRound, rp)
+        }
+        return { pnl, staked, roi: staked ? r4(pnl / staked) : null, max_drawdown: maxDD, rounds: roundsN, rounds_win: roundsWin, round_win_rate: roundsN ? r4(roundsWin / roundsN) : null, worst_round: worstRound, doubled_bets: doubled, doubled_hit: doubledHit, doubled_hit_rate: doubled ? r4(doubledHit / doubled) : null }
+      }
+      const sims = { flat: simulate('flat'), win_double: simulate('win-double'), loss_martin: simulate('loss-martin') }
+      // 命中后下一期的实测命中率（倍投是否有依据）
+      let afterHitN = 0, afterHitH = 0, afterHitConfN = 0, afterHitConfH = 0
+      for (let i = 0; i + 1 < hits.length; i++) if (hits[i]) { afterHitN++; if (hits[i + 1]) afterHitH++; const cf = rows[i + 1].confidence; if (cf != null && cf >= CONF) { afterHitConfN++; if (hits[i + 1]) afterHitConfH++ } }
+      return {
+        key: t.key, n_pick: t.n, custom: t.custom, periods: T, hits: H, breakeven: r4(be),
+        next: { theory: r4(p0), all: r4(pAll), ci_all: wilson(H, T), last100: r4(p100), last30: r4(p30), cond_after_current_streak: pCond, current_streak: cur, estimate: pEst, edge_vs_breakeven: pEst != null ? r4(pEst - be) : null, verdict: pEst == null ? 'n/a' : (pEst >= be + 0.02 && (pAll ?? 0) >= be - 0.01) ? 'favorable' : pEst >= be ? 'marginal' : 'unfavorable' },
+        streak: { dist, longest, current: cur, cond, survive, end_now_p: pCond ?? r4(p0) },
+        pit: { steps: pit, at_least_one_4run_in_round: pit10, round: ROUND },
+        martingale: { conf_threshold: CONF, round: ROUND, after_hit: { n: afterHitN, hits: afterHitH, rate: afterHitN ? r4(afterHitH / afterHitN) : null }, after_hit_conf: { n: afterHitConfN, hits: afterHitConfH, rate: afterHitConfN ? r4(afterHitConfH / afterHitConfN) : null }, sims },
+      }
+    })
+    return { periods: T, first: rows[0]?.expect || null, last: rows[T - 1]?.expect || null, next_forecast: nextF ? { expect: nextF.expect, confidence: nextF.confidence, double_ok: CONF === 0 || (nextF.confidence != null && nextF.confidence >= CONF) } : null, tiers: out }
   })
   c.header('X-Cache', cached ? 'HIT' : 'MISS')
   return c.json({ ok: true, source, ...v })
@@ -1114,7 +1216,7 @@ app.put('/api/config', async (c) => {
   if (patch.AI_TIMEOUT_MS && !(Number(patch.AI_TIMEOUT_MS) >= 3000 && Number(patch.AI_TIMEOUT_MS) <= 90000)) return bad(c, 'AI_TIMEOUT_MS 需在 3000–90000 毫秒之间')
   if (patch.AI_PROVIDER && !['', 'deepseek', 'openai'].includes(patch.AI_PROVIDER)) return bad(c, 'AI_PROVIDER 只能是 deepseek / openai / 空')
   if (patch.DEEPSEEK_THINKING && !['', 'off', 'low', 'high', 'max'].includes(patch.DEEPSEEK_THINKING)) return bad(c, 'DEEPSEEK_THINKING 只能是 off / low / high / max')
-  if (patch.AI_CUSTOM_N) { const ns = parseCustomNs(patch.AI_CUSTOM_N); if (!ns.length) return bad(c, 'AI_CUSTOM_N 需为 10–900 的整数（逗号分隔，最多 4 个，不能与 100/150/300/500 重复）'); patch.AI_CUSTOM_N = ns.join(',') }
+  if (patch.AI_CUSTOM_N) { const ns = parseCustomNs(patch.AI_CUSTOM_N); if (!ns.length) return bad(c, 'AI_CUSTOM_N 需为 10–900 的整数（逗号分隔，最多 4 个，不能与 100/150/300/450/500 重复）'); patch.AI_CUSTOM_N = ns.join(',') }
   await saveConfig(c.env.DB, patch)
   // 自定义注数一旦定义：立即从 ai 主榜派生历史（N ≤ 500），让新档位不从零起步；下一期起由 AI 推理实时生成
   let custom_backfill: any = null

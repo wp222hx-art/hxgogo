@@ -132,7 +132,7 @@ input.f.mono { font-family: ui-monospace, monospace; letter-spacing:.3px; }
       <div>
         <label class="f">AI_CUSTOM_N · 逗号分隔的注数 <span class="src" id="src-AI_CUSTOM_N"></span></label>
         <input class="f mono" id="in-AI_CUSTOM_N" type="text" placeholder="例如 200,250">
-        <div class="text-[11px] text-slate-500 mt-1">范围 10–900，最多 4 个；100/150/300/500 已是固定档位无需填写。定义后从下一期开始，AI 每期推理完成即按该注数生成精选，并作为独立策略记录、结算、进入战绩榜。</div>
+        <div class="text-[11px] text-slate-500 mt-1">范围 10–900，最多 4 个；100/150/300/450/500 已是固定档位无需填写。定义后从下一期开始，AI 每期推理完成即按该注数生成精选，并作为独立策略记录、结算、进入战绩榜。</div>
       </div>
       <div class="text-xs text-slate-400 bg-[#0b1220] rounded-lg p-3 leading-relaxed">
         <div class="font-semibold text-slate-300 mb-1"><i class="fas fa-brain mr-1 text-violet-400"></i>推理积累机制</div>

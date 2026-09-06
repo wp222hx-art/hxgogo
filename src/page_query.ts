@@ -79,6 +79,26 @@ td.p { color:#4ade80; } td.m { color:#fb7185; }
     </div>
   </section>
 
+  <!-- 档位分析：下一期命中概率 / 长龙 / 进坑 / 倍投 -->
+  <section class="card p-4" id="ta-sec">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+      <h2 class="font-bold text-sm"><i class="fas fa-chart-pie mr-2 text-amber-400"></i>投注档位分析 · 下一期命中概率 / 长龙机制 / 连续进坑 / 每 <span id="ta-round">10</span> 期倍投</h2>
+      <div class="flex items-center gap-2 text-xs">
+        <span class="text-slate-500">倍投触发置信度</span>
+        <div class="flex gap-1" id="ta-conf"><button class="qk" data-c="0">不看</button><button class="qk" data-c="0.5">≥50%</button><button class="qk on" data-c="0.6">≥60%</button><button class="qk" data-c="0.7">≥70%</button></div>
+        <span class="text-slate-500 ml-2">每轮</span>
+        <div class="flex gap-1" id="ta-rnd"><button class="qk on" data-r="10">10 期</button><button class="qk" data-r="20">20 期</button></div>
+      </div>
+    </div>
+    <div id="ta-next" class="text-xs text-slate-400 mb-3"></div>
+    <div id="ta-cards" class="grid md:grid-cols-2 2xl:grid-cols-3 gap-3"><div class="text-slate-500 text-sm">加载中…</div></div>
+    <p class="text-[11px] text-slate-600 mt-3 leading-relaxed">
+      <b class="text-slate-500">下一期命中概率</b>：综合估计 = 全量 50% + 近 100 期 30% + 近 30 期 20%；"连挂后条件概率"是历史上处于同样连挂长度时下一期的真实命中率——若与理论无显著差异，说明长龙不会"憋出"命中（独立事件）。
+      <b class="text-slate-500">长龙存活率</b>：已挂 L 期后继续挂的实测概率 vs 理论 q。<b class="text-slate-500">连续进坑</b>：从现在起再连挂 k 期的概率；以及一轮内至少出现一次 ≥4 连挂的概率（马氏链精确解）。
+      <b class="text-slate-500">倍投</b>：每轮独立、轮末清零。「命中后翻倍」= 本期中且下期 AI 置信度达阈值 → 下期 ×2（连中继续翻，最高 ×8），未中回 1；「挂后加码」= 1-2-4 三级马丁；均与平注对比。历史回测，不构成收益承诺。
+    </p>
+  </section>
+
   <!-- 连挂风险 -->
   <section class="card p-4" id="streak-sec">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-3">

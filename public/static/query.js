@@ -15,7 +15,7 @@
   function renderBg(d) {
     var alive = d.heartbeat_alive
     $('bg-dot').className = 'dot ' + (alive ? 'ok' : 'bad')
-    $('bg-text').innerHTML = alive ? '<span class="text-emerald-300">后台运行中</span>' + (d.keeper_alive ? ' · 守护 ✓' : ' · <span class="text-amber-400">守护未响应</span>') : '<span class="text-rose-400">后台心跳停止</span>'
+    $('bg-text').innerHTML = alive ? '<span class="text-emerald-300">后台运行中</span>' + (d.keeper_alive ? (d.keeper_warming ? ' · 守护启动中' : ' · 守护 ✓') : ' · <span class="text-amber-400">守护未响应</span>') : '<span class="text-rose-400">后台心跳停止</span>'
     $('k-hb').innerHTML = alive ? '<span class="text-emerald-300">在跑</span> · 剩余 ' + d.heartbeat_left_s + 's 自动续命 · 累计 ' + (d.ticks || 0).toLocaleString() + ' 跳' : '<span class="text-rose-400">停止</span>'
     $('k-keeper').innerHTML = d.keeper_alive ? '<span class="text-emerald-300">在线</span> · ' + Math.round((d.now - d.keeper_last_ms) / 1000) + 's 前续命' : (d.keeper_last_ms ? '<span class="text-amber-400">' + Math.round((d.now - d.keeper_last_ms) / 1000) + 's 未响应</span>' : '<span class="text-slate-500">未启动</span>')
     var lf = d.last_forecast
@@ -102,6 +102,54 @@
   document.querySelector('.qk[data-hit]').addEventListener('click', function () { S.hitOnly = !S.hitOnly; this.classList.toggle('on', S.hitOnly); if (S.last) run(Object.assign({}, S.last, { hit: undefined }), $('q-msg').textContent.split(' · ')[0] || '') })
   $('tbody').addEventListener('click', function (e) { var tr = e.target.closest('tr[data-e]'); if (!tr) return; var h = S.rows.find(function (x) { return x.expect === tr.getAttribute('data-e') }); if (h) { $('tbody').querySelectorAll('tr.hl').forEach(function (r) { r.classList.remove('hl') }); tr.classList.add('hl'); showOne(h) } })
 
+  // ---------------------------------------------------------------- 档位分析（下一期概率 / 长龙 / 进坑 / 倍投）
+  var TA = { conf: 0.6, round: 10 }
+  var money = function (n) { n = Math.round(n || 0); return '<span class="' + (n >= 0 ? 'text-emerald-300' : 'text-rose-300') + '">' + (n > 0 ? '+' : '') + n.toLocaleString('zh-CN') + '</span>' }
+  function verdictBadge(v, edge) {
+    var m = { favorable: ['bg-emerald-500 text-black', '有利'], marginal: ['bg-amber-400 text-black', '边际'], unfavorable: ['bg-slate-700 text-slate-300', '不利'] }[v] || ['bg-slate-800 text-slate-500', '—']
+    return '<span class="px-2 py-0.5 rounded text-[11px] font-bold ' + m[0] + '">' + m[1] + (edge != null ? ' ' + (edge >= 0 ? '+' : '') + (edge * 100).toFixed(1) + '%' : '') + '</span>'
+  }
+  function bar(p, color) { var w = Math.max(0, Math.min(100, (p || 0) * 100)); return '<span class="inline-block h-1.5 rounded bg-slate-800 align-middle" style="width:70px"><span class="block h-1.5 rounded" style="width:' + w + '%;background:' + (color || '#22d3ee') + '"></span></span>' }
+  function renderTA(d) {
+    $('ta-round').textContent = d.tiers && d.tiers[0] ? d.tiers[0].pit.round : TA.round
+    var nf = d.next_forecast
+    $('ta-next').innerHTML = '<span class="text-slate-500">样本 ' + d.periods + ' 期（' + esc(d.first || '') + ' → ' + esc(d.last || '') + '）</span>' + (nf ? ' · 下一期 <span class="mono text-amber-300">' + esc(nf.expect) + '</span> AI 置信度 <b class="mono ' + (nf.double_ok ? 'text-emerald-300' : 'text-slate-300') + '">' + pct(nf.confidence, 0) + '</b> → ' + (nf.double_ok ? '<span class="text-emerald-300">达到倍投阈值</span>' : '<span class="text-slate-500">未达阈值，倍投策略本期平注</span>') : ' · 下一期 AI 尚未锁定')
+    $('ta-cards').innerHTML = (d.tiers || []).map(function (t) {
+      var nx = t.next, sk = t.streak, pit = t.pit, mg = t.martingale, s = mg.sims
+      var condRows = ['0', '1', '2', '3', '4', '5', '6+'].map(function (k) { var c = sk.cond[k]; var cur = String(sk.current >= 6 ? '6+' : sk.current) === k; return '<span class="mono text-[10.5px] px-1.5 py-0.5 rounded ' + (cur ? 'bg-cyan-500/20 text-cyan-200 ring-1 ring-cyan-400/50' : 'bg-slate-800 text-slate-400') + '" title="历史上已连挂 ' + k + ' 期时，下一期命中 ' + c.hits + '/' + c.n + '">挂' + k + '→' + (c.rate == null ? '—' : pct(c.rate, 0)) + '</span>' }).join(' ')
+      var surv = sk.survive.map(function (x) { var cls = x.p_continue == null ? 'text-slate-600' : x.p_continue > x.theory + 0.03 ? 'text-rose-300' : x.p_continue < x.theory - 0.03 ? 'text-emerald-300' : 'text-slate-300'; return '<span class="mono text-[10.5px] ' + cls + '" title="已挂 ' + x.L + ' 期的 ' + x.reached + ' 段中，' + x.continued + ' 段继续挂">L' + x.L + ' ' + (x.p_continue == null ? '—' : pct(x.p_continue, 0)) + '</span>' }).join(' · ')
+      var dist = ['1', '2', '3', '4', '5', '6+'].map(function (k) { return '<span class="mono text-[10.5px] px-1 rounded ' + ((k === '6+' ? 6 : +k) >= 4 && sk.dist[k] ? 'bg-rose-500/20 text-rose-200' : 'bg-slate-800 text-slate-400') + '">' + sk.dist[k] + '</span>' }).join('')
+      var pits = pit.steps.map(function (x) { return '<div class="flex items-center justify-between text-[11px]"><span class="text-slate-500">再挂 ' + x.k + ' 期</span><span class="mono"><span class="text-slate-600">' + pct(x.theory, 1) + '</span> → <b class="text-slate-200">' + pct(x.est, 1) + '</b></span></div>' }).join('')
+      var simRow = function (name, r, hi) { return '<tr class="' + (hi ? 'bg-amber-500/5' : '') + '"><td class="l text-slate-300 py-1">' + name + '</td><td class="mono">' + money(r.pnl) + '</td><td class="mono">' + (r.roi == null ? '—' : ((r.roi >= 0 ? '+' : '') + (r.roi * 100).toFixed(2) + '%')) + '</td><td class="mono text-rose-300">' + r.max_drawdown.toLocaleString() + '</td><td class="mono">' + r.rounds_win + '/' + r.rounds + '</td><td class="mono text-rose-300">' + r.worst_round.toLocaleString() + '</td></tr>' }
+      return '<div class="rounded-xl border ' + (t.custom ? 'border-violet-500/40' : 'border-slate-800') + ' bg-[#0b1220] p-3 space-y-3">' +
+        // 头
+        '<div class="flex items-center justify-between"><div><b class="text-base ' + (t.custom ? 'text-violet-300' : 'text-slate-100') + '">前 ' + tierShort(t) + ' 注</b><span class="text-[11px] text-slate-500 ml-2">保本 ' + pct(t.breakeven, 1) + ' · ' + t.hits + '/' + t.periods + '</span></div>' + verdictBadge(nx.verdict, nx.edge_vs_breakeven) + '</div>' +
+        // 下一期概率
+        '<div><div class="text-[11px] text-slate-500 mb-1"><i class="fas fa-bullseye mr-1 text-amber-400"></i>下一期命中概率</div>' +
+          '<div class="flex items-end gap-3"><div><div class="mono text-2xl font-black ' + (nx.estimate >= t.breakeven ? 'text-emerald-300' : 'text-slate-200') + '">' + pct(nx.estimate, 1) + '</div><div class="text-[10.5px] text-slate-500">综合估计</div></div>' +
+          '<div class="text-[10.5px] text-slate-500 leading-5 mono">理论 ' + pct(nx.theory, 1) + ' · 全量 ' + pct(nx.all, 1) + (nx.ci_all ? ' <span class="text-slate-600">[' + pct(nx.ci_all.lo, 0) + '–' + pct(nx.ci_all.hi, 0) + ']</span>' : '') + '<br>近100 ' + pct(nx.last100, 1) + ' · 近30 ' + pct(nx.last30, 1) + '<br>当前连挂 <b class="' + (nx.current_streak >= 4 ? 'text-rose-300' : 'text-slate-300') + '">' + nx.current_streak + '</b> 期 → 条件命中 <b class="text-slate-200">' + (nx.cond_after_current_streak == null ? '样本不足' : pct(nx.cond_after_current_streak, 1)) + '</b></div></div></div>' +
+        // 长龙
+        '<div><div class="text-[11px] text-slate-500 mb-1"><i class="fas fa-dragon mr-1 text-rose-400"></i>长龙机制 <span class="text-slate-600">最长 ' + sk.longest + ' · 分布 1-6+</span> ' + dist + '</div>' +
+          '<div class="flex flex-wrap gap-1 mb-1">' + condRows + '</div>' +
+          '<div class="text-[10.5px] text-slate-500">存活率（挂 L 期后继续挂，理论 ' + pct(1 - nx.theory, 0) + '）：' + surv + '</div></div>' +
+        // 进坑
+        '<div class="grid grid-cols-2 gap-3"><div><div class="text-[11px] text-slate-500 mb-1"><i class="fas fa-arrow-trend-down mr-1 text-rose-400"></i>连续进坑（理论 → 估计）</div>' + pits + '</div>' +
+          '<div><div class="text-[11px] text-slate-500 mb-1">一轮 ' + pit.round + ' 期内出现 ≥4 连挂</div><div class="mono text-xl font-black ' + (pit.at_least_one_4run_in_round.est > 0.5 ? 'text-rose-300' : 'text-slate-200') + '">' + pct(pit.at_least_one_4run_in_round.est, 1) + '</div><div class="text-[10.5px] text-slate-500">理论 ' + pct(pit.at_least_one_4run_in_round.theory, 1) + '</div>' + bar(pit.at_least_one_4run_in_round.est, '#f43f5e') + '</div></div>' +
+        // 倍投
+        '<div><div class="text-[11px] text-slate-500 mb-1"><i class="fas fa-layer-group mr-1 text-emerald-400"></i>每 ' + mg.round + ' 期倍投回测 <span class="text-slate-600">命中后下一期实测命中 ' + pct(mg.after_hit.rate, 1) + '（' + mg.after_hit.hits + '/' + mg.after_hit.n + '）' + (mg.conf_threshold ? ' · 置信≥' + Math.round(mg.conf_threshold * 100) + '% 时 ' + pct(mg.after_hit_conf.rate, 1) + '（' + mg.after_hit_conf.hits + '/' + mg.after_hit_conf.n + '）' : '') + '</span></div>' +
+          '<div class="overflow-x-auto"><table class="w-full text-[11px]" style="min-width:380px"><thead><tr class="text-slate-600"><th class="l font-normal">策略</th><th class="font-normal">累计</th><th class="font-normal">ROI</th><th class="font-normal">最大回撤</th><th class="font-normal">赢轮</th><th class="font-normal">最差轮</th></tr></thead><tbody>' +
+          simRow('平注', s.flat) + simRow('命中后翻倍', s.win_double, true) + simRow('挂后加码 1-2-4', s.loss_martin) + '</tbody></table></div>' +
+          '<div class="text-[10.5px] text-slate-600 mt-1">翻倍下注 ' + s.win_double.doubled_bets + ' 次，其中命中 ' + s.win_double.doubled_hit + '（' + pct(s.win_double.doubled_hit_rate, 1) + '）</div></div>' +
+        '</div>'
+    }).join('')
+  }
+  function fetchTA() {
+    axios.get('/api/ai/tier-analysis', { params: { source: S.source, conf: TA.conf, round: TA.round } }).then(function (r) { renderTA(r.data) })
+      .catch(function (e) { $('ta-cards').innerHTML = '<div class="text-rose-400 text-sm">' + esc(e.message) + '</div>' })
+  }
+  $('ta-conf').addEventListener('click', function (e) { var b = e.target.closest('.qk'); if (!b) return; TA.conf = +b.getAttribute('data-c'); $('ta-conf').querySelectorAll('.qk').forEach(function (x) { x.classList.toggle('on', x === b) }); fetchTA() })
+  $('ta-rnd').addEventListener('click', function (e) { var b = e.target.closest('.qk'); if (!b) return; TA.round = +b.getAttribute('data-r'); $('ta-rnd').querySelectorAll('.qk').forEach(function (x) { x.classList.toggle('on', x === b) }); fetchTA() })
+
   // ---------------------------------------------------------------- 连挂风险
   var SK = { k: 4, n: 0 }
   function cmpCls(actual, theory, lowerBetter) {
@@ -144,13 +192,14 @@
     var sel = $('source'); sel.innerHTML = list.map(function (s) { return '<option value="' + s.key + '">' + esc(s.name) + '</option>' }).join('')
     if (!list.some(function (s) { return s.key === S.source })) S.source = list[0] ? list[0].key : S.source
     sel.value = S.source
-    sel.addEventListener('change', function () { S.source = sel.value; try { localStorage.setItem('ai:source', S.source) } catch (e) {} S.detail = {}; fetchBg(); fetchStreaks(); go() })
+    sel.addEventListener('change', function () { S.source = sel.value; try { localStorage.setItem('ai:source', S.source) } catch (e) {} S.detail = {}; fetchBg(); fetchStreaks(); fetchTA(); go() })
     // 从 URL 带入 ?expect= / ?date=
     var u = new URLSearchParams(location.search); if (u.get('expect')) $('q-expect').value = u.get('expect'); if (u.get('date')) $('q-date').value = u.get('date')
-    fetchBg(); fetchStreaks(); go()
+    fetchBg(); fetchStreaks(); fetchTA(); go()
   })
   setInterval(fetchBg, 10000)
   setInterval(fetchStreaks, 60000)
+  setInterval(fetchTA, 60000)
   // 有新开奖时自动刷新“最近 N 期”视图
   setInterval(function () { if (S.last && S.last.n && !S.last.expect && !S.last.date) run(S.last, '最近 ' + S.last.n + ' 期') }, 30000)
 })()
