@@ -15,7 +15,7 @@ const token = 'test-only-application-token-0123456789abcdef'
 test('all migrations, batch rollback, backup and restart persistence', async () => {
   const dir = temporary(), file = join(dir, 'data.sqlite')
   let db = new LocalDatabase(file, join(root, 'migrations'))
-  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM desktop_migrations').first()).n, 20)
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM desktop_migrations').first()).n, 21)
   await assert.rejects(db.batch([
     db.prepare("INSERT INTO app_config VALUES ('test','first',1)"),
     db.prepare("INSERT INTO app_config VALUES ('test','duplicate',2)")
@@ -26,7 +26,7 @@ test('all migrations, batch rollback, backup and restart persistence', async () 
   db.close()
   db = new LocalDatabase(file, join(root, 'migrations'))
   assert.equal(await db.prepare("SELECT value FROM app_config WHERE key='test'").first('value'), 'persisted')
-  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM desktop_migrations').first()).n, 20)
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM desktop_migrations').first()).n, 21)
   db.close()
   const restored = new LocalDatabase(join(dir, 'backup.sqlite'), join(root, 'migrations'))
   assert.equal(await restored.prepare("SELECT value FROM app_config WHERE key='test'").first('value'), 'persisted')

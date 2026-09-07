@@ -70,6 +70,7 @@
     $('copy-btn').disabled = !nums.length
     // 各档位是独立生成：网格显示该档自己的号码；与 500 主推重叠的号码加边框标识
     var x = subObj(), mainSet = {}; (p.numbers || []).forEach(function (n) { mainSet[n] = 1 })
+    var simLink=$('ai-paper-link');if(simLink){var own=x&&x.independent,sk=own?x.key:p.strategy_used;simLink.href=sk&&nums.length?'/simulator?'+new URLSearchParams({source:S.source,origin:'arena',strategy:sk,count:nums.length,base_count:own?nums.length:500,from:'ai'}):'#';simLink.hidden=!sk||!nums.length;simLink.textContent='用本档位模拟 · '+nums.length+' 注';}
     if (x && x.independent) {
       $('cur-grid').innerHTML = nums.map(function (n) { var cls = bset[n] ? 'boost' : ''; if (!mainSet[n]) cls += ' novel'; return '<span class="' + cls.trim() + '" title="' + (mainSet[n] ? '也在 500 主推中' : '主推 500 注之外的独立选择') + '">' + n + '</span>' }).join('')
       var novel = nums.filter(function (n) { return !mainSet[n] }).length

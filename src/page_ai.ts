@@ -120,6 +120,7 @@ body.ai-config-blocked #loader, body.ai-config-blocked #cur, body.ai-config-bloc
     <div class="flex flex-wrap items-center gap-2 mt-4" id="sub-tabs"></div>
     <div class="flex flex-wrap items-center gap-2 mt-3">
       <button id="copy-btn" class="bg-pink-500 hover:bg-pink-400 text-black font-bold px-5 py-2.5 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed"><i class="fas fa-copy mr-2"></i>一键复制 500 注</button>
+      <a id="ai-paper-link" href="/simulator" class="tab" hidden>用本档位模拟</a>
       <select id="fmt" class="bg-slate-800 rounded-lg px-2 py-2 border border-slate-700 text-xs"><option value="space">空格分隔</option><option value="comma">逗号分隔</option><option value="line">每行一个</option></select>
       <span id="copied" class="hidden text-emerald-400 text-sm"><i class="fas fa-check mr-1"></i>已复制到剪贴板</span>
       <span class="ml-auto text-xs text-slate-500" id="cur-meta"></span>

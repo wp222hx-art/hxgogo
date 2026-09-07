@@ -15,7 +15,7 @@ module.exports=async function paperSmoke(win,result,dataDir){
   db.exec('BEGIN IMMEDIATE');for(let i=0;i<270;i++)insert.run(source,period(last-i*interval),i%10,(i*3+1)%10,(i*7+2)%10,1,2,last-i*interval);db.exec('COMMIT');
   await win.loadURL('hashplay://app/simulator?source='+source);await wait('!!document.querySelector("#p-replay")');
   await run('document.querySelector("#p-ref").value="0";document.querySelector("#p-ref").dispatchEvent(new Event("change",{bubbles:true}));document.querySelector("#p-replay").click()');
-  await wait('!!document.querySelector("#p-export-result")');await shot('paper-replay');
+  await wait('!!document.querySelector("#p-export-result")');await wait('document.querySelector("#paper-selection").innerText.includes("价值点")');await shot('paper-replay');
   const forecast=await run('document.querySelector("#paper-evidence").innerText');if(!forecast.includes('下一期已校准概率：尚无'))throw Error('模拟结果误当未来概率');
   await run('document.querySelector("#p-name").value="界面模拟验证";document.querySelector("#p-start").click()');
   await wait('document.querySelector("#paper-bots").innerText.includes("界面模拟验证")');
@@ -26,12 +26,13 @@ module.exports=async function paperSmoke(win,result,dataDir){
   const nums=JSON.parse(order.numbers)[0].split('').map(Number);insert.run(source,order.expect,...nums,1,2,order.cutoff_ms);
   await run('document.querySelector("#paper-refresh-bots").click()');await wait('document.querySelector("[data-control=resume]")');
   await run('document.querySelector("[data-control=resume]").click()');await wait('document.querySelector("#paper-bots").innerText.includes("运行中")');
-  await run('document.querySelector("#paper-bots details").open=true');await shot('paper-live-bot');
+  await run('document.querySelector("#paper-bots details").open=true;document.querySelector("#paper-bots").scrollIntoView({block:"start"})');await shot('paper-live-bot');
+  if(!await run('document.querySelector("#paper-bots").innerText.includes("已结算净收益") && document.querySelector("#paper-bots").innerText.includes("价值点")'))throw Error('收益与价值点未显示');
   const downloaded=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('模拟导出超时')),15000);win.webContents.session.once('will-download',(_,item)=>{const file=join(dataDir,'paper-export.json');item.setSavePath(file);item.once('done',(_,state)=>{clearTimeout(timer);if(state!=='completed')return reject(Error(state));const doc=JSON.parse(readFileSync(file,'utf8'));resolve(doc)})})});
-  await run('document.querySelector("[data-export]").click()');const exported=await downloaded;if(exported.bot.rows.length!==1||exported.bot.rows[0].stake_cents!==2000)throw Error('模拟账本导出不完整');
+  await run('document.querySelector("[data-export]").click()');const exported=await downloaded;if(exported.bot.rows.length!==1||exported.bot.rows[0].stake_cents!==2000||exported.bot.financial.realized_profit_cents!==17000||exported.bot.rows[0].value_points!==850)throw Error('模拟账本导出不完整');
   await run('document.querySelector("[data-control=stop]").click()');await wait('document.querySelector("#paper-bots").innerText.includes("已结束")');
   win.setMinimumSize(360,600);win.setSize(420,900);await delay(200);await shot('paper-mobile');if(await run('document.documentElement.scrollWidth>innerWidth+1'))throw Error('模拟界面窄屏溢出');
   win.setSize(1360,920);win.setMinimumSize(1050,700);
-  result.paper={replay:true,liveOrder:true,amountCorrect:true,pauseResume:true,stop:true,fullExport:true,probabilityHonest:true,mobileNoOverflow:true};
+  result.paper={researchSync:true,valueLedger:true,pendingSeparated:true,replay:true,liveOrder:true,amountCorrect:true,pauseResume:true,stop:true,fullExport:true,probabilityHonest:true,mobileNoOverflow:true};
  }finally{db.close()}
 };
