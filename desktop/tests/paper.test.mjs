@@ -8,7 +8,7 @@ import { createRequire } from 'node:module'
 mkdirSync('output/tests',{recursive:true});const dir=mkdtempSync(resolve('output/tests/paper-'))
 await build({entryPoints:['src/paper-engine.ts','src/paper-api.ts','src/period.ts'],outdir:dir,bundle:true,format:'esm',platform:'node'})
 const {DEFAULT_PAPER,simulate,paperConfig,sequenceStudy}=await import(pathToFileURL(join(dir,'paper-engine.js')))
-const {paperTick}=await import(pathToFileURL(join(dir,'paper-api.js')))
+const {paperTick,recipeNumbers}=await import(pathToFileURL(join(dir,'paper-api.js')))
 const {periodAtTimeMs,periodTimeMs}=await import(pathToFileURL(join(dir,'period.js')))
 const source='qkltj:6004',config={...DEFAULT_PAPER,capital:100000,unit:1,stopLoss:90000,takeProfit:90000,maxStake:50000,maxLevel:10,trigger:1,maxRounds:100}
 const rows=hits=>hits.map((hit,i)=>({expect:'20990101'+String(i+1).padStart(3,'0'),hit}))
@@ -36,8 +36,8 @@ test('prefix decisions cannot change when later outcomes change and validation r
  const a=simulate(rows([false,true,true,false]),source,150,{...config,mode:'both'})
  const b=simulate(rows([false,true,false,true]),source,150,{...config,mode:'both'})
  assert.deepEqual(a.rows.slice(0,2),b.rows.slice(0,2));assert.equal(a.rows[2].stake_cents,b.rows[2].stake_cents)
- for(const bad of [{unit:-1},{capital:Infinity},{unit:.001},{maxLevel:100},{mode:'guaranteed'}])assert.throws(()=>paperConfig({...config,...bad}))
- const s=sequenceStudy(rows([true,true,false,false,true]),source,150,2)
+ assert.equal(paperConfig({...config,unit:10}).unit,10);for(const bad of [{unit:-1},{unit:10.01},{capital:Infinity},{unit:.001},{maxLevel:100},{mode:'guaranteed'}])assert.throws(()=>paperConfig({...config,...bad}))
+ const prefix=recipeNumbers([],source,'20990101001','control',500);assert.equal(prefix.length,500);assert.deepEqual(prefix.slice(0,200),recipeNumbers([],source,'20990101001','control',200));const s=sequenceStudy(rows([true,true,false,false,true]),source,150,2)
  assert.equal(s.next_probability,null);assert.equal(s.conditions.find(r=>r.kind==='win').n,1);assert.equal(s.conditions.find(r=>r.kind==='win').hits,0);assert.equal(s.conditions.find(r=>r.kind==='loss').hits,1)
 })
 test('robot locks one future paper order, preserves it, reconciles corrections and supports pause/resume/stop',async()=>{
@@ -78,7 +78,7 @@ test('robot locks one future paper order, preserves it, reconciles corrections a
   assert.equal((await call('/bots/'+id+'/control',{action:'stop'})).status,200)
   assert.equal((await call('/bots/'+id+'/control',{action:'resume'})).status,409)
   assert.equal((await call('/bots/'+id+'/export')).data.bot.rows.length,1)
-  const replay=await call('/replay',{source,ref,config:DEFAULT_PAPER,limit:20});assert.equal(replay.status,200,JSON.stringify(replay));assert.equal(replay.data.kind,'walk_forward_recipe_replay');assert.equal(replay.data.study.next_probability,null)
+  const replay=await call('/replay',{source,ref,config:DEFAULT_PAPER,limit:20});assert.equal(replay.status,200,JSON.stringify(replay));assert.equal(replay.data.kind,'walk_forward_recipe_replay');assert.equal(replay.data.study.next_probability,null);const replay200=await call('/replay',{source,ref:{...ref,count:200},config:DEFAULT_PAPER,limit:20});assert.equal(replay200.status,200,JSON.stringify(replay200));assert.equal(replay200.data.simulation.count,200)
   assert.equal((await call('/bots',{source,ref,config:{...DEFAULT_PAPER,unit:99999},name:'invalid'})).status,400)
  }finally{await service.close()}
 })

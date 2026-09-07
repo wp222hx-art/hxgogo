@@ -6,23 +6,28 @@ import { pick } from './picker'
 import { verifiedLiveSql } from './arena'
 import { nextPeriod,periodTimeMs } from './period'
 import { extractFive } from './engine5'
-import { DEFAULT_PAPER,paperConfig,simulate,sequenceStudy,nextSizing,stakeGate,cents,type Observation } from './paper-engine'
+import { DEFAULT_PAPER,PAPER_COUNTS,paperConfig,simulate,sequenceStudy,nextSizing,stakeGate,cents,type Observation } from './paper-engine'
 
 type Ref={origin:'studio'|'arena';strategy:string;version:string;count:number}
 class PaperError extends Error{constructor(public status:number,message:string){super(message)}}
 const fail=(status:number,message:string):never=>{throw new PaperError(status,message)}
 const src=(s:any)=>{if(typeof s!=='string'||!s.startsWith('qkltj:')||!Object.hasOwn(SOURCES,s))return fail(400,'请选择一个在线数据来源');return s}
-const ref=(r:any):Ref=>{if(!r||!['studio','arena'].includes(r.origin)||!['strategy','version'].every(k=>typeof r[k]==='string'&&/^[a-zA-Z0-9._:-]{1,80}$/.test(r[k]))||!Number.isInteger(r.count)||r.count<1||r.count>1000)fail(400,'策略配置无效');if(r.origin==='studio'&&(!RECIPES.some(s=>s.id===r.strategy)||r.version!==STUDIO_VERSION||![100,150,300,500].includes(r.count)))fail(400,'工作台配方无效');return{origin:r.origin,strategy:r.strategy,version:r.version,count:r.count}}
+const ref=(r:any):Ref=>{if(!r||!['studio','arena'].includes(r.origin)||!['strategy','version'].every(k=>typeof r[k]==='string'&&/^[a-zA-Z0-9._:-]{1,80}$/.test(r[k]))||!Number.isInteger(r.count)||r.count<1||r.count>1000)fail(400,'策略配置无效');if(r.origin==='studio'&&(!RECIPES.some(s=>s.id===r.strategy)||r.version!==STUDIO_VERSION||[...PAPER_COUNTS,150].includes(r.count)===false))fail(400,'工作台配方无效');return{origin:r.origin,strategy:r.strategy,version:r.version,count:r.count}}
 async function jsonBody(c:any){const reader=c.req.raw.body?.getReader();if(!reader)fail(400,'请填写模拟参数');let size=0,text='';const d=new TextDecoder();try{for(;;){const r=await reader.read();if(r.done)break;size+=r.value.byteLength;if(size>16384){await reader.cancel();fail(413,'参数内容过大')}text+=d.decode(r.value,{stream:true})}text+=d.decode()}finally{reader.releaseLock()}try{return JSON.parse(text)}catch{return fail(400,'JSON 格式错误')}}
 const validActual=[1,2,3,4,5].map(n=>'d.n'+n+' BETWEEN 0 AND 9 AND typeof(d.n'+n+")='integer'").join(' AND ')
 const actualSql="CASE WHEN "+validActual+" THEN CAST(d.n1 AS TEXT)||CAST(d.n2 AS TEXT)||CAST(d.n3 AS TEXT) END"
+const storedStrategyCount=(count:number)=>count===150?150:500
 function decodeNumbers(s:string,origin:string,count:number){let a:any;try{a=origin==='studio'?JSON.parse(s):s.split(' ')}catch{return null}return Array.isArray(a)&&a.length===count&&new Set(a).size===count&&a.every(n=>typeof n==='string'&&/^\d{3}$/.test(n))?a as string[]:null}
 export async function recordedRows(db:D1Database,source:string,r:Ref,limit=1000){
  const studio=r.origin==='studio',table=studio?'studio_plans':'arena_rounds',strategy=studio?'recipe':'strategy',version=studio?'version':'prediction_version'
- const rows=(await db.prepare(`SELECT p.expect,p.numbers,p.created_ms,p.cutoff_ms,${actualSql} actual FROM ${table} p
- LEFT JOIN draws d ON d.source=p.source AND d.expect=p.expect WHERE p.source=? AND p.${strategy}=? AND p.${version}=? AND p.count=? AND p.cutoff_ms<=?
- ${studio?'':'AND '+verifiedLiveSql('p',true)} ORDER BY p.expect DESC LIMIT ?`).bind(source,r.strategy,r.version,r.count,Date.now(),limit).all<any>()).results.reverse()
- return rows.map(p=>{const numbers=decodeNumbers(p.numbers,r.origin,r.count);return {...p,numbers,hit:numbers&&p.actual!=null?numbers.includes(p.actual):null}})
+ const read=async(count:number)=>(await db.prepare(
+  'SELECT p.expect,p.numbers,p.created_ms,p.cutoff_ms,'+actualSql+' actual FROM '+table+' p '+
+  'LEFT JOIN draws d ON d.source=p.source AND d.expect=p.expect WHERE p.source=? AND p.'+strategy+'=? AND p.'+version+'=? AND p.count=? AND p.cutoff_ms<=? '+
+  (studio?'':'AND '+verifiedLiveSql('p',true))+' ORDER BY p.expect DESC LIMIT ?'
+ ).bind(source,r.strategy,r.version,count,Date.now(),limit).all<any>()).results
+ let rows=await read(studio?storedStrategyCount(r.count):r.count),storedCount=studio?storedStrategyCount(r.count):r.count
+ if(!studio&&rows.length===0&&r.count<500){rows=await read(500);storedCount=500}
+ return rows.reverse().map(p=>{const base=decodeNumbers(p.numbers,r.origin,storedCount);const numbers=base?.slice(0,r.count)??null;return {...p,numbers,hit:numbers&&p.actual!=null?numbers.includes(p.actual):null,stored_count:storedCount}})
 }
 async function hashStudy(db:D1Database,source:string){
  const rows=(await db.prepare('SELECT expect,hash,n1,n2,n3,n4,n5 FROM draws WHERE source=? ORDER BY expect DESC LIMIT 1000').bind(source).all<any>()).results
@@ -41,7 +46,7 @@ async function replayRows(db:D1Database,source:string,r:Ref,limit:number){
    const tail=records.slice(i-120,i+1),continuous=tail.slice(1).every(x=>x.previousContiguous)
    if(!continuous){rows.push({expect:v.period,hit:null});all.push(draw);continue}
    const actual=v.numbers.slice(0,3).join(''),hist=all.slice(-1000).reverse()
-   const nums=recipeNumbers(hist,source,v.period,r.strategy,r.count)
+   const nums=recipeNumbers(hist,source,v.period,r.strategy,storedStrategyCount(r.count)).slice(0,r.count)
    rows.push({expect:v.period,actual,hit:nums.includes(actual),numbers:nums,cutoff_ms:periodTimeMs(v.period,source)!})
   }
   all.push(draw)
@@ -97,12 +102,13 @@ async function tickOne(db:D1Database,id:string){
  if(reason){await control(db,id,'stopped',reason);return}
  let numbers:string[]|null=null
  if(b.origin==='studio'){
-  try{await createPlan(db,{source:b.source,recipe:b.strategy,count:b.count,expect:g.expect,revision:s.revision})}catch(e){if(e.status===409)return;throw e}
-  const plan=await db.prepare('SELECT numbers FROM studio_plans WHERE source=? AND expect=? AND recipe=? AND version=? AND count=?').bind(b.source,g.expect,b.strategy,b.version,b.count).first<any>()
-  if(plan)numbers=decodeNumbers(plan.numbers,'studio',b.count)
+  try{await createPlan(db,{source:b.source,recipe:b.strategy,count:storedStrategyCount(b.count),expect:g.expect,revision:s.revision})}catch(e){if(e.status===409)return;throw e}
+  const plan=await db.prepare('SELECT numbers FROM studio_plans WHERE source=? AND expect=? AND recipe=? AND version=? AND count=?').bind(b.source,g.expect,b.strategy,b.version,storedStrategyCount(b.count)).first<any>()
+  if(plan)numbers=decodeNumbers(plan.numbers,'studio',storedStrategyCount(b.count))?.slice(0,b.count)??null
  }else{
-  const plan=await db.prepare(`SELECT numbers FROM arena_rounds WHERE source=? AND expect=? AND strategy=? AND prediction_version=? AND count=? AND ${verifiedLiveSql('',true)}`).bind(b.source,g.expect,b.strategy,b.version,b.count).first<any>()
-  if(plan)numbers=decodeNumbers(plan.numbers,'arena',b.count)
+  let plan=await db.prepare('SELECT numbers,count FROM arena_rounds WHERE source=? AND expect=? AND strategy=? AND prediction_version=? AND count=? AND '+verifiedLiveSql('',true)).bind(b.source,g.expect,b.strategy,b.version,b.count).first<any>()
+  if(!plan&&b.count<500)plan=await db.prepare('SELECT numbers,count FROM arena_rounds WHERE source=? AND expect=? AND strategy=? AND prediction_version=? AND count=500 AND '+verifiedLiveSql('',true)).bind(b.source,g.expect,b.strategy,b.version).first<any>()
+  if(plan)numbers=decodeNumbers(plan.numbers,'arena',plan.count)?.slice(0,b.count)??null
  }
  if(!numbers){await db.prepare("UPDATE paper_bots SET reason='等待原策略的下一份有效方案' WHERE id=? AND status='running'").bind(id).run();return}
  try{await db.prepare('INSERT INTO paper_orders VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(crypto.randomUUID(),id,b.rows.length+1,g.expect,JSON.stringify(numbers),sizing.unit_cents,sizing.unit_cents*b.count,sizing.level,sizing.branch,g.cutoff_ms,Date.now(),s.revision,b.control_revision).run()}
@@ -121,8 +127,8 @@ paperApi.use('*',async(c,next)=>{c.header('Cache-Control','no-store');await next
 paperApi.onError((e,c)=>c.json({ok:false,error:e instanceof PaperError?e.message:'模拟分析失败，请检查参数或稍后重试'},(e instanceof PaperError?e.status:500)as any))
 paperApi.get('/catalog',async c=>{
  const source=src(c.req.query('source')||'qkltj:6001'),history=await studioHistory(c.env.DB,source)
- const strategies=RECIPES.flatMap(r=>[100,150,300,500].map(count=>({origin:'studio',strategy:r.id,version:STUDIO_VERSION,count,name:r.name+' · '+count+' 个',history:history.find(h=>h.origin==='studio'&&h.strategy===r.id&&h.count===count)})))
- strategies.push(...history.filter(h=>h.origin==='arena').map(h=>({origin:'arena',strategy:h.strategy,version:h.version,count:h.count,name:h.name+' · '+h.count+' 个',history:h})))
+ const strategies=RECIPES.flatMap(r=>[...PAPER_COUNTS,150].map(count=>({origin:'studio',strategy:r.id,version:STUDIO_VERSION,count,name:r.name+' · '+count+' 个'+(count===150?'（原有档位）':'（500 注底稿）'),history:history.find(h=>h.origin==='studio'&&h.strategy===r.id&&h.count===storedStrategyCount(count))})))
+ const seen=new Set<string>(); for(const h of history.filter(h=>h.origin==='arena')){const key=[h.strategy,h.version].join(':');if(h.count===500&&!seen.has(key)){for(const count of PAPER_COUNTS)strategies.push({origin:'arena',strategy:h.strategy,version:h.version,count,name:h.name+' · '+count+' 个（500 注底稿）',history:h});seen.add(key)}else if(PAPER_COUNTS.includes(h.count)&&!seen.has(key+':'+h.count)){strategies.push({origin:'arena',strategy:h.strategy,version:h.version,count:h.count,name:h.name+' · '+h.count+' 个（原始档位）',history:h});seen.add(key+':'+h.count)}}
  return c.json({ok:true,strategies,defaults:DEFAULT_PAPER,hash:await hashStudy(c.env.DB,source),snapshot:await builtinSnapshot(c.env.DB,source,120)})
 })
 paperApi.post('/replay',async c=>{
@@ -140,7 +146,7 @@ paperApi.post('/bots',async c=>{
  const b=await jsonBody(c),source=src(b.source),r=ref(b.ref);let config;try{config=paperConfig(b.config)}catch(e){return fail(400,e.message)}
  if(typeof b.name!=='string'||!b.name.trim()||b.name.length>60)fail(400,'请输入 1–60 字的机器人名称')
  if(cents(config.unit)*r.count>Math.min(cents(config.capital),cents(config.maxStake),cents(config.stopLoss)))fail(400,'基础总额已超过本金、单期上限或止损额度')
- if(r.origin==='arena'&&!await c.env.DB.prepare(`SELECT 1 FROM arena_rounds WHERE source=? AND strategy=? AND prediction_version=? AND count=? AND ${verifiedLiveSql('',true)} LIMIT 1`).bind(source,r.strategy,r.version,r.count).first())fail(400,'未找到可验证的原策略记录')
+ let eligible=await c.env.DB.prepare(`SELECT 1 FROM arena_rounds WHERE source=? AND strategy=? AND prediction_version=? AND count=? AND ${verifiedLiveSql('',true)} LIMIT 1`).bind(source,r.strategy,r.version,r.count).first(); if(!eligible&&r.count<500)eligible=await c.env.DB.prepare(`SELECT 1 FROM arena_rounds WHERE source=? AND strategy=? AND prediction_version=? AND count=500 AND ${verifiedLiveSql('',true)} LIMIT 1`).bind(source,r.strategy,r.version).first(); if(r.origin==='arena'&&!eligible)fail(400,'未找到可验证的原策略记录')
  const id=crypto.randomUUID(),result=await c.env.DB.prepare("INSERT INTO paper_bots(id,name,source,origin,strategy,version,count,config_json,created_ms,status,reason) SELECT ?,?,?,?,?,?,?,?,?,'running','等待下一份有效方案' WHERE (SELECT COUNT(*) FROM paper_bots WHERE status<>'stopped')<10").bind(id,b.name.trim(),source,r.origin,r.strategy,r.version,r.count,JSON.stringify(config),Date.now()).run()
  if(!result.meta.changes)fail(409,'最多同时保留 10 个运行或暂停的机器人，请先停止不再使用的机器人')
  await event(c.env.DB,id,'created','仅使用模拟资金；从创建后的有效方案开始，不补写过去的投入。')

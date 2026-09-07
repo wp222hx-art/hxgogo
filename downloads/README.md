@@ -9,6 +9,12 @@
 
 升级前，从旧版系统托盘选择“退出并停止后台”，再启动新版。默认继续使用原数据库和配置，可先通过“数据 → 备份数据”备份。当前应用采用手动下载安装更新。
 
+## v0.5.1
+
+[便携版](https://github.com/wp222hx-art/hxgogo/releases/download/v0.5.1/HashPlay-Portable-0.5.1.exe) · [安装版](https://github.com/wp222hx-art/hxgogo/releases/download/v0.5.1/HashPlay-Setup-0.5.1.exe) · [更新说明](versions/v0.5.1.md)
+
+机器人按 AI / 竞技场已锁定选码执行，支持 100、200、300、450、500 注，每注 0.01–10 元；新档位从同一份 500 注底稿截取。
+
 ## v0.5.0
 
 [便携版](https://github.com/wp222hx-art/hxgogo/releases/download/v0.5.0/HashPlay-Portable-0.5.0.exe) · [安装版](https://github.com/wp222hx-art/hxgogo/releases/download/v0.5.0/HashPlay-Setup-0.5.0.exe) · [更新说明](versions/v0.5.0.md)

@@ -3,11 +3,13 @@ import { wilsonInterval } from './evaluation'
 export type Mode='flat'|'win'|'loss'|'both'
 export type PaperConfig={capital:number;unit:number;multiplier:number;maxLevel:number;maxStake:number;stopLoss:number;takeProfit:number;maxRounds:number;trigger:number;odds:number;mode:Mode}
 export type Observation={expect:string;hit:boolean|null;actual?:string|null;numbers?:string[];cutoff_ms?:number;created_ms?:number}
+/** Robot coverage tiers; non-500 tiers are prefixes of the canonical 500 plan. */
+export const PAPER_COUNTS=[100,200,300,450,500] as const
 export const DEFAULT_PAPER:PaperConfig={capital:10000,unit:0.2,multiplier:2,maxLevel:4,maxStake:2000,stopLoss:3000,takeProfit:3000,maxRounds:500,trigger:2,odds:950,mode:'both'}
 export function paperConfig(input:any):PaperConfig{
  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!Object.hasOwn(DEFAULT_PAPER,k)))throw Error('模拟参数格式不正确')
  const c={...DEFAULT_PAPER,...input};if(!['flat','win','loss','both'].includes(c.mode))throw Error('请选择有效的模拟方式')
- const rules:Record<string,[number,number,boolean]>={capital:[1,10000000,false],unit:[.01,10000,false],multiplier:[1.1,3,false],maxLevel:[0,10,true],maxStake:[.01,10000000,false],stopLoss:[.01,10000000,false],takeProfit:[.01,10000000,false],maxRounds:[1,5000,true],trigger:[1,8,true],odds:[1,1000,true]}
+ const rules:Record<string,[number,number,boolean]>={capital:[1,10000000,false],unit:[.01,10,false],multiplier:[1.1,3,false],maxLevel:[0,10,true],maxStake:[.01,10000000,false],stopLoss:[.01,10000000,false],takeProfit:[.01,10000000,false],maxRounds:[1,5000,true],trigger:[1,8,true],odds:[1,1000,true]}
  for(const[k,[lo,hi,integer]]of Object.entries(rules)){const n=c[k];if(typeof n!=='number'||!Number.isFinite(n)||n<lo||n>hi||(integer&&!Number.isInteger(n)))throw Error(k+' 超出允许范围');if(['capital','unit','maxStake','stopLoss','takeProfit'].includes(k)&&Math.abs(n*100-Math.round(n*100))>1e-6)throw Error('金额最多保留两位小数')}
  return c
 }
