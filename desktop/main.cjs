@@ -168,6 +168,7 @@ if (!app.requestSingleInstanceLock()) { app.quit() } else {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: '工作台', submenu: [
         { label: '总览', click: () => showPage('/workspace') },
+        { label: '模拟机器人', click: () => showPage('/simulator') },
         { label: '生成方案', click: () => showPage('/workspace?view=generate') },
         { label: '策略追踪', click: () => showPage('/workspace?view=tracking') },
         { label: '数据管理', click: () => showPage('/workspace?view=data') },
@@ -204,12 +205,13 @@ if (!app.requestSingleInstanceLock()) { app.quit() } else {
     const errors = []
     win.webContents.on('console-message', (_event, level, message) => { if (level === 3) errors.push(message) })
     const result = { pages: [], errors, version: app.getVersion(), electron: process.versions.electron, sqlite: false, encrypted: false }
-    for (const path of ['/workspace','/settings','/query','/analysis','/arena','/ai','/top3','/atlas','/']) {
+    for (const path of ['/workspace','/simulator','/settings','/query','/analysis','/arena','/ai','/top3','/atlas','/']) {
       await win.loadURL(uiOrigin + path)
       await new Promise(r => setTimeout(r, 1000))
       const info = await win.webContents.executeJavaScript("({ title:document.title, text:document.body.innerText.slice(0,100), scripts:[...document.scripts].map(s=>s.src).filter(Boolean), background:getComputedStyle(document.body).backgroundColor, node:typeof require })")
       if (!info.title || info.node !== 'undefined' || info.scripts.some(s => !s.startsWith(uiOrigin))) throw new Error('桌面页面验证失败: ' + path)
       result.pages.push({ path, ...info })
+      if (path === '/simulator') await require('./paper-smoke.cjs')(win,result,dataDir)
       if (path === '/workspace') await require('./studio-smoke.cjs')(win,result,dataDir)
       if (path === '/atlas') await require('./atlas-smoke.cjs')(win,result,dataDir)
       if (path === '/analysis') {

@@ -2,12 +2,14 @@
 
 ## 使用
 
-- 安装版：运行 `release/0.4.0/HashPlay-Setup-0.4.0.exe`，按提示选择安装目录。
-- 免安装版：运行 `release/0.4.0/HashPlay-Portable-0.4.0.exe`。首次解压启动可能需要稍等。
-- 也可直接运行 `release/0.4.0/win-unpacked/HashPlay.exe`，需保留同文件夹中的其他文件。
+- 安装版：运行 `release/0.5.0/HashPlay-Setup-0.5.0.exe`，按提示选择安装目录。
+- 免安装版：运行 `release/0.5.0/HashPlay-Portable-0.5.0.exe`。首次解压启动可能需要稍等。
+- 也可直接运行 `release/0.5.0/win-unpacked/HashPlay.exe`，需保留同文件夹中的其他文件。
 - 不需要额外安装 Node.js、数据库或 Cloudflare 工具。
 
 启动后进入 **统一研究工作台**。左侧按总览、生成方案、策略追踪、数据管理排列；原图谱、AI、量化和其他研究工具继续保留。操作与统计口径见 [工作台说明](docs/workspace.md)。
+
+新增 **模拟机器人**，支持四种资金规则、前瞻账本与同策略平投对照，详见 [模拟说明](docs/paper-simulator.md)。
 
 关闭窗口会隐藏到系统托盘，后台仍继续同步。通过托盘或“工作台 → 退出”彻底停止。关机和休眠期间不会持续运行，重新启动后按原有补齐机制恢复数据。
 

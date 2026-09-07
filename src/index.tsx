@@ -1,3 +1,5 @@
+import { paperApi,paperTick } from './paper-api'
+import { paperPage } from './page_paper'
 import { platformPage } from './platform-shell'
 import { studioPage } from './page_studio'
 import { studioApi } from './studio-api'
@@ -36,6 +38,8 @@ import { generateSets, insertSets, allNs, setsBoard, setsForPeriod, backfillSets
 
 type Bindings = { DB: D1Database } & AiEnv
 const app = new Hono<{ Bindings: Bindings; Variables: { ai: AiEnv } }>()
+app.route('/api/paper', paperApi)
+app.get('/simulator',c=>c.html(platformPage(paperPage(),'simulator')))
 app.route('/api/studio', studioApi)
 app.get('/workspace', c => c.html(platformPage(studioPage(), 'overview')))
 app.route('/api/atlas', atlasApi)
@@ -600,6 +604,7 @@ async function heartbeat(db: D1Database, baseEnv: AiEnv, signal?: AbortSignal) {
       const r = await syncSource(db, s)
       if (signal?.aborted) return
       if (!r.skipped && !r.error) { await autoTrack(db, s); await scorePicks(db, s); await arenaTick(db, s) }
+      if (!signal?.aborted) { try { await paperTick(db,s) } catch(error) { console.error('paper tick',error) } }
       // AI configuration errors must never stop the shared draw synchronization.
       if (!signal?.aborted && await aiNeeded(db, s)) {
         try {

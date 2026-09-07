@@ -1,6 +1,6 @@
 # HashPlay · 链上哈希可验证公平游戏演示平台
 
-> **v0.4.0 统一研究工作台**：新增总览、生成方案、策略追踪、数据管理，支持固定配方提前锁定与共用数据核对。使用与统计口径见 [工作台说明](docs/workspace.md)，下载见 [下载目录](downloads/README.md)。
+> **v0.5.0 辅助模拟机器人**：新增平投与加码对照、持续纸面模拟、资金账本和下期研究依据。与原工作台共用开奖数据，使用方法见 [模拟机器人说明](docs/paper-simulator.md)，本次结果见 [历史对照记录](docs/paper-observations-2026-09-07.md)。
 
 > **Windows 本地版**：现已支持 Electron + SQLite 桌面运行。安装、AI 配置、备份恢复和构建说明见 [DESKTOP.md](./DESKTOP.md)。
 

@@ -13,13 +13,14 @@
     "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local",
     "clean-port": "fuser -k 3000/tcp 2>/dev/null || true",
     "desktop:build": "node desktop/build.mjs",
-    "desktop:start": "npm run desktop:build && electron .",
+    "desktop:start": "npm run desktop:runtime && npm run desktop:build && electron .",
     "desktop:test": "npm run desktop:build && node --test desktop/tests/*.test.mjs",
-    "desktop:pack": "npm run desktop:build && electron-builder --dir --win",
-    "desktop:dist": "npm run desktop:build && electron-builder --win",
+    "desktop:pack": "npm run desktop:runtime && npm run desktop:build && electron-builder --dir --win --publish never",
+    "desktop:dist": "npm run desktop:runtime && npm run desktop:build && electron-builder --win --publish never",
     "desktop:smoke": "electron . --smoke-test --data-dir=./output/desktop-smoke",
     "release:prepare": "node scripts/prepare-release.mjs",
-    "release:assets": "node scripts/release-assets.mjs"
+    "release:assets": "node scripts/release-assets.mjs",
+    "desktop:runtime": "node node_modules/electron/install.js"
   },
   "dependencies": {
     "hono": "^4.13.5"
@@ -40,7 +41,7 @@
     "vite": "^8.1.4",
     "wrangler": "^4.110.0"
   },
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "HashPlay 本地工作台",
   "author": "HashPlay",
   "main": "desktop/main.cjs",
@@ -48,7 +49,7 @@
     "appId": "com.hashplay.desktop",
     "productName": "HashPlay",
     "directories": {
-      "output": "release/0.4.0"
+      "output": "release/0.5.0"
     },
     "files": [
       "desktop/main.cjs",
@@ -57,7 +58,8 @@
       "desktop-build/**/*",
       "!desktop-build/**/*.map",
       "desktop/atlas-smoke.cjs",
-      "desktop/studio-smoke.cjs"
+      "desktop/studio-smoke.cjs",
+      "desktop/paper-smoke.cjs"
     ],
     "asar": true,
     "npmRebuild": false,
