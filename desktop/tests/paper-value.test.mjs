@@ -29,7 +29,9 @@ test('research streaks do not bridge gaps or pending observations',()=>{
  let s=valueStats(rows,source,100);assert.equal(s.current_miss,1);assert.equal(s.longest_miss,2);assert.equal(s.value_points,-300)
  s=valueStats([...rows,{expect:'20990101005',hit:null}],source,100);assert.equal(s.current_miss,0);assert.equal(s.periods,3)
 })
-test('AI original tier and 500 prefixes share immutable research plans without substituting numbers',async()=>{
+test('AI original tier and 500 prefixes share immutable research plans without substituting numbers',async(t)=>{
+ // Keep plan creation inside one open period, independent of CI crossing a wall-clock cutoff.
+ t.mock.method(Date,'now',()=>Date.UTC(2099,0,1,12,5,0))
  const {startService}=createRequire(import.meta.url)('../../desktop-build/service.cjs'),token='paper-value-test-01234567890123456789'
  const service=await startService({root:resolve('desktop-build'),dataDir:join(dir,'service'),token,background:false,secrets:{async load(){return{}},async save(){}}})
  const call=async(path,body)=>{const r=await fetch(service.origin+'/api/paper'+path,{method:body?'POST':'GET',headers:{'x-hashplay-app':token,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});return{status:r.status,data:await r.json()}}
@@ -40,6 +42,7 @@ test('AI original tier and 500 prefixes share immutable research plans without s
   await insertRounds(service.db,source,expect,periodAtTimeMs(last,source),'live',[{strategy:'ai',numbers:main,coverage:.5,weight:1},{strategy:'ai-100',numbers:own,coverage:.1,weight:1}])
   const catalog=(await call('/catalog?source='+source)).data
   const original=catalog.strategies.find(s=>s.strategy==='ai-100'),prefix=catalog.strategies.find(s=>s.strategy==='ai'&&s.count===100)
+  assert.ok(original,'independent AI tier must be present');assert.ok(prefix,'500-number AI prefix must be present')
   assert.equal(original.base_count,100);assert.equal(prefix.base_count,500)
   const query=r=>'/selection?'+new URLSearchParams({source,origin:r.origin,strategy:r.strategy,version:r.version,count:r.count,base_count:r.base_count})
   const a=(await call(query(original))).data,b=(await call(query(prefix))).data
