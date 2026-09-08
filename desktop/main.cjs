@@ -211,7 +211,7 @@ if (!app.requestSingleInstanceLock()) { app.quit() } else {
       const info = await win.webContents.executeJavaScript("({ title:document.title, text:document.body.innerText.slice(0,100), scripts:[...document.scripts].map(s=>s.src).filter(Boolean), background:getComputedStyle(document.body).backgroundColor, node:typeof require })")
       if (!info.title || info.node !== 'undefined' || info.scripts.some(s => !s.startsWith(uiOrigin))) throw new Error('桌面页面验证失败: ' + path)
       result.pages.push({ path, ...info })
-      if (path === '/simulator') await require('./paper-smoke.cjs')(win,result,dataDir)
+      if (path === '/simulator') { await require('./paper-smoke.cjs')(win,result,dataDir); await require('./theme-smoke.cjs')(win,result,dataDir) }
       if (path === '/workspace') await require('./studio-smoke.cjs')(win,result,dataDir)
       if (path === '/atlas') await require('./atlas-smoke.cjs')(win,result,dataDir)
       if (path === '/analysis') {

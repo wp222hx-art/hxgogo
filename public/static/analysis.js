@@ -6,7 +6,7 @@ const COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#eab308', '#a855f7', '#06b6d4'
 Chart.defaults.color = '#94a3b8'; Chart.defaults.borderColor = '#1e293b'; Chart.defaults.font.size = 11
 
 const BASELINE_PLUGIN = { id: 'baseline', afterDraw(c) { if (c.canvas.id !== 'ch-mech' || S.baseline === undefined) return; const x = c.scales.x.getPixelForValue(S.baseline); const ctx = c.ctx; ctx.save(); ctx.strokeStyle = '#fbbf24'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(x, c.chartArea.top); ctx.lineTo(x, c.chartArea.bottom); ctx.stroke(); ctx.restore() } }
-function chart(id, cfg) { if (S.charts[id]) S.charts[id].destroy(); S.charts[id] = new Chart($(id), cfg); return S.charts[id] }
+function chart(id, cfg) { if (S.charts[id]) S.charts[id].destroy(); S.charts[id] = window.HashPlayTheme.chart(new Chart($(id), cfg)); return S.charts[id] }
 const pct = (x, d = 1) => (x * 100).toFixed(d) + '%'
 const fmtT = (ms) => new Date(ms).toLocaleString('zh-CN', { hour12: false })
 
@@ -108,7 +108,7 @@ async function loadStats() {
 // K 线模块（ECharts）
 // =====================================================================
 const UP = '#ef4444', DOWN = '#22c55e'   // 中式：红涨绿跌
- function ec(id) { const el = $(id); if (!el) return null; if (!S.ec[id]) { S.ec[id] = echarts.init(el, null, { renderer: 'canvas' }) } return S.ec[id] }
+ function ec(id) { const el = $(id); if (!el) return null; if (!S.ec[id]) { S.ec[id] = window.HashPlayTheme.echarts(echarts.init(el, null, { renderer: 'canvas' })) } return S.ec[id] }
 window.addEventListener('resize', () => Object.values(S.ec).forEach(c => c.resize()))
 
 /** 通用蜡烛图 option */

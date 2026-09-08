@@ -74,7 +74,7 @@ jobs:
           $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test",("--data-dir=`"$data`"") -WindowStyle Hidden -PassThru -Wait
           if ($process.ExitCode -ne 0) { throw "Packaged smoke failed: $($process.ExitCode)" }
           $result = Get-Content (Join-Path $data 'smoke-result.json') -Raw | ConvertFrom-Json
-          if ($result.errors.Count -gt 0 -or !$result.atlas.automaticUpdate.onlineRecovery -or !$result.restartPersistence -or !$result.studio.generation -or !$result.studio.canonicalCorrection -or !$result.studio.legacyLocalSource -or !$result.atlasCompactNavigation -or !$result.paper.liveOrder -or !$result.paper.fullExport) { throw 'Incomplete packaged checks.' }
+          if ($result.errors.Count -gt 0 -or !$result.atlas.automaticUpdate.onlineRecovery -or !$result.restartPersistence -or !$result.studio.generation -or !$result.studio.canonicalCorrection -or !$result.studio.legacyLocalSource -or !$result.atlasCompactNavigation -or !$result.paper.liveOrder -or !$result.paper.fullExport -or $result.themes.count -ne 7 -or !$result.themes.chartsPreserved -or !$result.themes.mobileNoOverflow) { throw 'Incomplete packaged checks.' }
       - run: npm run release:assets
         if: steps.version.outputs.published != 'true'
       - name: Publish verified downloads

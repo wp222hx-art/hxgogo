@@ -7,7 +7,7 @@ const pct = (x, d = 1) => x === null || x === undefined ? '—' : (x * 100).toFi
 const sgn = (x, d = 0) => x === null || x === undefined ? '—' : (x > 0 ? '+' : '') + Number(x).toFixed(d)
 const fmtT = (ms) => new Date(ms).toLocaleString('zh-CN', { hour12: false })
 const defOf = (k) => S.defs.find(s => s.key === k) || { name: k, short: k, color: '#94a3b8' }
-function ec(id) { if (!S.ec[id]) { S.ec[id] = echarts.init($(id), null, { renderer: 'canvas' }); window.addEventListener('resize', () => S.ec[id].resize()) } return S.ec[id] }
+function ec(id) { if (!S.ec[id]) { S.ec[id] = window.HashPlayTheme.echarts(echarts.init($(id), null, { renderer: 'canvas' })); window.addEventListener('resize', () => S.ec[id].resize()) } return S.ec[id] }
 const AX = { axisLine: { lineStyle: { color: '#334155' } }, axisLabel: { color: '#94a3b8', fontSize: 10 }, splitLine: { lineStyle: { color: '#1e293b' } } }
 
 async function init() {

@@ -51,7 +51,7 @@ test('private local service, offline assets, encrypted-store contract and persis
       assert.ok(response.headers.get('content-security-policy').includes("frame-ancestors 'none'"))
       assert.doesNotMatch(html, /(?:src|href)="https:\/\/cdn\./)
     }
-    for (const path of ['/vendor/tailwind.css','/vendor/axios.min.js','/vendor/chart.umd.js','/vendor/echarts.min.js','/vendor/fontawesome/css/all.min.css','/static/settings.js','/static/atlas.js','/static/atlas-core.js','/static/atlas-tools.js','/static/atlas.css','/static/atlas.svg','/static/platform.css','/static/platform.js','/static/studio.css','/static/studio.js','/static/paper.js','/static/paper.css']) {
+    for (const path of ['/vendor/tailwind.css','/vendor/axios.min.js','/vendor/chart.umd.js','/vendor/echarts.min.js','/vendor/fontawesome/css/all.min.css','/static/settings.js','/static/atlas.js','/static/atlas-core.js','/static/atlas-tools.js','/static/atlas.css','/static/atlas.svg','/static/platform.css','/static/platform.js','/static/themes.css','/static/themes.js','/static/studio.css','/static/studio.js','/static/paper.js','/static/paper.css']) {
       const response = await request(path)
       assert.equal(response.status, 200, path)
       assert.ok((await response.arrayBuffer()).byteLength > 100, path)
